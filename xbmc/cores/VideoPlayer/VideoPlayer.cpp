@@ -7,6 +7,9 @@
  */
 
 #include "VideoPlayer.h"
+#ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
+#endif
 
 #include "DVDCodecs/DVDCodecUtils.h"
 #include "DVDDemuxers/DVDDemux.h"
@@ -4366,9 +4369,14 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
                                                    (double)DVD_TIME_BASE * hint.fpsscale /
                                                    (hint.fpsrate * (hint.interlaced ? 2 : 1)));
 
-      RESOLUTION res = CResolutionUtils::ChooseBestResolution(static_cast<float>(framerate), hint.width, hint.height, !hint.stereo_mode.empty());
+      bool nativeDV = false;
+#ifdef HAVE_DVBRIDGE
+      nativeDV = DVBRIDGE::WantsNativeOutput(hint);
+#endif
+      RESOLUTION res = CResolutionUtils::ChooseBestResolution(static_cast<float>(framerate), hint.width, hint.height, !hint.stereo_mode.empty(), nativeDV);
       CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
-      m_renderManager.TriggerUpdateResolution(framerate, hint.width, hint.height, hint.stereo_mode);
+      m_renderManager.TriggerUpdateResolution(framerate, hint.width, hint.height, hint.stereo_mode,
+                                              nativeDV);
     }
   }
 

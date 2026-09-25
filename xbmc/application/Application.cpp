@@ -1856,7 +1856,7 @@ bool CApplication::Stop(int exitCode)
     m_frameMoveGuard.unlock();
 
     CVariant vExitCode(CVariant::VariantTypeObject);
-    vExitCode["exitcode"] = exitCode;
+    vExitCode["exitcode"] = m_ExitCode;
     CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::System, "OnQuit", vExitCode);
 
     // Abort any active screensaver
@@ -1892,7 +1892,6 @@ bool CApplication::Stop(int exitCode)
     // Needs cleaning up
     CServiceBroker::GetAppMessenger()->Stop();
     m_AppFocused = false;
-    m_ExitCode = exitCode;
     CLog::Log(LOGINFO, "Stopping all");
 
     // Stop scanning before the job manager is cancelled below
@@ -2249,6 +2248,18 @@ void CApplication::StopPlaying()
   }
 }
 
+bool CApplication::SetExitCode(int exitCode)
+{
+  if (!m_ExitCodeSet)
+  {
+    CLog::Log(LOGINFO, "Saving exitCode {}", exitCode);
+    // save it for CEC
+    m_ExitCode = exitCode;
+    m_ExitCodeSet = true;
+  }
+  return true;
+}
+
 bool CApplication::OnMessage(CGUIMessage& message)
 {
   return m_pMsgHandling->OnMessage(message);
@@ -2464,7 +2475,7 @@ void CApplication::ProcessSlow()
   if (CPlatformPosix::TestQuitFlag())
   {
     CLog::Log(LOGINFO, "Quitting due to POSIX signal");
-    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_QUIT);
+    CServiceBroker::GetAppMessenger()->PostMsg(TMSG_RESTARTAPP);
   }
 #endif
 

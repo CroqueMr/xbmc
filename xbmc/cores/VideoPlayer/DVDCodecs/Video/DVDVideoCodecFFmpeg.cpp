@@ -29,6 +29,16 @@
 
 #include <memory>
 #include <mutex>
+#ifdef HAVE_DVBRIDGE
+#include "DVPlaybackPolicy.h"
+#include <cstdlib>
+#include <cmath>
+extern "C"
+{
+#include "dvbridge_fel.h"
+#include <libavutil/hwcontext.h>
+}
+#endif
 
 extern "C" {
 #include <libavcodec/defs.h>
@@ -335,6 +345,9 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
 
   m_hints = hints;
   m_options = options;
+#ifdef HAVE_DVBRIDGE
+  m_dvNativeOutput = DVBRIDGE::WantsNativeOutput(hints);
+#endif
 
   const AVCodec* pCodec = nullptr;
 
@@ -472,11 +485,40 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
 
   m_dropCtrl.Reset(true);
   m_eof = false;
+#ifdef HAVE_DVBRIDGE
+  if (NeedsDVEnhancement())
+  {
+    AVCodecParameters* parameters = avcodec_parameters_alloc();
+    if (!parameters)
+      return false;
+    int result = avcodec_parameters_from_context(parameters, m_pCodecContext);
+    if (result >= 0 && hints.doviELConfig)
+    {
+      AVPacketSideData* side = av_packet_side_data_new(&parameters->coded_side_data,
+          &parameters->nb_coded_side_data, AV_PKT_DATA_HEVC_CONF, hints.doviELConfig.GetSize(), 0);
+      if (side)
+        std::memcpy(side->data, hints.doviELConfig.GetData(), hints.doviELConfig.GetSize());
+      else
+        result = AVERROR(ENOMEM);
+    }
+    if (result >= 0)
+      m_dvFel = {dvbridge_fel_create(parameters, AVRational{1, AV_TIME_BASE}), dvbridge_fel_destroy};
+    avcodec_parameters_free(&parameters);
+    if (!m_dvFel)
+      return false;
+  }
+#endif
   return true;
 }
 
 void CDVDVideoCodecFFmpeg::Dispose()
 {
+#ifdef HAVE_DVBRIDGE
+  m_dvPending.clear();
+  m_dvFel.reset();
+  m_dvFailed = false;
+  m_dvNativeOutput = false;
+#endif
   av_frame_free(&m_pFrame);
   av_frame_free(&m_pDecodedFrame);
   av_frame_free(&m_pFilterFrame);
@@ -619,6 +661,11 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   avpkt->side_data_elems = packet.iSideDataElems;
 
   int ret = avcodec_send_packet(m_pCodecContext, avpkt);
+#ifdef HAVE_DVBRIDGE
+  // Submit once, only after BL accepted the packet (Kodi retries EAGAIN).
+  if (ret == 0 && m_dvFel && !dvbridge_fel_submit(m_dvFel.get(), avpkt))
+    m_dvFailed = true;
+#endif
 
   //! @todo: properly handle avpkt side_data. this works around our improper use of the side_data
   // as we pass pointers to ffmpeg allocated memory for the side_data. we should really be allocating
@@ -656,6 +703,62 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
 }
 
 CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPicture)
+{
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel)
+  {
+    if (m_dvFailed || dvbridge_fel_failed(m_dvFel.get()))
+      return VC_ERROR;
+    auto emit = [&]() -> VCReturn
+    {
+      if (m_dvPending.empty())
+        return VC_NONE;
+      auto& base = m_dvPending.front();
+      if (base->doviSourcePts == AV_NOPTS_VALUE)
+        return VC_ERROR;
+      AVFrame* enhancement = nullptr;
+      int result = dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts,
+                                     &enhancement);
+      if (result < 0)
+        return VC_ERROR;
+      if (!result)
+        return VC_NONE;
+      base->doviEnhancement = {enhancement, [](AVFrame* f) { av_frame_free(&f); }};
+      pVideoPicture->CopyRef(*base);
+      m_dvPending.pop_front();
+      return VC_PICTURE;
+    };
+    VCReturn paired = emit();
+    if (paired != VC_NONE)
+      return paired;
+    if (m_dvPending.size() >= 16)
+      return VC_ERROR;
+    auto base = std::make_shared<VideoPicture>();
+    base->Reset();
+    VCReturn result = GetBasePicture(base.get());
+    if (m_pCodecContext->hw_frames_ctx)
+    {
+      auto* frames = reinterpret_cast<AVHWFramesContext*>(m_pCodecContext->hw_frames_ctx->data);
+      if (!dvbridge_fel_device(m_dvFel.get(), frames->device_ref))
+        return VC_ERROR;
+    }
+    if (result == VC_PICTURE)
+      m_dvPending.push_back(std::move(base));
+    if (result == VC_EOF || (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
+      if (!dvbridge_fel_drain(m_dvFel.get()))
+        return VC_ERROR;
+    paired = emit();
+    if (paired != VC_NONE)
+      return paired;
+    if (result == VC_EOF && !m_dvPending.empty())
+      return VC_ERROR;
+    return result == VC_PICTURE ? VC_BUFFER : result;
+  }
+#endif
+  return GetBasePicture(pVideoPicture);
+}
+
+CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVideoPicture)
 {
   if (!m_startedInput)
   {
@@ -954,6 +1057,11 @@ bool CDVDVideoCodecFFmpeg::SetPictureParams(VideoPicture* pVideoPicture)
 
 void CDVDVideoCodecFFmpeg::Reset()
 {
+#ifdef HAVE_DVBRIDGE
+  m_dvPending.clear();
+  dvbridge_fel_reset(m_dvFel.get());
+  m_dvFailed = false;
+#endif
   m_started = false;
   m_startedInput = false;
   m_interlaced = false;
@@ -1152,11 +1260,15 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
     pVideoPicture->hasLightMetadata = true;
   }
 
+  pVideoPicture->doviMetadata.Reset();
+  pVideoPicture->doviSourcePts = m_pFrame->best_effort_timestamp;
   if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
     sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DOVI_METADATA);
     if (sd)
     {
+      if (!pVideoPicture->doviMetadata.Assign(sd->data, sd->size))
+        CLog::Log(LOGWARNING, "Unable to retain Dolby Vision picture metadata");
       AVDOVIMetadata* dovi = (AVDOVIMetadata*)sd->data;
       const AVDOVIRpuDataHeader* hdr = av_dovi_get_header(dovi);
       const AVDOVIDataMapping* mapping = av_dovi_get_mapping(dovi);
@@ -1497,4 +1609,3 @@ IHardwareDecoder* CDVDVideoCodecFFmpeg::GetHWAccel()
 {
   return m_pHardware;
 }
-

@@ -18,6 +18,9 @@
 #include "application/ApplicationPlayer.h"
 #include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/VideoRenderers/BaseRenderer.h"
+#ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackInfo.h"
+#endif
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/StereoscopicsManager.h"
@@ -702,6 +705,14 @@ bool CVideoGUIInfo::GetLabel(std::string& value,
       return true;
     case VIDEOPLAYER_HDR_DETAIL:
       value = m_videoInfo.hdrDetail;
+#ifdef HAVE_DVBRIDGE
+      if (m_videoInfo.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
+      {
+        const unsigned output = CDVPlaybackInfo::presented.load();
+        // Do not turn source-format metadata into a claim of active HDMI DV.
+        value = CDVPlaybackInfo::Detail(value, output);
+      }
+#endif
       return true;
     case VIDEOPLAYER_AUDIO_CODEC:
       value = m_audioInfo.codecName;

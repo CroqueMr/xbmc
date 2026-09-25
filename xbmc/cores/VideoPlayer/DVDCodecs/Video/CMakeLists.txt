@@ -44,3 +44,6 @@ if(("gbm" IN_LIST CORE_PLATFORM_NAME_LC OR "wayland" IN_LIST CORE_PLATFORM_NAME_
 endif()
 
 core_add_library(dvdvideocodecs)
+if(ENABLE_DVBRIDGE)
+  target_link_libraries(${CORE_LIBRARY} PRIVATE dvbridge_core)
+endif()

@@ -36,6 +36,14 @@ extern "C"
 #include "windowing/WindowSystemFactory.h"
 
 #include <mutex>
+#include <cstdlib>
+#include <cstring>
+#ifdef HAVE_DVBRIDGE
+#include "ServiceBroker.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
+#include "cores/VideoPlayer/DVDStreamInfo.h"
+#include "drm/DRMAtomic.h"
+#endif
 
 #include <gbm.h>
 
@@ -113,6 +121,11 @@ bool CWinSystemGbmGLESContext::SetFullScreen(bool fullScreen,
                                              RESOLUTION_INFO& res,
                                              bool blankOtherDisplays)
 {
+#ifdef HAVE_DVBRIDGE
+  if (!EndDVBridge())
+    return false;
+  m_dvBridge.reset();
+#endif
   if (res.iWidth != m_nWidth || res.iHeight != m_nHeight)
   {
     CLog::Log(LOGDEBUG, "CWinSystemGbmGLESContext::{} - resolution changed, creating a new window",
@@ -136,6 +149,27 @@ void CWinSystemGbmGLESContext::PresentRender(bool rendered, bool videoLayer)
 {
   if (!m_bRenderCreated)
     return;
+
+#ifdef HAVE_DVBRIDGE
+  if (m_dvState.Captured())
+  {
+    bool presented = false;
+    // EGL's window framebuffer has a bottom-left GL origin, while transport
+    // metadata is indexed from the top-left of the HDMI raster.
+    if (m_dvFrame && m_dvBridge && m_dvBridge->Pack(0, m_nWidth, m_nHeight, true))
+    {
+      glFinish();
+      if (m_eglContext.TrySwapBuffers())
+      {
+        presented = FlipDVBridgePage(m_dvState, false);
+      }
+    }
+    if (m_dvBridge)
+      m_dvBridge->Presented(presented);
+    m_dvFrame = false;
+    return;
+  }
+#endif
 
   if (rendered || videoLayer)
   {
@@ -201,7 +235,11 @@ bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
     if (!m_compositeShader)
     {
       std::string defines;
-      if (UseLimitedColor())
+      if (UseLimitedColor()
+#ifdef HAVE_DVBRIDGE
+          && !m_dvState.Captured()
+#endif
+          )
         defines += "#define KODI_LIMITED_RANGE 1\n";
       m_compositeShader = std::make_unique<CGuiCompositeShaderGLES>(defines);
       if (!m_compositeShader->CompileAndLink())
@@ -359,6 +397,27 @@ void CWinSystemGbmGLESContext::CompositeGui()
       m_DRM->GetGuiPlane() != nullptr)
     return;
 
+#ifdef HAVE_DVBRIDGE
+  GLint previousFramebuffer = 0;
+  GLint previousViewport[4]{};
+  const bool dvComposite = m_dvState.Captured();
+  if (dvComposite)
+  {
+    if (!m_dvFrame || !m_dvBridge)
+      return;
+    const auto target = m_dvBridge->GetPQFramebuffer();
+    if (!target)
+    {
+      m_dvFrame = false;
+      return;
+    }
+    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
+    glGetIntegerv(GL_VIEWPORT, previousViewport);
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+    glViewport(0, 0, 3840, 2160);
+  }
+#endif
+
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, m_guiFbo.Texture());
 
@@ -378,7 +437,19 @@ void CWinSystemGbmGLESContext::CompositeGui()
   float w = static_cast<float>(m_guiFboWidth);
   float h = static_cast<float>(m_guiFboHeight);
 
+  // BEGIN GUI target projection (also exercised by the GPU orientation regression).
   GLfloat proj[16] = {2.0f / w, 0, 0, 0, 0, -2.0f / h, 0, 0, 0, 0, -1, 0, -1.0f, 1.0f, 0, 1};
+#ifdef HAVE_DVBRIDGE
+  if (dvComposite)
+  {
+    // libplacebo's PQ texture stores logical top at row zero. The final HDMI
+    // packing pass reverses it for EGL scanout. Compose the GUI in that same
+    // logical orientation, not in the ordinary window framebuffer orientation.
+    proj[5] = -proj[5];
+    proj[13] = -proj[13];
+  }
+#endif
+  // END GUI target projection
 
   m_compositeShader->SetProjection(proj);
   m_compositeShader->Enable();
@@ -401,7 +472,129 @@ void CWinSystemGbmGLESContext::CompositeGui()
   glDisableVertexAttribArray(texLoc);
 
   m_compositeShader->Disable();
+#ifdef HAVE_DVBRIDGE
+  if (dvComposite)
+  {
+    glBindFramebuffer(GL_FRAMEBUFFER, previousFramebuffer);
+    glViewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+  }
+#endif
 }
+
+#ifdef HAVE_DVBRIDGE
+namespace
+{
+bool NativeDVEligible(bool source, bool software, bool interlaced, bool stereo)
+{
+  if (!source || software)
+    return false;
+  auto* window = dynamic_cast<CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
+  const bool available = window && window->SupportsNativeDVOutput();
+  return DVBRIDGE::Eligible(available, available, source, software, interlaced, stereo);
+}
+} // namespace
+
+bool DVBRIDGE::WantsNativeOutput(const CDVDStreamInfo& stream)
+{
+  return NativeDVEligible(stream.dovi.dv_profile != 0,
+                          (stream.codecOptions & CODEC_FORCE_SOFTWARE) != 0,
+                          stream.interlaced, !stream.stereo_mode.empty());
+}
+
+bool DVBRIDGE::WantsNativeOutput(const VideoPicture* picture)
+{
+  return picture && NativeDVEligible(picture->doviMetadata.Data() != nullptr, false,
+                                     (picture->iFlags & DVP_FLAG_INTERLACED) != 0,
+                                     !picture->stereoMode.empty());
+}
+
+bool CWinSystemGbmGLESContext::DVBridgeRequested(const VideoPicture* picture)
+{
+  return DVBRIDGE::WantsNativeOutput(picture);
+}
+
+int CWinSystemGbmGLESContext::VideoOutputBitDepth(const VideoPicture* picture) const
+{
+  return DVBridgeRequested(picture) ? 8 : CWinSystemGbmEGLContext::VideoOutputBitDepth(picture);
+}
+
+bool CWinSystemGbmGLESContext::BeginDVBridge()
+{
+  if (m_nWidth != 3840 || m_nHeight != 2160 || GetOutputBitDepth() != 8 ||
+      m_renderableType != EGL_OPENGL_ES3_BIT)
+    return false;
+  if (m_dvState.Captured())
+    return m_dvBridge && m_guiCompositing && m_compositeShader;
+  auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  if (!drm)
+    return false;
+  if (!m_dvBridge)
+    m_dvBridge = std::make_unique<CDVBridgeGLES>();
+  if (!m_dvBridge->Initialize())
+    return false;
+  if (!m_dvState.Captured() && !m_dvState.Capture(*drm))
+    return false;
+  m_compositeShader.reset();
+  return SetGuiCompositing(AVCOL_TRC_SMPTE2084);
+}
+
+bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
+{
+  // Restore with the current surface before EGL replaces its buffers.
+  if (m_dvState.Captured() && !EndDVBridge())
+    return false;
+  return CWinSystemGbmEGLContext::SetVideoOutput(picture);
+}
+
+bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
+                                            const AVFrame* enhancement,
+                                            const CDVMetadataBuffer& metadata,
+                                            dvbridge_geometry geometry)
+{
+  m_dvFrame = false;
+  if (!BeginDVBridge())
+    return false;
+  const bool overlayFree = m_guiWillRender && GetGUIElementCount() == 0 && !m_dvOverlays;
+  m_dvFrame = m_dvBridge->PrepareHardware(layer, enhancement, metadata, geometry, overlayFree);
+  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  return m_dvFrame;
+}
+
+bool CWinSystemGbmGLESContext::EndDVBridge()
+{
+  m_dvFrame = false;
+  // Never reset Kodi's ordinary HDR GUI compositor unless we owned DV output.
+  if (!m_dvState.Captured())
+    return true;
+  if (m_dvState.Captured())
+  {
+    // Restore signaling with a clean ordinary framebuffer, never tunnel pixels.
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFinish();
+    if (!m_eglContext.TrySwapBuffers() || !FlipDVBridgePage(m_dvState, true))
+    {
+      CLog::Log(LOGERROR, "DVBridge: output restoration failed; retaining scanout state");
+      return false;
+    }
+  }
+  if (m_dvBridge)
+    m_dvBridge->Reset();
+  SetGuiCompositing(0);
+  return true;
+}
+
+bool CWinSystemGbmGLESContext::DestroyWindowSystem()
+{
+  if (!EndDVBridge())
+    return false;
+  m_dvBridge.reset();
+  return CWinSystemGbmEGLContext::DestroyWindowSystem();
+}
+#endif
 
 bool CWinSystemGbmGLESContext::CreateContext()
 {

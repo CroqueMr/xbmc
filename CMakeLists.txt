@@ -5,6 +5,12 @@ endif()
 
 project(kodi LANGUAGES CXX C ASM)
 
+option(ENABLE_DVBRIDGE "Build experimental native DV bridge (requires patched dependencies)" OFF)
+if(ENABLE_DVBRIDGE)
+  # Headers change class layout: every translation unit must use the same ABI.
+  add_compile_definitions(HAVE_DVBRIDGE=1)
+endif()
+
 if(POLICY CMP0069)
   set(CMAKE_POLICY_DEFAULT_CMP0069 NEW)
   cmake_policy(SET CMP0069 NEW)
@@ -97,6 +103,7 @@ include(CMakeDependentOption)
 include(cmake/scripts/common/DependencyOptions.cmake)
 
 # general
+option(HEADERS_ONLY       "Skip building" OFF)
 option(VERBOSE            "Enable verbose output?" OFF)
 option(VERBOSE_FIND       "Enable verbose output of library searches only?" OFF)
 option(ENABLE_CLANGTIDY   "Enable clang-tidy support?" OFF)
@@ -184,6 +191,7 @@ core_find_git_rev(APP_SCMID FULL)
 set(AUDIO_BACKENDS_LIST "" CACHE STRING "Available audio backends")
 set(GL_INTERFACES_LIST "" CACHE STRING "Available GL interfaces")
 
+if(NOT HEADERS_ONLY)
 # Dynamically loaded libraries built with the project
 add_custom_target(${APP_NAME_LC}-libraries)
 set(LIBRARY_FILES "" CACHE STRING "" FORCE)
@@ -661,6 +669,7 @@ if(DOXYGEN_FOUND)
                     COMMAND ${CMAKE_COMMAND} -E echo "Documentation built to: file://${CMAKE_SOURCE_DIR}/docs/html/index.html"
                     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/docs/doxygen
                     COMMENT "Generating Doxygen documentation" VERBATIM)
+endif()
 endif()
 
 # link wrapper

@@ -14,6 +14,10 @@
 #include "utils/EGLUtils.h"
 
 #include <memory>
+#ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/VideoRenderers/DVBridgeGLES.h"
+#include "drm/DVBridgeState.h"
+#endif
 
 class CGuiCompositeShaderGLES;
 
@@ -48,11 +52,25 @@ public:
   void EndGuiComposite() override;
   void CompositeGui() override;
   bool IsHdrComposite() const override { return m_guiCompositing; }
+#ifdef HAVE_DVBRIDGE
+  static bool DVBridgeRequested(const VideoPicture* picture);
+  bool BeginDVBridge();
+  void SetDVBridgeOverlays(bool visible) { m_dvOverlays = visible; }
+  bool RenderDVBridge(const CDVBridgeGLES::Layer& layer, const AVFrame* enhancement,
+                       const CDVMetadataBuffer& metadata,
+                       dvbridge_geometry geometry);
+  bool EndDVBridge();
+  bool SetVideoOutput(const VideoPicture* picture) override;
+  bool DestroyWindowSystem() override;
+#endif
 
 protected:
   void SetVSyncImpl(bool enable) override {}
   void PresentRenderImpl(bool rendered) override {};
   bool CreateContext() override;
+#ifdef HAVE_DVBRIDGE
+  int VideoOutputBitDepth(const VideoPicture* picture) const override;
+#endif
 
 private:
   bool m_guiCompositing{false};
@@ -65,6 +83,12 @@ private:
   bool m_guiWillRender{true};
 
   std::unique_ptr<CGuiCompositeShaderGLES> m_compositeShader;
+#ifdef HAVE_DVBRIDGE
+  std::unique_ptr<CDVBridgeGLES> m_dvBridge;
+  CDVBridgeState m_dvState;
+  bool m_dvFrame = false;
+  bool m_dvOverlays = true;
+#endif
 };
 
 } // namespace GBM

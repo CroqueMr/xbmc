@@ -30,6 +30,10 @@
 
 #include <memory>
 #include <mutex>
+#ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
+#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#endif
 
 using namespace std::chrono_literals;
 
@@ -141,6 +145,10 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   {
     std::unique_lock lock(m_statelock);
     m_picture.SetParams(picture);
+    m_nativeDVRate = false;
+#ifdef HAVE_DVBRIDGE
+    m_nativeDVRate = DVBRIDGE::WantsNativeOutput(&picture);
+#endif
     m_fps = fps;
     m_orientation = orientation;
     m_NumberBuffers  = buffers;
@@ -415,6 +423,7 @@ void CRenderManager::UnInit()
 
   m_renderState = STATE_UNCONFIGURED;
   m_picture.Reset();
+  m_nativeDVRate = false;
   m_bRenderGUI = false;
 
   m_initEvent.Set();
@@ -598,8 +607,10 @@ RESOLUTION CRenderManager::GetResolution()
     return res;
 
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF)
+  {
     res = CResolutionUtils::ChooseBestResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
-                                                 !m_picture.stereoMode.empty());
+                                                 !m_picture.stereoMode.empty(), m_nativeDVRate);
+  }
 
   return res;
 }
@@ -620,6 +631,10 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   bool presented = false;
   if (!gui || m_pRenderer->IsGuiLayer())
   {
+#ifdef HAVE_DVBRIDGE
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
+      window->SetDVBridgeOverlays(m_renderDebug || m_overlays.HasVisibleOverlay(m_presentsource));
+#endif
     SPresent& m = m_Queue[m_presentsource];
 
     if( m.presentmethod == PRESENT_METHOD_BOB )
@@ -806,7 +821,7 @@ void CRenderManager::UpdateResolution()
       if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF && m_fps > 0.0f)
       {
         RESOLUTION res = CResolutionUtils::ChooseBestResolution(
-            m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
+            m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty(), m_nativeDVRate);
         CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
         UpdateLatencyTweak();
         if (m_pRenderer)
@@ -818,10 +833,14 @@ void CRenderManager::UpdateResolution()
   }
 }
 
-void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode)
+void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode,
+                                             bool nativeDV)
 {
   if (width)
   {
+    // Carry the stream's intent until the first decoded picture replaces it.
+    // Otherwise startup briefly reverts DV 25 Hz to vanilla 50 Hz, then back.
+    m_nativeDVRate = nativeDV;
     m_fps = fps;
     m_picture.iWidth = width;
     m_picture.iHeight = height;

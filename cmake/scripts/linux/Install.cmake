@@ -45,6 +45,7 @@ configure_file(${CMAKE_SOURCE_DIR}/tools/Linux/kodi.desktop.in
 configure_file(${CMAKE_SOURCE_DIR}/tools/Linux/kodi.metainfo.xml.in
                ${CORE_BUILD_DIR}/${APP_PACKAGE}.metainfo.xml @ONLY)
 
+if(NOT HEADERS_ONLY)
 # Install app
 install(TARGETS ${APP_NAME_LC}
         DESTINATION ${libdir}/${APP_NAME_LC}
@@ -164,6 +165,7 @@ if(INTERNAL_TEXTUREPACKER_INSTALLABLE)
           RENAME "${APP_NAME_LC}-TexturePacker"
           COMPONENT kodi-tools-texturepacker)
 endif()
+endif()
 
 # Install kodi-addon-dev headers
 include(${CMAKE_SOURCE_DIR}/xbmc/addons/AddonBindings.cmake)
@@ -176,6 +178,7 @@ install(FILES ${CORE_ADDON_BINDINGS_FILES}
         DESTINATION ${includedir}/${APP_NAME_LC}
         COMPONENT kodi-addon-dev)
 
+if(NOT HEADERS_ONLY)
 # Install kodi-addon-dev python api stub files
 set(python_stubs "")
 foreach(module xbmc xbmcaddon xbmcdrm xbmcgui xbmcplugin xbmcvfs)
@@ -187,6 +190,7 @@ endif()
 install(FILES ${python_stubs}
         DESTINATION ${datarootdir}/${APP_NAME_LC}/python-stubs
         COMPONENT kodi-addon-dev)
+endif()
 
 # Install kodi-addon-dev add-on bindings
 install(FILES ${CMAKE_SOURCE_DIR}/cmake/scripts/common/AddonHelpers.cmake

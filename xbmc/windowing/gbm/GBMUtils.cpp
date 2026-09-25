@@ -100,6 +100,39 @@ CGBMUtils::CGBMDevice::CGBMSurface::CGBMSurfaceBuffer::CGBMSurfaceBuffer(gbm_sur
 {
 }
 
+gbm_bo* CGBMUtils::CGBMDevice::CGBMSurface::LockTransactionalBuffer()
+{
+  if (m_pendingBuffer)
+    return nullptr;
+  auto buffer = std::make_unique<CGBMSurfaceBuffer>(m_surface);
+  if (!buffer->Get())
+    return nullptr;
+  m_pendingBuffer = std::move(buffer);
+  return m_pendingBuffer->Get();
+}
+
+void CGBMUtils::CGBMDevice::CGBMSurface::CompleteTransactionalBuffer(bool presented)
+{
+  if (!m_pendingBuffer)
+    return;
+  if (presented)
+  {
+    // The blocking commit has replaced every legacy queued scanout buffer.
+    while (!m_buffers.empty())
+      m_buffers.pop();
+    m_scanoutBuffer = std::move(m_pendingBuffer);
+  }
+  else
+    m_pendingBuffer.reset();
+}
+
+void CGBMUtils::CGBMDevice::CGBMSurface::EndTransactionalMode()
+{
+  // Transfer the restored scanout to the ordinary queue without unlocking it.
+  if (!m_pendingBuffer && m_scanoutBuffer)
+    m_buffers.push(std::move(m_scanoutBuffer));
+}
+
 CGBMUtils::CGBMDevice::CGBMSurface::CGBMSurfaceBuffer::~CGBMSurfaceBuffer()
 {
   if (m_surface && m_buffer)
