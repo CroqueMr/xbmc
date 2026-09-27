@@ -15,4 +15,6 @@ bool dvbridge_fel_drain(struct dvbridge_fel *fel);
 /* 1: exact pair, 0: more input required, -1: missing pair / decoder failure. */
 int dvbridge_fel_take(struct dvbridge_fel *fel, int64_t pts, AVFrame **frame);
 bool dvbridge_fel_failed(const struct dvbridge_fel *fel);
+/* Decoder reached EOF and no enhancement surface remains to pair. */
+bool dvbridge_fel_exhausted(const struct dvbridge_fel *fel);
 #endif
