@@ -57,6 +57,9 @@ struct dvbridge_fel {
     int64_t packet_order[QUEUE_MAX];
     struct { int64_t order, pts; } times[MAP_MAX];
     unsigned num_times;
+    bool synchronizing;
+    int64_t anchor_pts;
+    unsigned preroll_packets;
 };
 
 static enum AVPixelFormat hardware_format(AVCodecContext *ctx, const enum AVPixelFormat *formats)
@@ -97,6 +100,9 @@ void dvbridge_fel_reset(struct dvbridge_fel *f)
     if (!f)
         return;
     clear_queues(f);
+    f->synchronizing = true;
+    f->anchor_pts = AV_NOPTS_VALUE;
+    f->preroll_packets = 0;
     struct picture_order *orders[] = {&f->base_order, &f->enhancement_order};
     for (unsigned i = 0; i < 2; ++i) {
         struct picture_order *order = orders[i];
@@ -139,6 +145,8 @@ struct dvbridge_fel *dvbridge_fel_create(const AVCodecParameters *p, AVRational 
     struct dvbridge_fel *f = calloc(1, sizeof(*f));
     if (!f)
         return NULL;
+    f->synchronizing = true;
+    f->anchor_pts = AV_NOPTS_VALUE;
     if (av_bsf_list_parse_str("dovi_split=mode=el", &f->split) < 0 ||
         avcodec_parameters_copy(f->split->par_in, p) < 0)
         goto fail;
@@ -304,6 +312,28 @@ bool dvbridge_fel_submit(struct dvbridge_fel *f, const AVPacket *packet)
             av_packet_free(&copy);
             goto fail;
         }
+        if (f->synchronizing) {
+            const AVCodecParserContext *bp = f->base_order.parser;
+            const AVCodecParserContext *ep = f->enhancement_order.parser;
+            bool common_key = bp->key_frame == 1 && ep->key_frame == 1 &&
+                              bp->output_picture_number == ep->output_picture_number;
+            /* A non-reordered BL gives the IDR packet an unambiguous display
+             * time. Never use this shortcut for a BL with reordered pictures. */
+            bool el_idr = ep->key_frame == 1 && ep->output_picture_number == 0 &&
+                          f->base_order.context->has_b_frames == 0;
+            if (!common_key && !el_idr) {
+                av_packet_free(&copy);
+                f->num_times = 0;
+                if (++f->preroll_packets > 1024)
+                    goto fail;
+                continue;
+            }
+            f->enhancement_order.offset = base_identity - ep->output_picture_number;
+            f->enhancement_order.maximum = base_identity;
+            f->packet_order[f->num_packets] = base_identity;
+            f->anchor_pts = packet->pts;
+            f->synchronizing = false;
+        }
         f->packet_bytes += copy->size;
         f->packets[f->num_packets++] = copy;
     }
@@ -316,6 +346,10 @@ bool dvbridge_fel_drain(struct dvbridge_fel *f)
 {
     if (!f)
         return false;
+    if (f->synchronizing) {
+        f->failed = true;
+        return false; /* EOF cannot supply the missing random-access picture. */
+    }
     f->draining = true;
     return pump(f);
 }
@@ -324,6 +358,8 @@ int dvbridge_fel_take(struct dvbridge_fel *f, int64_t pts, AVFrame **frame)
 {
     if (!f || !frame || *frame || pts == AV_NOPTS_VALUE || !pump(f))
         return -1;
+    if (f->synchronizing || (f->anchor_pts != AV_NOPTS_VALUE && pts < f->anchor_pts))
+        return 2; /* Preroll before a recoverable EL picture, not a substitute. */
     for (unsigned i = 0; i < f->num_frames;) {
         AVFrame *candidate = f->frames[i];
         if (candidate->pts > pts) {

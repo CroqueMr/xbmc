@@ -719,6 +719,11 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
       AVFrame* enhancement = nullptr;
       int result = dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts,
                                      &enhancement);
+      if (result == 2)
+      {
+        m_dvPending.pop_front();
+        return VC_BUFFER;
+      }
       if (result < 0)
       {
         if (dvbridge_fel_exhausted(m_dvFel.get()))

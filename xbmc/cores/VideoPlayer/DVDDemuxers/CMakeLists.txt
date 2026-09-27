@@ -34,3 +34,6 @@ set(HEADERS DemuxMultiSource.h
             DVDFactoryDemuxer.h)
 
 core_add_library(dvddemuxers)
+if(ENABLE_DVBRIDGE)
+  target_include_directories(dvddemuxers PRIVATE ${CMAKE_SOURCE_DIR}/tools/dvbridge)
+endif()
