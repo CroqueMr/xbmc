@@ -10,6 +10,7 @@
 
 #include "DRMUtils.h"
 #include "utils/log.h"
+#include "utils/DVBridgeDiagnosticState.h"
 
 #include <cstdint>
 #include <deque>
@@ -46,6 +47,9 @@ private:
   bool DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer,
                        bool strict = false);
   void FinishRequest(bool accepted);
+  void LogDVFailure(const char* stage, int error);
+  DVBRIDGE::DiagnosticFailures m_dvFailures;
+  bool m_dvCommitReported{false};
 
   bool m_need_modeset{true};
   bool m_active = true;

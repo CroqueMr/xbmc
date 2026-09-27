@@ -2,6 +2,7 @@
 #pragma once
 
 #include "cores/VideoPlayer/DVDCodecs/Video/DVMetadataBuffer.h"
+#include "utils/DVBridgeDiagnosticState.h"
 
 extern "C"
 {
@@ -40,6 +41,9 @@ public:
   bool Presented(bool success);
 
 private:
+  bool Fail(const char* stage);
+  DVBRIDGE::DiagnosticFailures m_failures;
+  bool m_reportedFrame{false};
   // All methods, including destruction, require the owning GL context/thread.
   pl_opengl m_gl = nullptr;
   dvbridge_renderer* m_renderer = nullptr;

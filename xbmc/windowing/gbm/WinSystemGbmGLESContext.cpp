@@ -496,9 +496,15 @@ bool NativeDVEligible(bool source, bool software, bool interlaced, bool stereo)
 
 bool DVBRIDGE::WantsNativeOutput(const CDVDStreamInfo& stream)
 {
-  return NativeDVEligible(stream.dovi.dv_profile != 0,
-                          (stream.codecOptions & CODEC_FORCE_SOFTWARE) != 0,
-                          stream.interlaced, !stream.stereo_mode.empty());
+  const bool software = (stream.codecOptions & CODEC_FORCE_SOFTWARE) != 0;
+  const bool eligible = NativeDVEligible(stream.dovi.dv_profile != 0,
+                                        software, stream.interlaced, !stream.stereo_mode.empty());
+  CLog::Log(LOGDEBUG,
+            "DVBridge: stream selection codec={} profile={} level={} software={} interlaced={} "
+            "stereo={} selected={}; selection is provisional until kernel atomic validation",
+            static_cast<int>(stream.codec), stream.dovi.dv_profile, stream.dovi.dv_level,
+            software, stream.interlaced, !stream.stereo_mode.empty(), eligible);
+  return eligible;
 }
 
 bool DVBRIDGE::WantsNativeOutput(const VideoPicture* picture)
@@ -540,6 +546,8 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
 
 bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
 {
+  CLog::Log(LOGDEBUG, "DVBridge: output transition picture={} dv_requested={} state_captured={}",
+            picture != nullptr, DVBridgeRequested(picture), m_dvState.Captured());
   // Restore with the current surface before EGL replaces its buffers.
   if (m_dvState.Captured() && !EndDVBridge())
     return false;
@@ -584,6 +592,7 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
   if (m_dvBridge)
     m_dvBridge->Reset();
   SetGuiCompositing(0);
+  CLog::Log(LOGDEBUG, "DVBridge: ordinary display state restored");
   return true;
 }
 

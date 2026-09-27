@@ -29,6 +29,27 @@
 
 using namespace KODI::WINDOWING::GBM;
 
+void CDRMAtomic::LogDVFailure(const char* stage, int error)
+{
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (!m_dvFailures.Record(now))
+    return;
+  CLog::Log(LOGERROR,
+            "DVBridge: output rejected stage={} errno={} ({}) failures={} connector={} "
+            "crtc={} mode={}x{} clock_khz={} gui_plane={} video_plane={}; "
+            "enable Kodi debug logging for requested properties; collect kernel.log for link rejection reason",
+            stage, error, strerror(error), m_dvFailures.Count(),
+            m_connector ? m_connector->GetId() : 0, m_crtc ? m_crtc->GetId() : 0,
+            m_mode ? m_mode->hdisplay : 0, m_mode ? m_mode->vdisplay : 0,
+            m_mode ? m_mode->clock : 0, m_gui_plane ? m_gui_plane->GetId() : 0,
+            m_video_plane ? m_video_plane->GetId() : 0);
+  // Only formats a property snapshot on the bounded failure path, never per frame.
+  // Kodi's existing debug switch controls whether the snapshot is written.
+  if (m_req)
+    m_req->LogAtomicRequest();
+}
+
 bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer, bool strict)
 {
   CDRMCrtc* oldCrtc = m_old_crtc;
@@ -141,14 +162,18 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
     m_req->LogAtomicRequest();
 
   if (strict && m_propertyFailure)
+  {
+    LogDVFailure("property-assembly", EINVAL);
     return reject();
+  }
 
   auto ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags | DRM_MODE_ATOMIC_TEST_ONLY, nullptr);
   if (ret < 0)
   {
     if (strict)
     {
-      CLog::LogF(LOGERROR, "transactional test commit rejected: {}", strerror(errno));
+      const int error = errno;
+      LogDVFailure("atomic-test", error);
       return reject();
     }
     CLog::LogF(LOGERROR,
@@ -168,8 +193,19 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags, nullptr);
   if (ret < 0)
   {
-    CLog::LogF(LOGERROR, "atomic commit failed: {}", strerror(errno));
+    const int error = errno;
+    if (strict)
+      LogDVFailure("atomic-commit", error);
+    else
+      CLog::LogF(LOGERROR, "atomic commit failed: {}", strerror(error));
     return reject();
+  }
+  if (strict && (!m_dvCommitReported || m_dvFailures.Count()))
+  {
+    CLog::Log(LOGDEBUG, "DVBridge: atomic output accepted connector={} previous_failures={}",
+              m_connector ? m_connector->GetId() : 0, m_dvFailures.Count());
+    m_dvCommitReported = true;
+    m_dvFailures.Reset();
   }
   FinishRequest(true);
   return true;
@@ -207,12 +243,15 @@ bool CDRMAtomic::FlipPageTransactional(struct gbm_bo* bo)
 {
   if (!bo)
   {
+    LogDVFailure("buffer-lock-or-staging", EINVAL);
     FinishRequest(false);
     return false;
   }
   const uint32_t fb = DrmOpaqueFbGetFromBo(bo);
   if (!fb)
   {
+    const int error = errno;
+    LogDVFailure("framebuffer-import", error ? error : EINVAL);
     FinishRequest(false);
     return false;
   }

@@ -81,6 +81,11 @@ bool CDVBridgeState::Capture(CDRMAtomic& drm)
     return false;
   m_saved = std::move(saved);
   m_owner = &drm;
+  for (const auto& property : m_saved)
+    CLog::Log(LOGDEBUG, "DVBridge: capture object={} property={} original={} transport={}",
+              property.object->GetId(), property.name, property.original, property.transport);
+  CLog::Log(LOGDEBUG, "DVBridge: output state captured connector={} crtc={} plane={} properties={}",
+            connector->GetId(), crtc->GetId(), plane->GetId(), m_saved.size());
   return true;
 }
 
