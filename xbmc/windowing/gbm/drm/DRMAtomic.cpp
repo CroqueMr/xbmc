@@ -7,6 +7,10 @@
  */
 
 #include "DRMAtomic.h"
+#include "DVBridgeKernelLogReader.h"
+#include "jobs/JobManager.h"
+#include <cstdlib>
+#include <cstring>
 
 #include "ServiceBroker.h"
 #include "application/ApplicationComponents.h"
@@ -38,7 +42,7 @@ void CDRMAtomic::LogDVFailure(const char* stage, int error)
   CLog::Log(LOGERROR,
             "DVBridge: output rejected stage={} errno={} ({}) failures={} connector={} "
             "crtc={} mode={}x{} clock_khz={} gui_plane={} video_plane={}; "
-            "enable Kodi debug logging for requested properties; collect kernel.log for link rejection reason",
+            "enable Kodi debug logging for requested properties; kernel DV diagnostics follow asynchronously",
             stage, error, strerror(error), m_dvFailures.Count(),
             m_connector ? m_connector->GetId() : 0, m_crtc ? m_crtc->GetId() : 0,
             m_mode ? m_mode->hdisplay : 0, m_mode ? m_mode->vdisplay : 0,
@@ -48,6 +52,17 @@ void CDRMAtomic::LogDVFailure(const char* stage, int error)
   // Kodi's existing debug switch controls whether the snapshot is written.
   if (m_req)
     m_req->LogAtomicRequest();
+  // No IO on the render thread. This hook is reached at most once per five
+  // seconds for persistent failures; ordinary playback never polls the kernel.
+  const char* enabled = std::getenv("DVBRIDGE_KERNEL_LOG");
+  if (!enabled || std::strcmp(enabled, "0") != 0)
+  {
+    if (auto jobs = CServiceBroker::GetJobManager())
+      jobs->Submit([] {
+        static DVBRIDGE::KernelLogReader reader;
+        reader.Collect();
+      });
+  }
 }
 
 bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer, bool strict)
