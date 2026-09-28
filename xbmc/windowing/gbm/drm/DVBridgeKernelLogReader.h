@@ -25,7 +25,9 @@ public:
       close(m_fd);
   }
 
-  void Collect()
+  // True means the independent cursor still has work; callers may run a small
+  // bounded continuation after yielding. Never blocks the render thread.
+  bool Collect()
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_fd < 0)
@@ -34,18 +36,31 @@ public:
       if (m_fd < 0)
       {
         if (!m_warned)
-          CLog::Log(LOGWARNING, "DVBridge kernel: cannot read /dev/kmsg errno={}; use dv-diagnostics collect", errno);
+          CLog::Log(LOGWARNING, "DVBridge kernel: cannot read /dev/kmsg errno={}; kernel reason unavailable", errno);
         m_warned = true;
-        return;
+        return false;
       }
     }
     timespec now{};
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
-      return;
+    {
+      if (!m_warned)
+        CLog::Log(LOGWARNING, "DVBridge kernel: monotonic clock unavailable; evidence incomplete");
+      m_warned = true;
+      return false;
+    }
     const uint64_t nowUs = uint64_t(now.tv_sec) * 1000000 + now.tv_nsec / 1000;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
     std::array<char, 16384> buffer{};
-    unsigned int copied = 0, suppressed = 0;
+    // The output budget spans continuation batches, not just one read call.
+    if (!m_window || nowUs - m_window >= 30000000)
+    {
+      m_window = nowUs;
+      m_copied = 0;
+      m_notices = 0;
+    }
+    unsigned int suppressed = 0, overruns = 0;
+    bool incomplete = true;
     for (unsigned int records = 0; records < 4096; ++records)
     {
       if (std::chrono::steady_clock::now() >= deadline)
@@ -53,30 +68,33 @@ public:
       const auto count = read(m_fd, buffer.data(), buffer.size());
       if (count < 0)
       {
-        if (errno == EPIPE || errno == EINTR)
-          continue; // Ring overrun advances this reader to the next available record.
+        if (errno == EPIPE) { ++overruns; continue; }
+        if (errno == EINTR) continue;
         if (errno != EAGAIN && !m_warned)
         {
-          CLog::Log(LOGWARNING, "DVBridge kernel: read failed errno={}; use dv-diagnostics collect", errno);
+          CLog::Log(LOGWARNING, "DVBridge kernel: read failed errno={}; kernel reason unavailable", errno);
           m_warned = true;
         }
+        incomplete = false;
         break;
       }
-      if (!count)
-        break;
+      if (!count) { incomplete = false; break; }
       const auto message = m_filter.Accept({buffer.data(), static_cast<size_t>(count)}, nowUs);
       if (!message)
         continue;
-      if (copied < 16)
+      if (m_copied < 8)
       {
         CLog::Log(LOGERROR, "DVBridge kernel: {}", *message);
-        ++copied;
+        ++m_copied;
       }
       else
         ++suppressed;
     }
-    if (suppressed)
-      CLog::Log(LOGWARNING, "DVBridge kernel: {} additional records suppressed; full kernel log available via dv-diagnostics collect", suppressed);
+    if ((suppressed || overruns || incomplete) && m_notices++ < 2)
+      CLog::Log(LOGWARNING,
+          "DVBridge kernel: evidence incomplete={} ring_overruns={} suppressed={} (bounded collection)",
+          incomplete, overruns, suppressed);
+    return incomplete;
   }
 
 private:
@@ -84,5 +102,7 @@ private:
   KernelLogFilter m_filter;
   int m_fd{-1};
   bool m_warned{false};
+  uint64_t m_window{0};
+  unsigned m_copied{0}, m_notices{0};
 };
 }
