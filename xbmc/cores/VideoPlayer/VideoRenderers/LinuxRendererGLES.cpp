@@ -30,6 +30,7 @@
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 #ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
 #endif
 
@@ -231,7 +232,9 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
     auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
         CServiceBroker::GetWinSystem());
     m_passthroughHDR = false;
-    m_hdrFboActive = window && window->BeginDVBridge();
+    m_hdrFboActive = window &&
+        (DVBRIDGE::playbackMode.load() == DVBRIDGE::OutputMode::HDR10 ?
+         window->ConfigureHDR10Conversion(picture) : window->BeginDVBridge());
     if (!m_hdrFboActive)
     {
       m_bConfigured = false;

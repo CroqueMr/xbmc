@@ -29,7 +29,7 @@ public:
   CDVBridgeGLES(const CDVBridgeGLES&) = delete;
   CDVBridgeGLES& operator=(const CDVBridgeGLES&) = delete;
 
-  bool Initialize(bool allowSoftware = false);
+  bool Initialize(bool allowSoftware = false, bool hdr10 = false);
   void Reset();
   bool Prepare(const Layer& base, const Layer* enhancement,
                const CDVMetadataBuffer& metadata, dvbridge_geometry geometry, bool allowPacked = false);
@@ -38,6 +38,7 @@ public:
   unsigned int GetPQTexture() const;
   unsigned int GetPQFramebuffer();
   bool Pack(unsigned int framebuffer, int width, int height, bool flipY);
+  bool ResolveHDR10(bool limited);
   bool Presented(bool success);
 
 private:
@@ -47,6 +48,8 @@ private:
   uint64_t m_prepares{0}, m_directFrames{0}, m_presentations{0}, m_failedPresentations{0};
   uint64_t m_lastSummary{0}, m_lastReported{0};
   bool m_firstFrame{true};
+  bool m_hdr10{false};
+  unsigned m_outputBits{8};
   // All methods, including destruction, require the owning GL context/thread.
   pl_opengl m_gl = nullptr;
   pl_log m_log = nullptr;

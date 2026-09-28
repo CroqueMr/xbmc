@@ -20,6 +20,9 @@
 #include "utils/BitstreamStats.h"
 
 #include <atomic>
+#ifdef HAVE_DVBRIDGE
+#include "utils/DVRenderUsage.h"
+#endif
 
 #define DROP_DROPPED 1
 #define DROP_VERYLATE 2
@@ -124,6 +127,12 @@ protected:
   bool m_bRenderSubs;
   float m_fForcedAspectRatio;
   int m_speed;
+#ifdef HAVE_DVBRIDGE
+  DVBRIDGE::RenderUsage m_diagnosticRender;
+  uint64_t m_diagnosticTime{0}, m_diagnosticPictures{0};
+  int m_diagnosticDropped{0}, m_diagnosticSkipped{0};
+  unsigned m_diagnosticTransitions{0};
+#endif
   std::atomic_bool m_stalled = false;
   std::atomic_bool m_rewindStalled;
   bool m_paused;

@@ -25700,3 +25700,48 @@ msgstr ""
 msgctxt "#40804"
 msgid "{0:.1f} dB"
 msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40810"
+msgid "Dolby Vision"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40811"
+msgid "Dolby Vision output"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40812"
+msgid "Standard Dolby Vision (TV-Led)"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40813"
+msgid "Convert Dolby Vision to HDR10 output"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40814"
+msgid "Disable Dolby Vision support"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40815"
+msgid "Select Dolby Vision output, HDR10 conversion, or standard Kodi playback. Applies to the next video."
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40816"
+msgid "Enhanced player information"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40817"
+msgid "Show video, audio, metadata and GPU render usage when pressing O. Disable to restore Kodi's original panel."
+msgstr ""
+
+#: addons/skin.estuary/xml/IncludesDVProcessInfo.xml
+msgctxt "#40818"
+msgid "Player information"
+msgstr ""

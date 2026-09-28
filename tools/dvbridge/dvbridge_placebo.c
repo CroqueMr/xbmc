@@ -3,6 +3,46 @@
 #include "dvbridge_placebo.h"
 #include "dvbridge_metadata.h"
 #include <libplacebo/utils/libav.h>
+#include <math.h>
+
+bool dvbridge_hdr10_target(struct pl_color_space *out, const void *metadata, size_t bytes)
+{
+    if (!out || !metadata || (uintptr_t)metadata % _Alignof(AVDOVIMetadata) ||
+        !dvbridge_dv_bounds(metadata, bytes))
+        return false;
+    const AVDOVIColorMetadata *color = av_dovi_get_color(metadata);
+    const AVDOVIDmData *l6 = av_dovi_find_level(metadata, 6);
+    float peak = l6 && l6->l6.max_luminance > 0 && l6->l6.max_luminance <= 10000
+        ? l6->l6.max_luminance : 0;
+    if (!peak && color->source_max_pq > 0 && color->source_max_pq <= 4095)
+        peak = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, color->source_max_pq / 4095.0f);
+    if (!isfinite(peak) || peak < 1 || peak > 10000)
+        return false;
+    *out = (struct pl_color_space){
+        .primaries = PL_COLOR_PRIM_BT_2020, .transfer = PL_COLOR_TRC_PQ,
+        .hdr = {.min_luma = PL_COLOR_HDR_BLACK, .max_luma = peak},
+    };
+    return true;
+}
+
+bool dvbridge_get_hdr10_metadata(struct dvbridge_hdr10_metadata *out,
+                                const void *metadata, size_t bytes)
+{
+    if (!out || !metadata || (uintptr_t)metadata % _Alignof(AVDOVIMetadata) ||
+        !dvbridge_dv_bounds(metadata, bytes))
+        return false;
+    *out = (struct dvbridge_hdr10_metadata){0};
+    struct pl_color_space target;
+    if (!dvbridge_hdr10_target(&target, metadata, bytes))
+        return false;
+    out->max_luminance = (unsigned)ceilf(target.hdr.max_luma);
+    const AVDOVIDmData *l6 = av_dovi_find_level(metadata, 6);
+    if (l6 && l6->l6.max_luminance > 0 && l6->l6.max_luminance <= 10000) {
+        out->level6 = true;
+    }
+    /* Source CLL/FALL do not measure the tone-mapped output. Zero means unknown. */
+    return true;
+}
 
 bool dvbridge_map_color(struct dvbridge_color *out, const void *metadata,
                        size_t bytes, bool enhancement_layer_paired)

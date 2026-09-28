@@ -7,16 +7,16 @@
 // This is output telemetry, never a source-format or TV certification flag.
 struct CDVPlaybackInfo
 {
-  enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4 };
+  enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4, HDR10 = 8 };
   inline static std::atomic<unsigned> presented{0};
 
   static std::string Detail(std::string source, unsigned output)
   {
-    if (!(output & HDMI))
+    if (!(output & (HDMI | HDR10)))
       return source;
     if ((output & FEL) && source.find("FEL") == std::string::npos)
       source += " FEL";
     source += (output & CM4) ? " · CM4" : " · CM2.9";
-    return source + " · HDMI DV";
+    return source + ((output & HDR10) ? " · HDR10 output" : " · HDMI DV");
   }
 };

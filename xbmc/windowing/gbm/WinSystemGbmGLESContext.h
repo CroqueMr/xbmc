@@ -14,6 +14,7 @@
 #include "utils/EGLUtils.h"
 
 #include <memory>
+#include <optional>
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/VideoRenderers/DVBridgeGLES.h"
 #include "drm/DVBridgeState.h"
@@ -55,6 +56,8 @@ public:
 #ifdef HAVE_DVBRIDGE
   static bool DVBridgeRequested(const VideoPicture* picture);
   bool BeginDVBridge();
+  bool ConfigureHDR10Conversion(const VideoPicture& picture);
+  bool SupportsHDR10Conversion();
   void SetDVBridgeOverlays(bool visible) { m_dvOverlays = visible; }
   bool RenderDVBridge(const CDVBridgeGLES::Layer& layer, const AVFrame* enhancement,
                        const CDVMetadataBuffer& metadata,
@@ -88,6 +91,8 @@ private:
   CDVBridgeState m_dvState;
   DVBRIDGE::DiagnosticFailures m_dvSetupFailures;
   bool m_dvFrame = false;
+  bool m_hdrConversion = false;
+  std::optional<uint64_t> m_hdrDeepColorPrevious;
   bool m_dvOverlays = true;
 #endif
 };
