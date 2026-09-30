@@ -354,6 +354,9 @@ protected:
   bool m_bStateMachineSelfTrigger;
   std::chrono::milliseconds m_extTimeout;
   bool m_extError;
+  // The last InitSink() failed: the sink must be opened again before the
+  // pipeline is configured against m_sinkFormat.
+  bool m_sinkInitFailed{false};
   bool m_extDrain;
   XbmcThreads::EndTime<> m_extDrainTimer;
   std::chrono::milliseconds m_extKeepConfig;
