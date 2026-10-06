@@ -1174,6 +1174,8 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
   ResetDVActivation(picture);
   const auto capabilities = GetDVOutputCapabilities(picture);
   if (picture && capabilities.isDV && preferences.output != DVBRIDGE::OutputMode::Disabled &&
+      (capabilities.nativeDV || capabilities.hdr10 ||
+       picture->hdrType != StreamHdrType::HDR_TYPE_HDR10) &&
       (!capabilities.processingKnown || (picture->strDVELType == "FEL" && !picture->doviEnhancement)))
     return true; // Configure must reach UploadTexture before source-dependent activation.
   m_dvSelection = SelectedDVOutput(picture);
@@ -1261,6 +1263,8 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
       m_dvContext && !m_dvContext->StopHDR10AI()) return false;
 #endif
   if (capabilities.isDV && preferences.output != DVBRIDGE::OutputMode::Disabled &&
+      (capabilities.nativeDV || capabilities.hdr10 ||
+       picture.hdrType != StreamHdrType::HDR_TYPE_HDR10) &&
       (!capabilities.processingKnown || (picture.strDVELType == "FEL" && !picture.doviEnhancement)))
     return false;
   auto selectionCapabilities = capabilities;
