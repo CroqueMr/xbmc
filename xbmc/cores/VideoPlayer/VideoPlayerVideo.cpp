@@ -7,6 +7,14 @@
  */
 
 #include "VideoPlayerVideo.h"
+#ifdef HAVE_DVBRIDGE
+#include "DVDCodecs/Video/DVStreamTelemetry.h"
+#include "DVDCodecs/Video/DVPlaybackInfo.h"
+#include "DVDCodecs/Video/DVPlaybackNotification.h"
+#include "utils/DVBridgeDiagnosticState.h"
+#include "utils/StringUtils.h"
+#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#endif
 
 #include "DVDCodecs/DVDCodecUtils.h"
 #include "DVDCodecs/DVDFactoryCodec.h"
@@ -167,6 +175,15 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
 
 void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec)
 {
+#ifdef HAVE_DVBRIDGE
+  m_playbackGeneration=DVBRIDGE::PlaybackNotification::Generation();
+#endif
+#ifdef HAVE_DVBRIDGE
+  m_diagnosticRender.Reset();
+  m_diagnosticTime = m_diagnosticPictures = 0;
+  m_diagnosticDropped = m_diagnosticSkipped = 0;
+  m_diagnosticTransitions = 0;
+#endif
   CLog::Log(LOGDEBUG, "CVideoPlayerVideo::OpenStream - open stream with codec: {}",
             avcodec_get_name(hint.codec));
 
@@ -311,6 +328,22 @@ inline MsgQueueReturnCode CVideoPlayerVideo::GetMessage(std::shared_ptr<CDVDMsg>
   return ret;
 }
 
+#ifdef CB1_HAS_HDR10_AI
+void CVideoPlayerVideo::TryStartHDR10AI()
+{
+  if (m_syncState != IDVDStreamPlayer::SYNC_STARTING) return;
+  double pts;
+  if (!m_renderManager.GetHDR10AIStartTime(pts)) return;
+  m_syncState = IDVDStreamPlayer::SYNC_WAITSYNC;
+  SStartMsg msg;
+  msg.player = VideoPlayer_VIDEO;
+  msg.cachetime = DVD_MSEC_TO_TIME(50);
+  msg.cachetotal = DVD_MSEC_TO_TIME(100);
+  msg.timestamp = pts + m_renderManager.GetDelay() * 1000;
+  m_messageParent.Put(std::make_shared<CDVDMsgType<SStartMsg>>(CDVDMsg::PLAYER_STARTED,msg));
+}
+#endif
+
 void CVideoPlayerVideo::Process()
 {
   CLog::Log(LOGINFO, "running thread: video_thread");
@@ -330,6 +363,9 @@ void CVideoPlayerVideo::Process()
 
   while (!m_bStop)
   {
+#ifdef CB1_HAS_HDR10_AI
+    TryStartHDR10AI();
+#endif
     auto timeout = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::duration<double, std::micro>(m_stalled ? frametime : frametime * 10));
     int iPriority = 0;
@@ -350,6 +386,15 @@ void CVideoPlayerVideo::Process()
     MsgQueueReturnCode ret = GetMessage(pMsg, timeout, iPriority);
 
     onlyPrioMsgs = false;
+
+#ifdef HAVE_DVBRIDGE
+    if (pMsg && (pMsg->IsType(CDVDMsg::GENERAL_RESYNC) ||
+                 pMsg->IsType(CDVDMsg::GENERAL_RESET) ||
+                 pMsg->IsType(CDVDMsg::GENERAL_FLUSH) ||
+                 pMsg->IsType(CDVDMsg::GENERAL_PAUSE) ||
+                 pMsg->IsType(CDVDMsg::PLAYER_SETSPEED)))
+      ++m_diagnosticTransitions;
+#endif
 
     if (MSGQ_IS_ERROR(ret))
     {
@@ -372,6 +417,9 @@ void CVideoPlayerVideo::Process()
       }
       // don't ask for a new frame if we can't deliver it to renderer
       else if ((m_speed != DVD_PLAYSPEED_PAUSE ||
+#ifdef CB1_HAS_HDR10_AI
+                m_renderManager.HDR10AIPriming() ||
+#endif
                 m_processInfo.IsFrameAdvance() ||
                 m_syncState != IDVDStreamPlayer::SYNC_INSYNC) && !m_paused)
       {
@@ -672,6 +720,14 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
   if (decoderState == CDVDVideoCodec::VC_EOF)
   {
+#ifdef CB1_HAS_HDR10_AI
+    if (m_renderManager.HDR10AILookahead() && m_picture.videoBuffer)
+    {
+      m_renderManager.EndHDR10AIQueue();
+      TryStartHDR10AI();
+      return false;
+    }
+#endif
     if (m_syncState == IDVDStreamPlayer::SYNC_STARTING)
     {
       SStartMsg msg;
@@ -775,6 +831,9 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     }
 
     if (m_syncState == IDVDStreamPlayer::SYNC_STARTING &&
+#ifdef CB1_HAS_HDR10_AI
+        !m_renderManager.HDR10AILookahead() &&
+#endif
         m_outputSate != OUTPUT_DROPPED &&
         !(m_picture.iFlags & DVP_FLAG_DROPPED))
     {
@@ -858,8 +917,63 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
   }
 }
 
+#ifdef HAVE_DVBRIDGE
+bool CVideoPlayerVideo::HandleDVPlaybackFailure(const VideoPicture* picture)
+{
+  auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      CServiceBroker::GetWinSystem());
+  if (!window || DVBRIDGE::FrameOutputSettings().output == DVBRIDGE::OutputMode::Disabled)
+    return false;
+  const auto reason = window->ConsumeDVPlaybackFailure(picture->doviSourceBinding);
+  if (reason == DVBRIDGE::OutputReason::None) return false;
+  CLog::Log(LOGERROR, "Dolby Vision playback unavailable: stream={} source_revision={} profile={} reason={}",
+      picture->doviSourceBinding.stream, picture->doviSourceBinding.revision,
+      picture->doviSourceInfo.profile, static_cast<int>(reason));
+  m_messageParent.Put(std::make_shared<CDVDMsgBool>(CDVDMsg::PLAYER_ABORT, true));
+  return true;
+}
+#endif
+
 CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPicture* pPicture)
 {
+#ifdef HAVE_DVBRIDGE
+  if (pPicture->videoBuffer && m_playbackGeneration && DVBRIDGE::PlaybackNotification::Pending())
+    pPicture->videoBuffer->SetPlaybackGeneration(m_playbackGeneration);
+#endif
+#ifdef HAVE_DVBRIDGE
+  if (HandleDVPlaybackFailure(pPicture)) return OUTPUT_ABORT;
+  DVBRIDGE::StreamTelemetry::SourceBits(pPicture->colorBits, pPicture->pixelFormat);
+  if (DVBRIDGE::DiagnosticsEnabled() && CDVPlaybackInfo::presented.load())
+  {
+    ++m_diagnosticPictures;
+    const auto now = DVBRIDGE::DiagnosticNowMs();
+    if (!m_diagnosticTime || now - m_diagnosticTime >= 10000)
+    {
+      const auto gpu = m_diagnosticRender.Sample(60000000000ULL);
+      const auto elapsed = m_diagnosticTime ? now - m_diagnosticTime : 0;
+      const int skipped = m_renderManager.GetSkippedFrames();
+      const bool reset = m_iDroppedFrames < m_diagnosticDropped || skipped < m_diagnosticSkipped;
+      // Native counters are aggregated, not a decoder-versus-renderer attribution.
+      CLog::Log(LOGINFO, "DVBridge playback health: interval_ms={} output_attempts={} source_fps={:.3f} speed={} stalled={} pts_s={:.3f} drop_total={} skip_total={} drop_delta={} skip_delta={} counters_reset={} video_queue_pct={} video_queue_s={:.3f} bitrate_mbps={:.2f} render_avg_pct={} transitions={} pts_valid={} (speed 1000=normal; attempts are not display flips)",
+          elapsed, m_diagnosticPictures, m_fFrameRate, m_speed, m_stalled.load(),
+          pPicture->pts == DVD_NOPTS_VALUE ? 0.0 : pPicture->pts / DVD_TIME_BASE,
+          m_iDroppedFrames, skipped,
+          reset ? 0 : m_iDroppedFrames - m_diagnosticDropped,
+          reset ? 0 : skipped - m_diagnosticSkipped, reset,
+          m_processInfo.GetLevelVQ(), m_messageQueue.GetTimeSize(),
+          GetVideoBitrate() / 1000000.0, gpu ? StringUtils::Format("{:.1f}", *gpu) : "unavailable",
+          m_diagnosticTransitions,
+          pPicture->pts != DVD_NOPTS_VALUE);
+      m_diagnosticTime = now;
+      m_diagnosticPictures = 0;
+      m_diagnosticDropped = m_iDroppedFrames;
+      m_diagnosticSkipped = skipped;
+      m_diagnosticTransitions = 0;
+    }
+  }
+  if (DVBRIDGE::StreamTelemetry::observing.load(std::memory_order_relaxed))
+    DVBRIDGE::StreamTelemetry::Counters(m_iDroppedFrames, m_renderManager.GetSkippedFrames());
+#endif
   m_bAbortOutput = false;
 
   if (m_processInfo.GetVideoStereoMode() != pPicture->stereoMode)

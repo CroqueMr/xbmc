@@ -9,6 +9,7 @@
 #pragma once
 
 #include "DVDResource.h"
+#include "DVMetadataBuffer.h"
 #include "cores/VideoPlayer/Buffers/VideoBuffer.h"
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "cores/VideoPlayer/Process/ProcessInfo.h"
@@ -68,6 +69,14 @@ public:
   StreamHdrType hdrType;
   StreamHdrType hdrTypeAlt;
   std::string strDVELType;
+  CDVMetadataBuffer doviMetadata;
+  DVBRIDGE::SourceInfo doviSourceInfo{};
+  DVBRIDGE::SourceBinding doviSourceBinding{};
+  int64_t doviSourcePts = AV_NOPTS_VALUE;
+#ifdef HAVE_DVBRIDGE
+  std::shared_ptr<AVFrame> doviEnhancement;
+  DVBRIDGE::SourceBinding doviEnhancementBinding{};
+#endif
 
   bool hasDisplayMetadata = false;
   AVMasteringDisplayMetadata displayMetadata;
@@ -272,4 +281,8 @@ public:
   virtual ~ICallbackHWAccel() = default;
   virtual IHardwareDecoder* GetHWAccel() = 0;
   virtual bool GetPictureCommon(VideoPicture* pVideoPicture) = 0;
+#ifdef CB1_HAS_HDR10_AI
+  virtual unsigned GetHDR10AIBufferCount() const { return 6; }
+  virtual void PrepareHDR10AIReopen() {}
+#endif
 };
