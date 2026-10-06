@@ -1273,4 +1273,85 @@
 			</control>
 		</control>
 	</include>
+  <include name="CB1PlaybackModeLayout">
+    <control type="group">
+      <left>180</left><bottom>24</bottom><width>1560</width><height>330</height>
+      <control type="image">
+        <left>-20</left><top>-20</top><width>1600</width><height>370</height>
+        <texture colordiffuse="dialog_tint">colors/white.png</texture>
+      </control>
+      <control type="label" id="1">
+        <left>20</left><top>8</top><width>1520</width><height>42</height><font>font14</font>
+      </control>
+      <control type="label" id="2"><visible>false</visible></control>
+      <control type="panel" id="3">
+        <left>20</left><top>64</top><width>1520</width><height>252</height>
+        <orientation>vertical</orientation><scrolltime>150</scrolltime>
+        <onleft>3</onleft><onright>3</onright><onup>3</onup><ondown>3</ondown>
+        <itemlayout width="760" height="84">
+          <control type="label">
+            <left>12</left><top>8</top><width>728</width><height>34</height>
+            <font>font12</font><label>$INFO[ListItem.Label]</label>
+            <textcolor>$VAR[CB1PlaybackModeTextColor]</textcolor><wrapmultiline>false</wrapmultiline><scroll>true</scroll>
+          </control>
+          <control type="textbox">
+            <left>12</left><top>44</top><width>728</width><height>28</height>
+            <font>font10</font><label>$INFO[ListItem.Label2]</label>
+            <textcolor>grey</textcolor><autoscroll>false</autoscroll>
+          </control>
+        </itemlayout>
+        <focusedlayout width="760" height="84">
+          <control type="image">
+            <left>0</left><top>0</top><width>752</width><height>76</height>
+            <texture colordiffuse="button_focus">lists/focus.png</texture>
+            <visible>!ListItem.Property(disabled)</visible>
+          </control>
+          <control type="label">
+            <left>12</left><top>8</top><width>728</width><height>34</height>
+            <font>font12</font><label>$INFO[ListItem.Label]</label>
+            <textcolor>$VAR[CB1PlaybackModeTextColor]</textcolor><wrapmultiline>false</wrapmultiline><scroll>true</scroll>
+          </control>
+          <control type="textbox">
+            <left>12</left><top>44</top><width>728</width><height>28</height>
+            <font>font10</font><label>$INFO[ListItem.Label2]</label>
+            <textcolor>grey</textcolor><autoscroll>false</autoscroll>
+          </control>
+        </focusedlayout>
+      </control>
+      <control type="panel" id="6">
+        <left>20</left><top>64</top><width>1520</width><height>252</height>
+        <orientation>vertical</orientation><scrolltime>150</scrolltime>
+        <onleft>6</onleft><onright>6</onright><onup>6</onup><ondown>6</ondown>
+        <itemlayout width="760" height="84">
+          <control type="label">
+            <left>12</left><top>8</top><width>728</width><height>34</height>
+            <font>font12</font><label>$INFO[ListItem.Label]</label>
+            <textcolor>$VAR[CB1PlaybackModeTextColor]</textcolor><wrapmultiline>false</wrapmultiline><scroll>true</scroll>
+          </control>
+          <control type="textbox">
+            <left>12</left><top>44</top><width>728</width><height>28</height>
+            <font>font10</font><label>$INFO[ListItem.Label2]</label>
+            <textcolor>grey</textcolor><autoscroll>false</autoscroll>
+          </control>
+        </itemlayout>
+        <focusedlayout width="760" height="84">
+          <control type="image">
+            <left>0</left><top>0</top><width>752</width><height>76</height>
+            <texture colordiffuse="button_focus">lists/focus.png</texture>
+            <visible>!ListItem.Property(disabled)</visible>
+          </control>
+          <control type="label">
+            <left>12</left><top>8</top><width>728</width><height>34</height>
+            <font>font12</font><label>$INFO[ListItem.Label]</label>
+            <textcolor>$VAR[CB1PlaybackModeTextColor]</textcolor><wrapmultiline>false</wrapmultiline><scroll>true</scroll>
+          </control>
+          <control type="textbox">
+            <left>12</left><top>44</top><width>728</width><height>28</height>
+            <font>font10</font><label>$INFO[ListItem.Label2]</label>
+            <textcolor>grey</textcolor><autoscroll>false</autoscroll>
+          </control>
+        </focusedlayout>
+      </control>
+    </control>
+  </include>
 </includes>
