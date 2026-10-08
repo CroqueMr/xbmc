@@ -3,18 +3,23 @@
 
 #include "utils/DVBridgeKernelLog.h"
 #include "utils/log.h"
+#include "ServiceBroker.h"
+#include "jobs/JobManager.h"
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <mutex>
+#include <thread>
 #include <fcntl.h>
 #include <time.h>
 #include <unistd.h>
 
 namespace DVBRIDGE
 {
-// Used only by a Kodi background job after a rate-limited DV output failure.
+// Used only by a Kodi background job after a rate-limited DV output failure
+// or selected-route change/initialization.
 // Read-only, nonblocking and bounded. No external process, new service or GPU work.
 class KernelLogReader
 {
@@ -84,7 +89,9 @@ public:
         continue;
       if (m_copied < 8)
       {
-        CLog::Log(LOGERROR, "DVBridge kernel: {}", *message);
+        const auto level = message->find(" route_evidence=kernel-unscoped ") != std::string::npos
+                               ? LOGINFO : LOGERROR;
+        CLog::Log(level, "DVBridge kernel: {}", *message);
         ++m_copied;
       }
       else
@@ -105,4 +112,20 @@ private:
   uint64_t m_window{0};
   unsigned m_copied{0}, m_notices{0};
 };
+
+// One cursor/job/output budget shared by route initialization and failures.
+// Keep all kmsg IO off Kodi's render thread, with the existing batch limits.
+inline void CollectKernelLog()
+{
+  static std::atomic<bool> pending{false};
+  auto jobs = CServiceBroker::GetJobManager();
+  if (!jobs || pending.exchange(true))
+    return;
+  jobs->Submit([] {
+    static KernelLogReader reader;
+    for (unsigned pass = 0; pass < 3 && reader.Collect(); ++pass)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    pending.store(false);
+  });
+}
 }
