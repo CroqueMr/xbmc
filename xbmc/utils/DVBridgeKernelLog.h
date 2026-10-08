@@ -32,14 +32,23 @@ public:
     }
     m_seen = true;
     m_sequence = sequence;
-    if (timestamp > nowUs || nowUs - timestamp > 60000000)
-      return {};
     auto message = record.substr(separator + 1);
     message = message.substr(0, message.find('\n'));
     // i915/xe faults can explain a failed flip without a DV-specific rejection.
     // Restrict these additional records to warning-or-worse display incidents.
     const bool intel = message.find("i915 ") != message.npos ||
                        message.find("xe ") != message.npos;
+    // Preserve boot-time bridge evidence even when Kodi starts much later.
+    // It is raw kernel evidence, NOT attribution to the selected connector or
+    // proof of an exact converter model. No generic DRM/EDID dump is allowed.
+    const bool route = intel && message.find("[drm") != message.npos &&
+        (message.find("LSPCON") != message.npos ||
+         message.find("lspcon") != message.npos ||
+         message.find("PCON") != message.npos ||
+         message.find("DP-to-HDMI") != message.npos ||
+         message.find("DP-HDMI") != message.npos);
+    if (timestamp > nowUs || (!route && nowUs - timestamp > 60000000))
+      return {};
     const bool incident = priority <= 4 && intel &&
         (message.find("GPU HANG") != message.npos ||
          message.find("Resetting") != message.npos ||
@@ -49,7 +58,7 @@ public:
          message.find("vblank wait timed out") != message.npos ||
          message.find("link training failed") != message.npos ||
          message.find("link-status BAD") != message.npos);
-    if (message.find("DVBridge:") == message.npos && !incident)
+    if (message.find("DVBridge:") == message.npos && !incident && !route)
       return {};
     // Kernel escapes untrusted characters. Bound the copied record as well.
     const std::string text(message.substr(0, 2048));
@@ -62,7 +71,8 @@ public:
     if (m_recent.size() > 16)
       m_recent.pop_front();
     auto result="boot_us=" + std::to_string(timestamp) + " seq=" + std::to_string(sequence) +
-           (m_pendingLost ? " lost="+std::to_string(m_pendingLost) : "")+" " + text+
+           (m_pendingLost ? " lost="+std::to_string(m_pendingLost) : "")+
+           (route ? " route_evidence=kernel-unscoped " : " ") + text+
            (truncated ? " [truncated]" : "");
     m_pendingLost=0;
     return result;

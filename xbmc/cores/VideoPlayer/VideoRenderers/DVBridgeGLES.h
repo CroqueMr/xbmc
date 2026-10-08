@@ -3,6 +3,7 @@
 
 #include "cores/VideoPlayer/DVDCodecs/Video/DVMetadataBuffer.h"
 #include "utils/DVBridgeDiagnosticState.h"
+#include "utils/Geometry.h"
 #include <optional>
 #include <span>
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
@@ -33,9 +34,10 @@ public:
     bool Initialize(bool allowSoftware);
     dvbridge_renderer* Attach();
     void Detach(dvbridge_renderer* renderer);
-    dvbridge_dv_policy_status Poll();
+    dvbridge_dv_policy_status Poll(bool allowAhead = false);
     bool Close();
     bool Quarantined() const;
+    bool AsyncPreparation(uint64_t stream);
     pl_opengl GL() const;
     pl_log Log() const;
     void Retain(std::shared_ptr<void> base, std::shared_ptr<void> enhancement = {});
@@ -88,29 +90,35 @@ public:
   const std::optional<cb1_ai_result>& CommittedHDR10AI() const;
   FrameStatus PrepareHDR10AIFrame(const Layer& base, dvbridge_geometry geometry,
       const DVBRIDGE::OutputPreferences& preferences, const cb1_ai_result& prediction,
-      dvbridge_policy policy);
+      dvbridge_policy policy, bool allowAsync = false);
 #endif
   FrameStatus PrepareFrame(const Layer& base, const Layer* enhancement,
                            const CDVMetadataBuffer& metadata, dvbridge_geometry geometry,
                            const DVBRIDGE::OutputPreferences& preferences, bool allowPacked,
-                           const dvbridge_policy* selected = nullptr);
+                           const dvbridge_policy* selected = nullptr, bool allowAsync = false);
   FrameStatus PrepareHardwareFrame(const Layer& base, std::shared_ptr<AVFrame> enhancement,
       DVBRIDGE::SourceBinding enhancementBinding, const CDVMetadataBuffer& metadata,
       dvbridge_geometry geometry, const DVBRIDGE::OutputPreferences& preferences, bool allowPacked,
-      const dvbridge_policy* selected = nullptr);
+      const dvbridge_policy* selected = nullptr, bool allowAsync = false);
   struct Submission
   {
     dvbridge_identity identity{};
     pl_tex target{};
     uint64_t resolveSerial{}, sequence{};
+    bool asyncEligible{};
   };
   Submission CaptureSubmission() const { return m_submission; }
+  bool AsyncPreparationActive() const { return m_live && m_hasCommitted && m_asyncEligible; }
   bool Presented(bool success, const Submission& submission);
   bool PollReady();
   void Cancel();
   const dvbridge_hdr10_policy_output* HDR10Output() const;
   bool Fallback() const { return m_fallback; }
   bool Advanced() const { return m_advanced; }
+  bool SetNativeOverlay(unsigned texture, unsigned degamma, unsigned pq,
+                        const CRect& bounds, uint64_t content, bool inputPQ);
+  bool NativeOverlayComposed() const { return m_direct && m_nativeOverlayEnabled; }
+  bool NativeOverlayPrimed() const { return m_nativeOverlayPrimed; }
   bool SupportsMode(dvbridge_mode mode) const { return dvbridge_renderer_supports_mode(m_renderer, mode); }
   bool SupportsHDR10AI(dvbridge_mode mode) const { return dvbridge_renderer_supports_hdr10_ai(m_renderer, mode); }
   bool HasRenderer() const { return m_renderer != nullptr; }
@@ -155,6 +163,7 @@ private:
   Submission m_submission{};
   uint64_t m_submissionSequence{};
   bool m_live{}, m_advanced{}, m_dvPolicyActive{}, m_pending{}, m_fallback{};
+  bool m_asyncEligible{};
 #ifdef CB1_HAS_HDR10_AI
   bool m_aiFrame{};
   uint64_t m_aiRenderSubmitNs{};
@@ -192,6 +201,11 @@ private:
   unsigned m_scanoutFramebuffer{};
   bool m_direct = false;
   bool m_directUsable = true;
+  dvbridge_native_overlay m_nativeOverlay{};
+  unsigned m_nativeOverlayTextures[3]{};
+  bool m_nativeOverlayEnabled{}, m_nativeOverlayPrimed{};
+  uint64_t m_nativeOverlayContent{};
+  uint64_t m_nativeOverlayRevision{}, m_pendingOverlayRevision{}, m_committedOverlayRevision{};
   bool m_prepared = false;
   bool m_packed = false;
   unsigned m_pendingInfo = 0;
