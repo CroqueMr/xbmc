@@ -211,10 +211,16 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
     AddProperty(outputPlane, "SRC_Y", 0);
     AddProperty(outputPlane, "SRC_W", m_width << 16);
     AddProperty(outputPlane, "SRC_H", m_height << 16);
+    // Frame packing scans out (vdisplay + vtotal) lines - the kernel doubles the
+    // CRTC timing - and the framebuffer is sized to match, so cover all of it.
+    uint32_t crtcHeight = m_mode->vdisplay;
+    if ((m_mode->flags & DRM_MODE_FLAG_3D_MASK) == DRM_MODE_FLAG_3D_FRAME_PACKING)
+      crtcHeight += m_mode->vtotal;
+
     AddProperty(outputPlane, "CRTC_X", 0);
     AddProperty(outputPlane, "CRTC_Y", 0);
     AddProperty(outputPlane, "CRTC_W", m_mode->hdisplay);
-    AddProperty(outputPlane, "CRTC_H", m_mode->vdisplay);
+    AddProperty(outputPlane, "CRTC_H", crtcHeight);
 
     if (m_inFenceFd != -1)
     {
@@ -251,7 +257,7 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (ret < 0)
   {
     const int testError = errno;
-    if (strict)
+    if (strict || (m_mode->flags & DRM_MODE_FLAG_3D_MASK))
     {
       return reject("atomic-test", testError);
     }
@@ -325,7 +331,6 @@ void CDRMAtomic::FinishRequest(bool accepted)
   m_signalDirty = false;
 }
 
-#ifdef HAVE_DVBRIDGE
 bool CDRMAtomic::IsSelectedModeCommitted() const
 {
   return m_mode && m_committedMode.clock == m_mode->clock &&
@@ -339,7 +344,6 @@ bool CDRMAtomic::IsSelectedModeCommitted() const
       m_committedMode.vtotal == m_mode->vtotal && m_committedMode.vscan == m_mode->vscan &&
       m_committedMode.vrefresh == m_mode->vrefresh && m_committedMode.flags == m_mode->flags;
 }
-#endif
 
 bool CDRMAtomic::CompleteCB1Page(int timeoutMs)
 {

@@ -54,6 +54,18 @@ public:
   }
   struct cb1_hdr10_ai_metrics Metrics() const;
   cb1_ai_status Collect();
+  cb1_ai_status RecordStatus(const char* stage, cb1_ai_status status, bool processing=true)
+  {
+    if (!m_diagnosticFailure)
+    {
+      m_diagnosticStage = stage;
+      m_diagnosticStatus = status;
+      m_diagnosticFailure = processing && status != CB1_AI_READY && status != CB1_AI_PENDING;
+    }
+    return status;
+  }
+  const char* DiagnosticStage() const { return m_diagnosticStage; }
+  cb1_ai_status DiagnosticStatus() const { return m_diagnosticStatus; }
 
 private:
   cb1_ai_identity Identity(DVBRIDGE::SourceBinding binding) const;
@@ -70,4 +82,7 @@ private:
   uint64_t m_lastSubmitted{};
   double m_origin{}, m_jobPts{};
   bool m_active{}, m_job{}, m_fallback{}, m_resetPending{}, m_paused{};
+  const char* m_diagnosticStage{"none"};
+  cb1_ai_status m_diagnosticStatus{CB1_AI_READY};
+  bool m_diagnosticFailure{};
 };

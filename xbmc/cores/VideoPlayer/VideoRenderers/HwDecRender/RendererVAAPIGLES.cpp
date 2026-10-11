@@ -97,7 +97,7 @@ bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsig
 #ifdef CB1_HAS_HDR10_AI
   m_aiBuffers = m_isVAAPIBuffer && picture.hdrType == StreamHdrType::HDR_TYPE_HDR10 &&
       !picture.doviSourceInfo.profile && !(picture.iFlags & DVP_FLAG_INTERLACED) &&
-      orientation == 0 ? pic->renderBufferCount : NUM_BUFFERS;
+      DVBridgeOrientationSupported(orientation) ? pic->renderBufferCount : NUM_BUFFERS;
   m_aiLookahead=m_aiBuffers>NUM_BUFFERS;
 #endif
 
@@ -152,7 +152,7 @@ bool CRendererVAAPIGLES::ConfigChanged(const VideoPicture& picture)
 #ifdef CB1_HAS_HDR10_AI
   const unsigned buffers = pic->procPic.videoSurface != VA_INVALID_ID &&
       picture.hdrType == StreamHdrType::HDR_TYPE_HDR10 && !picture.doviSourceInfo.profile &&
-      !(picture.iFlags & DVP_FLAG_INTERLACED) && m_renderOrientation == 0 ?
+      !(picture.iFlags & DVP_FLAG_INTERLACED) && DVBridgeOrientationSupported(m_renderOrientation) ?
       pic->renderBufferCount : NUM_BUFFERS;
   if (m_aiBuffers != buffers)
     return true;
@@ -212,11 +212,17 @@ bool CRendererVAAPIGLES::RenderHook(int idx)
 }
 
 #ifdef HAVE_DVBRIDGE
+bool CRendererVAAPIGLES::DVBridgeOrientationSupported(unsigned int orientation) const
+{
+  // Native orientation includes the saved playback rotation; CB1 ignores only that part.
+  return orientation == static_cast<unsigned int>(m_videoSettings.m_Orientation);
+}
+
 bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer)
 {
-  // Native decoder textures only. Postprocessed/cropped/rotated images need
-  // their own explicit metadata/geometry mapping and must not fall back here.
-  if (!m_isVAAPIBuffer || m_textureTarget != GL_TEXTURE_2D || m_renderOrientation != 0)
+  // CB1 reads the full decoded texture, independent of Kodi's view-mode crop.
+  if (!m_isVAAPIBuffer || m_textureTarget != GL_TEXTURE_2D ||
+      !DVBridgeOrientationSupported(m_renderOrientation))
     return false;
   auto& buffer = m_buffers[idx];
   if (!buffer.doviSourcePicture)
@@ -272,9 +278,6 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
     layer.planes[p] = {plane.id, static_cast<int>(plane.texwidth),
                       static_cast<int>(plane.texheight)};
   }
-  if (m_sourceRect.x1 != 0 || m_sourceRect.y1 != 0 ||
-      m_sourceRect.Width() != m_sourceWidth || m_sourceRect.Height() != m_sourceHeight)
-    return false;
   return true;
 }
 
@@ -282,27 +285,61 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
 bool CRendererVAAPIGLES::PrepareHDR10AIQueue(const std::deque<int>& queue, bool end, bool paused,
     uint64_t presentationDeadline)
 {
-  if (queue.empty() || !HDR10AIQueueEligible()) return true;
+  auto preparation = CaptureHDR10AIQueue(queue,end,paused,presentationDeadline);
+  if (!preparation.execute) return preparation.ready;
+  const auto outcome = preparation.execute();
+  return preparation.publish(outcome) && outcome.ready;
+}
+
+HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
+    const std::deque<int>& queue, bool end, bool paused, uint64_t presentationDeadline)
+{
+  if (queue.empty() || !HDR10AIQueueEligible()) return {};
   auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
       CServiceBroker::GetWinSystem());
-  if (!window) { m_aiLookahead=false; return true; }
+  if (!window) { m_aiLookahead=false; return {}; }
   std::vector<CDVBridgeGLES::Layer> layers;
-  const auto& head = m_buffers[queue.front()].doviSourcePicture;
-  if (!head) return true;
+  // Copy ownership, not a reference to a slot that the decoder may replace.
+  const auto head = m_buffers[queue.front()].doviSourcePicture;
+  if (!head) return {};
   const auto horizon = double(head->doviSourcePts) / DVD_TIME_BASE + 1.0;
   for (const auto idx : queue)
   {
-    if (!UploadTexture(idx)) break;
+    const auto* pic = dynamic_cast<CVaapiRenderPicture*>(m_buffers[idx].videoBuffer);
+    if (!pic || !pic->valid) break;
+    // ReleaseBuffer invalidates the import before a slot receives another picture.
+    if (!m_vaapiTextures[idx] && !UploadTexture(idx)) break;
     CDVBridgeGLES::Layer layer{};
     if (!BuildDVBridgeLayer(idx,layer)) break;
     layers.push_back(std::move(layer));
     if (layers.back().pts >= horizon - 1e-9) break;
   }
   // Future imports must not replace the current picture's admission identity.
-  if (!UploadTexture(queue.front())) return false;
-  const bool ready=window->PrepareHDR10AIQueue(*head,layers,end,paused,presentationDeadline);
-  m_aiLookahead=window->HDR10AILookaheadActive();
-  return ready;
+  if (!UploadTexture(queue.front())) return {false, {}, {}};
+  const auto index = queue.front();
+  const auto binding = head->doviSourceBinding;
+  const auto preferences = DVBRIDGE::FrameOutputSettings();
+  if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::Native)
+  {
+    // Preserve the original locked/native stop and readiness path.
+    const bool ready = window->PrepareHDR10AIQueue(*head,layers,end,paused,presentationDeadline);
+    m_aiLookahead = window->HDR10AILookaheadActive();
+    return {ready, {}, {}};
+  }
+  return {false,
+      [window,head,layers=std::move(layers),end,paused,presentationDeadline]() {
+        const bool ready = window->PrepareHDR10AIQueue(*head,layers,end,paused,presentationDeadline);
+        return HDR10AIQueuePreparation::Outcome{ready,window->HDR10AILookaheadActive()};
+      },
+      [this,index,binding,preferences](const HDR10AIQueuePreparation::Outcome& outcome) {
+        const auto& current = m_buffers[index].doviSourcePicture;
+        const auto settings = DVBRIDGE::FrameOutputSettings();
+        if (!current || !(current->doviSourceBinding == binding) ||
+            settings.revision != preferences.revision || !settings.SameValues(preferences))
+          return false;
+        m_aiLookahead = outcome.lookahead;
+        return true;
+      }};
 }
 
 bool CRendererVAAPIGLES::HDR10AIFrameCommitted() const
@@ -312,6 +349,18 @@ bool CRendererVAAPIGLES::HDR10AIFrameCommitted() const
 }
 #endif
 
+dvbridge_geometry CRendererVAAPIGLES::DVBridgeGeometry()
+{
+  const CRect view = CServiceBroker::GetWinSystem()->GetGfxContext().GetViewWindow();
+  CRect dest;
+  CalcDestRect(view.x1, view.y1, view.Width(), view.Height(), GetAspectRatio(),
+               1.0f, 0.0f, dest, false);
+  return {static_cast<int>(m_sourceWidth), static_cast<int>(m_sourceHeight),
+          static_cast<int>(std::lround(dest.x1)), static_cast<int>(std::lround(dest.y1)),
+          static_cast<int>(std::lround(dest.Width())),
+          static_cast<int>(std::lround(dest.Height()))};
+}
+
 bool CRendererVAAPIGLES::RenderDVBridge(int idx)
 {
   auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
@@ -319,12 +368,8 @@ bool CRendererVAAPIGLES::RenderDVBridge(int idx)
   CDVBridgeGLES::Layer layer{};
   if (!window || !BuildDVBridgeLayer(idx,layer)) return false;
   auto& buffer = m_buffers[idx];
-  dvbridge_geometry geometry{layer.width, layer.height,
-      static_cast<int>(std::lround(m_destRect.x1)), static_cast<int>(std::lround(m_destRect.y1)),
-      static_cast<int>(std::lround(m_destRect.Width())),
-      static_cast<int>(std::lround(m_destRect.Height()))};
   return window->RenderDVBridge(layer, buffer.doviEnhancement,
-      buffer.doviEnhancementBinding, buffer.doviMetadata, geometry);
+      buffer.doviEnhancementBinding, buffer.doviMetadata, DVBridgeGeometry());
 }
 #endif
 
@@ -482,15 +527,11 @@ bool CRendererVAAPIGLES::UploadTexture(int index)
   {
     const bool layout = m_vaapiFourcc == VA_FOURCC_NV12 || m_vaapiFourcc == VA_FOURCC_P010 ||
         m_vaapiFourcc == VA_FOURCC_P012 || m_vaapiFourcc == VA_FOURCC_P016;
-    const bool usable = layout && m_textureTarget == GL_TEXTURE_2D && m_renderOrientation == 0 &&
-        m_sourceRect.x1 == 0 && m_sourceRect.y1 == 0 &&
-        m_sourceRect.Width() == m_sourceWidth && m_sourceRect.Height() == m_sourceHeight;
+    const bool usable = layout && m_textureTarget == GL_TEXTURE_2D &&
+        DVBridgeOrientationSupported(m_renderOrientation);
     const auto binding = buf.doviSourcePicture->doviSourceBinding.Valid() ?
         buf.doviSourcePicture->doviSourceBinding : buf.doviMetadata.Binding();
-    window->ObserveDVImport(binding,
-        {static_cast<int>(m_sourceWidth),static_cast<int>(m_sourceHeight),static_cast<int>(std::lround(m_destRect.x1)),
-         static_cast<int>(std::lround(m_destRect.y1)),static_cast<int>(std::lround(m_destRect.Width())),
-         static_cast<int>(std::lround(m_destRect.Height()))}, usable);
+    window->ObserveDVImport(binding, DVBridgeGeometry(), usable);
   }
 #endif
   return true;

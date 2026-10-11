@@ -79,6 +79,7 @@ public:
   std::shared_ptr<AVMasteringDisplayMetadata> masteringMetadata;
   std::shared_ptr<AVContentLightMetadata> contentLightMetadata;
   std::string stereo_mode; // stereoscopic 3d mode
+  bool multiview{};
   AVDOVIDecoderConfigurationRecord dovi{};
 #ifdef HAVE_DVBRIDGE
   FFmpegExtraData doviELConfig;

@@ -17,6 +17,7 @@ extern "C"
 #include "dvbridge_gl_pack.h"
 #include "dvbridge_render.h"
 #include "dvbridge_dmabuf.h"
+#include "dvbridge_fel_vpp.h"
 }
 #if DVBRIDGE_DV_POLICY_API < 5 || DVBRIDGE_HDR10_POLICY_API < 4
 #error "DV bridge requires DV policy API 5 and HDR10 policy API 4"
@@ -25,6 +26,11 @@ extern "C"
 class CDVBridgeGLES
 {
 public:
+  static constexpr bool CanComposeSDRGUI(bool enabled, bool hdr10, bool capture,
+                                         int width, int height, unsigned pqDraws)
+  {
+    return enabled && !hdr10 && !capture && width == 3840 && height == 2160 && !pqDraws;
+  }
   struct Layer;
   class Context
   {
@@ -38,6 +44,7 @@ public:
     bool Close();
     bool Quarantined() const;
     bool AsyncPreparation(uint64_t stream);
+    bool FELHardwareUpscaling(uint64_t stream);
     pl_opengl GL() const;
     pl_log Log() const;
     void Retain(std::shared_ptr<void> base, std::shared_ptr<void> enhancement = {});
@@ -47,6 +54,9 @@ public:
     HDR10AISource& HDR10AI();
     bool FenceHDR10AIUse();
     bool StopHDR10AI();
+    void ClearNextHDR10AI();
+    void AdvanceNextHDR10AI(DVBRIDGE::SourceBinding accepted,
+        const DVBRIDGE::OutputPreferences& preferences);
     cb1_ai_status BeginHDR10AI(const char* bundle,
         const DVBRIDGE::OutputPreferences& preferences, DVBRIDGE::SourceBinding binding,
         double pts, uint64_t now);
@@ -90,7 +100,7 @@ public:
   const std::optional<cb1_ai_result>& CommittedHDR10AI() const;
   FrameStatus PrepareHDR10AIFrame(const Layer& base, dvbridge_geometry geometry,
       const DVBRIDGE::OutputPreferences& preferences, const cb1_ai_result& prediction,
-      dvbridge_policy policy, bool allowAsync = false);
+      dvbridge_policy policy, bool allowAsync = false, bool allowPacked = false);
 #endif
   FrameStatus PrepareFrame(const Layer& base, const Layer* enhancement,
                            const CDVMetadataBuffer& metadata, dvbridge_geometry geometry,
@@ -153,6 +163,9 @@ private:
   CDVMetadataBuffer m_pendingMetadata;
   DVBRIDGE::SourceInfo m_pendingSourceInfo{};
   std::shared_ptr<void> m_hardwareLease;
+  std::shared_ptr<dvbridge_fel_vpp> m_felVpp;
+  uint64_t m_felVppStream{};
+  bool m_felVppEnabled{}, m_felVppReported{};
   DVBRIDGE::SourceBinding m_hardwareBinding{};
   DVBRIDGE::SourceBinding m_pendingBinding{}, m_committedBinding{};
   dvbridge_identity m_pendingIdentity{};
@@ -165,7 +178,7 @@ private:
   bool m_live{}, m_advanced{}, m_dvPolicyActive{}, m_pending{}, m_fallback{};
   bool m_asyncEligible{};
 #ifdef CB1_HAS_HDR10_AI
-  bool m_aiFrame{};
+  bool m_aiFrame{}, m_aiOutputAccepted{};
   uint64_t m_aiRenderSubmitNs{};
   DVBRIDGE::DiagnosticInterval m_aiSummary;
 #endif
@@ -178,6 +191,7 @@ private:
   bool Failure(const char* stage);
   void PreparedAudit();
   void Summary(const char* event);
+  void CountPresentation(bool committed);
   DVBRIDGE::DiagnosticFailures m_failures;
   DVBRIDGE::DiagnosticFailures m_auditRequested,m_auditPrepared,m_auditCommitted;
   DVBRIDGE::DiagnosticFailures m_auditCreative;

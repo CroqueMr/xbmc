@@ -80,6 +80,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <ranges>
 #include <string_view>
 #include <utility>
@@ -993,6 +994,18 @@ bool CVideoPlayer::OpenInputStream()
     } // end loop over all subtitle files
   }
 
+  // A Blu-ray 3D title says how deep its subtitles sit, once per GOP, in the dependent
+  // view. The input stream owns what the demuxer reads out of it.
+  {
+    std::unique_lock lock(m_offsetMetadataSection);
+    m_offsetMetadata.reset();
+#if defined(HAVE_LIBBLURAY)
+    if (const auto bluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream))
+      m_offsetMetadata = bluray->GetOffsetMetadata();
+#endif
+  }
+  m_subtitleOffsetSequence = -1;
+
   m_clock.Reset();
   m_dvd.Clear();
 
@@ -1027,6 +1040,16 @@ bool CVideoPlayer::OpenDemuxStream()
     return false;
   }
 
+  // A matroska remux of a 3D disc carries the same plane offsets in its dependent view.
+  // The Blu-ray input stream's store wins when there is one; otherwise the demuxer's is
+  // the one to read
+  if (!IsBlurayInput())
+  {
+    std::unique_lock lock(m_offsetMetadataSection);
+    if (const auto* ffmpeg = dynamic_cast<CDVDDemuxFFmpeg*>(m_pDemuxer.get()))
+      m_offsetMetadata = ffmpeg->GetOffsetMetadata();
+  }
+
   m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_DEMUX);
   m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_NAV);
   m_SelectionStreams.Update(m_pInputStream, m_pDemuxer.get());
@@ -1057,6 +1080,14 @@ bool CVideoPlayer::OpenDemuxStream()
 
 void CVideoPlayer::CloseDemuxer()
 {
+  // the demuxer owns the remux offset store; the Blu-ray one outlives the demuxer
+  if (!IsBlurayInput())
+  {
+    std::unique_lock lock(m_offsetMetadataSection);
+    m_offsetMetadata.reset();
+    m_subtitleOffsetSequence = -1;
+  }
+
   m_pDemuxer.reset();
   m_SelectionStreams.Clear(StreamType::NONE, STREAM_SOURCE_DEMUX);
 
@@ -3114,6 +3145,9 @@ void CVideoPlayer::HandleMessages()
 
       FlushBuffers(DVD_NOPTS_VALUE, true, true);
       m_renderManager.Flush(false, false);
+      m_processInfo->ResetVideoCodecInfo();
+      m_renderManager.ResetPictureInfo();
+      m_overlayContainer.Clear(DVDOverlaySource::MENU);
 #ifdef HAVE_DVBRIDGE
       DVBRIDGE::PlaybackNotification::StartVideo();
 #endif
@@ -4343,6 +4377,8 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
         hint.colorTransferCharacteristic = m_CurrentVideo.hint.colorTransferCharacteristic;
       }
       res = OpenSubtitleStream(hint);
+      if (res)
+        UpdateSubtitleOffsetSequence(stream);
       break;
     case StreamType::TELETEXT:
       res = OpenTeletextStream(hint);
@@ -4550,6 +4586,60 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   }
 
   return true;
+}
+
+bool CVideoPlayer::IsBlurayInput() const
+{
+#if defined(HAVE_LIBBLURAY)
+  return std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream) != nullptr;
+#else
+  return false;
+#endif
+}
+
+void CVideoPlayer::UpdateSubtitleOffsetSequence(const CDemuxStream* stream)
+{
+  int sequence{-1};
+  bool isBluray{false};
+
+#if defined(HAVE_LIBBLURAY)
+  const auto bluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInputStream);
+  isBluray = bluray != nullptr;
+  if (bluray && stream && stream->dvdNavId > 0)
+    sequence = bluray->GetSubtitleOffsetSequence(static_cast<unsigned int>(stream->dvdNavId));
+#endif
+
+  // Remuxed PGS tracks use an explicit "3d-plane" tag; stream order is not a plane ID.
+  if (!isBluray && stream && m_pDemuxer && stream->codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE &&
+      stream->demuxerId == m_pDemuxer->GetDemuxerId())
+  {
+    std::unique_lock lock(m_offsetMetadataSection);
+    const auto* tagged = dynamic_cast<const CDemuxStreamSubtitleFFmpeg*>(stream);
+    if (m_offsetMetadata && tagged && tagged->m_offsetSequence)
+    {
+      if (*tagged->m_offsetSequence != KODI::VIDEO::BLURAY::NO_OFFSET_SEQUENCE)
+        sequence = static_cast<int>(*tagged->m_offsetSequence);
+    }
+  }
+
+  if (sequence != m_subtitleOffsetSequence.exchange(sequence) && sequence >= 0)
+    CLog::Log(LOGDEBUG, "CVideoPlayer::{} - subtitles follow plane offset sequence {}",
+              __FUNCTION__, sequence);
+}
+
+std::optional<int> CVideoPlayer::GetSubtitlePlaneOffset(double pts)
+{
+  const int sequence{m_subtitleOffsetSequence};
+  if (sequence < 0)
+    return std::nullopt;
+
+  std::unique_lock lock(m_offsetMetadataSection);
+  if (!m_offsetMetadata)
+    return std::nullopt;
+
+  // The store is keyed by the demuxer's timestamps and this is a presentation time, which
+  // ReadPacket() has already had m_offset_pts taken off (see UpdateCorrection).
+  return m_offsetMetadata->GetOffset(pts + m_offset_pts, static_cast<unsigned int>(sequence));
 }
 
 bool CVideoPlayer::OpenSubtitleStream(const CDVDStreamInfo& hint)

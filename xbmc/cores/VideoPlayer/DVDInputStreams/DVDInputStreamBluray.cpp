@@ -10,12 +10,15 @@
 
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDCodecs/Overlay/DVDOverlayImage.h"
+#include "DVDInputStreamBlurayFile.h"
+#include "FileItem.h"
 #include "IVideoPlayer.h"
 #include "LangInfo.h"
 #include "ServiceBroker.h"
 #include "URL.h"
 #include "filesystem/BlurayCallback.h"
 #include "filesystem/SpecialProtocol.h"
+#include "filesystem/bluray/MPLSParser.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/Geometry.h"
@@ -27,10 +30,12 @@
 #include "video/VideoFileItemClassify.h"
 #include "video/VideoInfoTag.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <ranges>
 #include <string>
 #include <vector>
 
@@ -189,6 +194,13 @@ bool CDVDInputStreamBluray::Open()
       return false;
 
     openStream = true;
+
+    // libbluray reads the image through our block callback and so needs no path, but
+    // Kodi's own MPLS parser does - it reads the playlist to find the 3D extension data
+    // that libbluray parses but does not expose.
+    CURL udfUrl("udf://");
+    udfUrl.SetHostName(m_item.GetDynPath());
+    root = udfUrl.Get();
   }
   else if (VIDEO::IsProtectedBlurayDisc(m_item))
   {
@@ -218,6 +230,10 @@ bool CDVDInputStreamBluray::Open()
     // to fall through to navigation/main-feature mode.
     filename = URIUtils::GetFileName(m_item.GetDynPath());
   }
+
+  // Keep the VFS form, including any trailing slash, before it is trimmed below - a
+  // udf:// root needs it to parse back into protocol and host name.
+  m_vfsRoot = root;
 
   // root should not have trailing slash
   URIUtils::RemoveSlashAtEnd(root);
@@ -287,6 +303,8 @@ bool CDVDInputStreamBluray::Open()
     CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - bd_get_disc_info() failed");
     return false;
   }
+
+  m_stereoscopicDisc = disc_info->content_exist_3D != 0;
 
   if (disc_info->bluray_detected)
   {
@@ -406,6 +424,14 @@ bool CDVDInputStreamBluray::Open()
   // Process any events that occurred during opening
   while (bd_get_event(m_bd, &m_event))
     ProcessEvent();
+
+  // Selecting a playlist normally raises BD_EVENT_PLAYLIST, which is where the 3D
+  // information is picked up. Cover the case where it did not.
+  if (!m_playlistInfoValid && m_titleInfo)
+  {
+    m_playlist = m_titleInfo->playlist;
+    UpdatePlaylistInformation();
+  }
 
   return true;
 }
@@ -584,10 +610,13 @@ void CDVDInputStreamBluray::ProcessEvent() {
     m_playlist = m_event.param;
     FreeTitleInfo();
     m_titleInfo = bd_get_playlist_info(m_bd, m_playlist, m_angle);
+    m_playItem = 0;
+    UpdatePlaylistInformation();
     break;
 
   case BD_EVENT_PLAYITEM:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYITEM {}", m_event.param);
+    m_playItem = m_event.param;
     if (m_titleInfo && m_event.param < m_titleInfo->clip_count)
     {
       m_clip = &m_titleInfo->clips[m_event.param];
@@ -783,6 +812,8 @@ void CDVDInputStreamBluray::OverlayClose()
     plane.o.clear();
   auto group = std::make_shared<CDVDOverlayGroup>();
   group->bForced = true;
+  group->SetSource(DVDOverlaySource::MENU);
+  group->SetOverlayContainerFlushable(false);
   m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
   m_hasOverlay = false;
 #endif
@@ -843,6 +874,12 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
   group->bForced       = true;
   group->iPTSStartTime = static_cast<double>(pts);
   group->iPTSStopTime  = 0;
+
+  // A menu, so that only the next page ends or replaces it and never a subtitle, and not
+  // flushable: a seek flushes the container, and libbluray will not draw the page again on
+  // its own.
+  group->SetSource(DVDOverlaySource::MENU);
+  group->SetOverlayContainerFlushable(false);
 
   for(SPlane& plane : m_planes)
   {
@@ -1114,7 +1151,8 @@ static bool is_first_stream(int pid, const BLURAY_STREAM_INFO* info, int count)
 
 bool CDVDInputStreamBluray::GetPlaylistStreamLanguage(int pid, std::string& language) const
 {
-  if (pid == HDMV_PID_VIDEO)
+  // The dependent view of a 3D title shares the video stream table with the base view
+  if (pid == HDMV_PID_VIDEO || pid == HDMV_PID_VIDEO_SS)
     return find_stream(pid, m_clip->video_streams, m_clip->video_stream_count, language);
   if (HDMV_PID_AUDIO_FIRST <= pid && pid <= HDMV_PID_AUDIO_LAST)
     return find_stream(pid, m_clip->audio_streams, m_clip->audio_stream_count, language);
@@ -1190,6 +1228,149 @@ bool CDVDInputStreamBluray::IsDefaultStream(int pid) const
     return is_first_stream(pid, m_clip->pg_streams, m_clip->pg_stream_count);
 
   return false;
+}
+
+void CDVDInputStreamBluray::UpdatePlaylistInformation()
+{
+  m_playlistInfoValid = false;
+  m_playlistInfo = {};
+  m_offsetMetadata->Flush();
+
+  if (m_vfsRoot.empty() || m_playlist > MAX_PLAYLIST_ID)
+    return;
+
+  // The stereoscopic sub-path lives in the playlist extension data. libbluray parses it
+  // but keeps it private, so read the playlist ourselves. Playlists are never scrambled,
+  // even on an AACS disc, so the plain VFS is enough.
+  CURL url;
+  url.SetProtocol("bluray");
+  url.SetHostName(m_vfsRoot);
+
+  // Only the extension sub-paths are needed, so there is no reason to read the clips' .clpi.
+  if (!XFILE::CMPLSParser::ReadMPLS(url, m_playlist, m_playlistInfo, m_clipCache,
+                                    XFILE::StreamDetails::DEFER))
+  {
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - could not read playlist {} for 3D information",
+              m_playlist);
+    return;
+  }
+
+  m_playlistInfoValid = true;
+
+  if (!m_playlistInfo.extensionSubPlayItems.empty())
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - playlist {} has {} stereoscopic sub play item(s)",
+              m_playlist, m_playlistInfo.extensionSubPlayItems.size());
+}
+
+bool CDVDInputStreamBluray::IsStereoscopic() const
+{
+  return m_playlistInfoValid && !m_playlistInfo.extensionSubPlayItems.empty();
+}
+
+bool CDVDInputStreamBluray::IsStereoscopicDisc() const
+{
+  return m_stereoscopicDisc;
+}
+
+bool CDVDInputStreamBluray::GetStereoscopicClip(unsigned int& clip,
+                                                std::string& codec,
+                                                std::chrono::milliseconds& inTime) const
+{
+  if (!IsStereoscopic())
+    return false;
+
+  // There is one stereoscopic sub play item in sync with each play item of the main path.
+  const auto& items{m_playlistInfo.extensionSubPlayItems};
+  auto it{std::ranges::find_if(items, [this](const XFILE::SubPlayItemInformation& item)
+                               { return item.syncPlayItemId == m_playItem; })};
+  if (it == items.end())
+  {
+    // Not all discs fill in the sync id, so fall back to matching by position.
+    if (m_playItem >= items.size() ||
+        std::ranges::any_of(items, [](const auto& item) { return item.syncPlayItemId != 0; }))
+      return false;
+    it = items.begin() + m_playItem;
+  }
+
+  if (it->clips.empty())
+    return false;
+
+  clip = it->clips.front().clip;
+  codec = it->clips.front().codec;
+  inTime = it->inTime;
+
+  return true;
+}
+
+bool CDVDInputStreamBluray::IsBaseViewRightEye() const
+{
+  return m_titleInfo && m_titleInfo->mvc_base_view_r_flag != 0;
+}
+
+int CDVDInputStreamBluray::GetSubtitleOffsetSequence(unsigned int pid) const
+{
+  if (!m_playlistInfoValid || m_playlistInfo.playItems.empty())
+    return -1;
+
+  const auto& playItems{m_playlistInfo.playItems};
+  const auto& playItem{m_playItem < playItems.size() ? playItems[m_playItem] : playItems.front()};
+
+  for (const auto& stream : playItem.presentationGraphicStreams)
+  {
+    if (stream.packetIdentifier != pid)
+      continue;
+
+    if (stream.offsetSequenceId == XFILE::NO_OFFSET_SEQUENCE)
+      return -1;
+
+    return static_cast<int>(stream.offsetSequenceId);
+  }
+
+  return -1;
+}
+
+std::shared_ptr<CDVDInputStreamBlurayFile> CDVDInputStreamBluray::OpenClipStream(
+    unsigned int clip, const std::string& codec)
+{
+  if (!m_bd)
+    return nullptr;
+
+  // libbluray matches this prefix to decide that the file needs descrambling, so it has to
+  // use the same separator libbluray builds its own stream paths with.
+#ifdef TARGET_WINDOWS
+  static constexpr const char* STREAM_DIR = "BDMV\\STREAM\\";
+#else
+  static constexpr const char* STREAM_DIR = "BDMV/STREAM/";
+#endif
+
+  std::string extension{StringUtils::ToLower(codec)};
+  if (extension.empty())
+    extension = "m2ts";
+
+  const std::string path{StringUtils::Format("{}{:05}.{}", STREAM_DIR, clip, extension)};
+
+  BD_FILE_H* file{bd_open_file_dec(m_bd, path.c_str())};
+  if (!file)
+  {
+    CLog::Log(LOGERROR, "CDVDInputStreamBluray - failed to open clip {}", path);
+    return nullptr;
+  }
+
+  // The dependent view cannot be framed by the H.264 parser, so the demuxer has to use the
+  // transport stream framing instead.
+  CFileItem item{m_item};
+  item.SetProperty("noparse", true);
+
+  auto stream{std::make_shared<CDVDInputStreamBlurayFile>(item, file)};
+  if (!stream->Open())
+  {
+    CLog::Log(LOGERROR, "CDVDInputStreamBluray - failed to read clip {}", path);
+    return nullptr;
+  }
+
+  CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - opened dependent view clip {}", path);
+
+  return stream;
 }
 
 CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
@@ -1358,12 +1539,19 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PARENTAL, 99);
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, 0xffffffff);
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
-  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_6_v3_1);
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_CAP, 0xffffffff);
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_DISPLAY_CAP, 0xffffffff);
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_HDR_PREFERENCE, 0xffffffff);
-#else
+#endif
+
+  // Since 1.1.0 libbluray raises the player profile itself once it has read the disc index -
+  // profile 6 for UHD, profile 5 for Blu-ray 3D. Claiming a profile up front defeats that:
+  // the 3D initialisation is skipped whenever the application already asked for profile
+  // version 0x0300 or newer, so a 3D disc is left believing the player cannot do 3D.
+#if (BLURAY_VERSION < BLURAY_VERSION_CODE(1, 0, 2))
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_5_v2_4);
+#elif (BLURAY_VERSION < BLURAY_VERSION_CODE(1, 1, 0))
+  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_6_v3_1);
 #endif
 
   const std::string audioLang{g_langInfo.GetDVDAudioLanguage().AsIso6392T()};

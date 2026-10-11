@@ -97,6 +97,10 @@
           <requirement>HAVE_DVBRIDGE</requirement><level>2</level><default>true</default>
           <control type="toggle" />
         </setting>
+        <setting id="dvbridge.fastchroma" type="boolean" label="40904" help="40905">
+          <requirement>HAVE_DVBRIDGE</requirement><level>2</level><default>false</default>
+          <control type="toggle" />
+        </setting>
       </group>
       <group id="1" label="14230">
         <setting id="videoplayer.autoplaynextitem" type="list[integer]" label="13433" help="36152">

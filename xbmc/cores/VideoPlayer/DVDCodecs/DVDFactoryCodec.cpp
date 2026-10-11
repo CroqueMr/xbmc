@@ -71,6 +71,13 @@ std::unique_ptr<CDVDVideoCodec> CDVDFactoryCodec::CreateVideoCodec(CDVDStreamInf
     return nullptr;
   }
 
+  // Native multiview packing requires CPU-readable frames from the FFmpeg codec.
+  if (hint.multiview)
+  {
+    pCodec = std::make_unique<CDVDVideoCodecFFmpeg>(processInfo);
+    return pCodec->Open(hint, options) ? std::move(pCodec) : nullptr;
+  }
+
   // DVBridge carries metadata and paired hardware surfaces through the VAAPI adapter.
 #ifdef HAVE_DVBRIDGE
   if (DVBRIDGE::RetainsDVSource(hint))
