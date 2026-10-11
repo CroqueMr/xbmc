@@ -46,6 +46,7 @@ public:
   bool UnbindTextureUploadContext() override;
   bool HasContext() override;
 
+  std::vector<uint64_t> OutputModifiers(uint32_t format);
   bool SetVideoOutput(const VideoPicture* videoPicture) override;
 
 protected:

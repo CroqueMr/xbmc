@@ -24,6 +24,8 @@
 #include <deque>
 #include <list>
 #include <memory>
+#include <optional>
+#include <mutex>
 
 #include "PlatformDefs.h"
 
@@ -60,6 +62,17 @@ protected:
   virtual void UpdateGuiRender(bool gui) = 0;
   virtual void UpdateVideoRender(bool video) = 0;
   virtual CVideoSettings GetVideoSettings() const = 0;
+
+  /*!
+   * \brief The shift the disc asks the subtitle plane to carry for the frame at \p pts.
+   *
+   * A Blu-ray 3D title places its subtitles in depth by shifting the plane one way for the
+   * left eye and the other for the right, by an amount it varies as the scene does. The
+   * answer is in the video's own pixels, and 0 is a depth like any other - the subtitle
+   * sitting at the screen for that frame. Anything with no depth of its own answers
+   * nothing, which is what leaves the subtitles.stereoscopicdepth setting in charge.
+   */
+  virtual std::optional<int> GetSubtitlePlaneOffset(double pts) { return std::nullopt; }
 };
 
 class CRenderManager
@@ -80,6 +93,7 @@ public:
   void UpdateResolution();
   void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode,
                                bool nativeDV = false);
+  void ResetPictureInfo();
   void SetViewMode(int iViewMode);
   void PreInit();
   void UnInit();
@@ -159,8 +173,15 @@ protected:
   void PrepareNextRender();
   void UpdateDisplayLatency();
 #ifdef CB1_HAS_HDR10_AI
-  bool PrepareHDR10AILookahead();
+  bool PrepareHDR10AILookahead(std::unique_lock<CCriticalSection>& lock);
+  bool ExecuteHDR10AIQueuePreparation(const std::deque<int>& queue, bool paused,
+      uint64_t deadline, std::unique_lock<CCriticalSection>& lock);
+  void ReleaseDiscardedBuffers(bool onlySignaled = false);
+  uint64_t m_aiQueueGeneration{};
+  // Sticky until GUI destruction: worker UnInit must not destroy owned GL work.
+  std::atomic_bool m_aiGUIOwnsRenderer{false};
   bool m_aiQueueReady{true},m_aiEnd{};
+  bool m_aiQueuePreparationStale{};
   bool m_aiFullscreenRequested{},m_aiGuiReady{},m_aiFullscreenWanted{};
   double m_aiStartPts{DVD_NOPTS_VALUE};
 #endif

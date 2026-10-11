@@ -53,6 +53,8 @@ public:
   bool HDR10AIFrameCommitted() const override;
   bool PrepareHDR10AIQueue(const std::deque<int>& queue, bool end, bool paused,
       uint64_t presentationDeadline = 0) override;
+  HDR10AIQueuePreparation CaptureHDR10AIQueue(const std::deque<int>& queue, bool end,
+      bool paused, uint64_t presentationDeadline) override;
   unsigned m_aiBuffers{6};
   bool m_aiLookahead{};
 #endif
@@ -65,6 +67,8 @@ protected:
 #ifdef HAVE_DVBRIDGE
   bool RenderDVBridge(int idx) override;
   bool BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer);
+  dvbridge_geometry DVBridgeGeometry();
+  bool DVBridgeOrientationSupported(unsigned int orientation) const;
 #endif
   void AfterRenderHook(int idx) override;
 

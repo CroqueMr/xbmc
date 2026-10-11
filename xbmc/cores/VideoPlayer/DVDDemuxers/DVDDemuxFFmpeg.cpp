@@ -65,6 +65,7 @@ extern "C"
 #include <libavutil/dovi_meta.h>
 #include <libavutil/opt.h>
 #include <libavutil/pixdesc.h>
+#include <libavutil/stereo3d.h>
 }
 
 using namespace KODI::UTILS;
@@ -499,6 +500,24 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
   if (iformat && (strcmp(iformat->name, "mjpeg") == 0) && m_ioContext->seekable == 0)
     av_opt_set_int(m_pFormatContext, "analyzeduration", 500000, 0);
 
+  // Some callers hand us an elementary stream the parsers cannot frame. The MVC dependent
+  // view of a 3D Blu-ray codes its slices as NAL 20, which the H.264 parser does not treat
+  // as a picture start, so it would never find a frame boundary. Fall back to the container
+  // framing, which on a Blu-ray is one access unit per PES packet.
+  const bool noParse = pInput->GetProperty("noparse").asBoolean(false);
+  if (noParse)
+  {
+    m_pFormatContext->flags |= AVFMT_FLAG_NOPARSE | AVFMT_FLAG_NOFILLIN;
+
+    // Without a parser the container framing is all there is, and the mpegts demuxer hands a
+    // PES payload over in pieces of at most max_packet_size (200 KiB by default), only the
+    // first of them timestamped. An access unit of the dependent view can be several times
+    // that, so let a packet be as large as an access unit.
+    av_opt_set_int(m_pFormatContext, "max_packet_size", 8 << 20, AV_OPT_SEARCH_CHILDREN);
+
+    CLog::Log(LOGDEBUG, "{} - parsing disabled, relying on container framing", __FUNCTION__);
+  }
+
   bool skipCreateStreams = false;
   bool isBluray = pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY);
 
@@ -578,11 +597,22 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
   // Live/realtime excluded: the full probe would stall playback start by seconds.
   bool forceFullAnalysis = skipTsOptimization && !pInput->IsRealtime();
 
-  if (isMpegTsWithStreams && !url.IsProtocol("tcp") && !fileinfo && !isBluray && !forceFullAnalysis)
+  // an unparsed stream is excluded too, so that its timestamps keep the plain start time
+  // convention its caller has to reason about
+  if (isMpegTsWithStreams && !url.IsProtocol("tcp") && !fileinfo && !isBluray && !noParse &&
+      !forceFullAnalysis)
   {
     av_opt_set_int(m_pFormatContext, "analyzeduration", 500000, 0);
     m_checkTransportStream = true;
     skipCreateStreams = true;
+  }
+  else if (noParse)
+  {
+    // Such a stream cannot be decoded on its own, so analysing it would only spend the whole
+    // analysis window failing to and then report that its parameters are unknown - which the
+    // caller, who asked for it unparsed, already knows. Take the streams straight from the
+    // program map.
+    m_streaminfo = false;
   }
   else if (!isMpegTs || forceFullAnalysis)
   {
@@ -630,7 +660,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
       ResetVideoStreams();
     }
   }
-  else
+  else if (!noParse)
   {
     m_program = 0;
     m_checkTransportStream = true;
@@ -791,6 +821,9 @@ void CDVDDemuxFFmpeg::Flush()
   m_displayTime = 0;
   m_dtsAtDisplayTime = DVD_NOPTS_VALUE;
   m_seekToKeyFrame = false;
+
+  if (m_offsetMetadata)
+    m_offsetMetadata->Flush();
 }
 
 void CDVDDemuxFFmpeg::Abort()
@@ -1313,6 +1346,13 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
       pPacket = CDVDDemuxUtils::AllocateDemuxPacket(0);
       return pPacket;
     }
+
+    // Both sides of this test are ffmpeg stream indices: it has to run before iStreamId is
+    // rewritten to the Kodi uniqueId below. Not on a seek probe (keep), which hands the
+    // same access unit out again through Read().
+    if (!keep && m_offsetMetadata && pPacket->iStreamId == m_offsetStreamIndex &&
+        pPacket->pts != DVD_NOPTS_VALUE)
+      ReadOffsetMetadata(*pPacket);
 
     pPacket->iStreamId = stream->uniqueId;
     pPacket->demuxerId = GetDemuxerId();
@@ -1878,6 +1918,7 @@ void CDVDDemuxFFmpeg::DisposeStreams()
     delete it->second;
   m_streams.clear();
   m_parsers.clear();
+  ResetOffsetMetadata();
 }
 
 CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
@@ -2078,13 +2119,56 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
         }
 
         // detect stereoscopic mode
-        std::string stereoMode = GetStereoModeFromMetadata(pStream->metadata);
-          // check for metadata in file if detection in stream failed
+        bool multiview = false;
+        std::string stereoMode = GetStereoModeFromSideData(pStream, multiview);
+        // fall back to the container metadata tags (matroska, asf/wmv)
+        if (stereoMode.empty())
+          stereoMode = GetStereoModeFromMetadata(pStream->metadata);
+        // check for metadata in file if detection in stream failed
         if (stereoMode.empty())
           stereoMode = GetStereoModeFromMetadata(m_pFormatContext->metadata);
+        // H.264 MVC keeps its second view in the codec extradata, and nothing a
+        // container exposes as stereo metadata describes it. What a matroska rip
+        // does carry is StereoMode "both eyes laced in one block", which ffmpeg
+        // reports as frame alternate: that says how the views are coded, not that
+        // they are packed into a frame a renderer could crop an eye from, and Kodi
+        // has no way to present it. So let the mvcC box override it rather than be
+        // hidden by it - a block layout is the one case where the container's
+        // description and the decoder's output are about different things.
+        // The base view is the left eye unless the block order says otherwise;
+        // either way the decoder corrects the mode if the bitstream says which
+        // view is which.
+        // Only claim the second view when the decoder can actually produce it.
+        // Flagging it regardless would cost the stream its hardware decoder -
+        // multiview forces software decoding before the option can be refused -
+        // and get nothing back, so an ffmpeg without H.264 MVC support keeps
+        // hardware decoding the base view exactly as it does today.
+        if ((stereoMode.empty() || stereoMode == "block_lr" || stereoMode == "block_rl") &&
+            HasMvcExtension(pStream) && SupportsMultiviewDecode(pStream->codecpar->codec_id))
+        {
+          stereoMode = stereoMode == "block_rl" ? "right_left" : "left_right";
+          multiview = true;
+        }
         if (!stereoMode.empty())
+        {
           st->stereo_mode = stereoMode;
+          st->multiview = multiview;
+        }
+        if (multiview && pStream->codecpar->codec_id == AV_CODEC_ID_H264)
+          ConfigureOffsetMetadata(pStream, st);
 
+#ifdef HAVE_LIBBLURAY
+        // A base-eye fallback retains the selected item's stereo-source identity.
+        if (st->stereo_mode.empty() && m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+        {
+          auto bluray = std::dynamic_pointer_cast<CDVDInputStreamBluray>(m_pInput);
+          unsigned int clip{};
+          std::string codec;
+          std::chrono::milliseconds inTime{};
+          if (bluray && bluray->GetStereoscopicClip(clip, codec, inTime))
+            st->stereo_mode = "mono";
+        }
+#endif
 
         if (m_pInput->IsStreamType(DVDSTREAM_TYPE_DVD))
         {
@@ -2150,6 +2234,11 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
 
           if (av_dict_get(pStream->metadata, "title", NULL, 0))
             st->m_description = av_dict_get(pStream->metadata, "title", NULL, 0)->value;
+
+          // matroska tags carry their language as a key suffix: "3d-plane-eng"
+          if (const AVDictionaryEntry* plane =
+                  av_dict_get(pStream->metadata, "3d-plane", nullptr, AV_DICT_IGNORE_SUFFIX))
+            st->m_offsetSequence = KODI::VIDEO::BLURAY::ParseOffsetSequenceTag(plane->value);
           break;
         }
       }
@@ -2633,6 +2722,161 @@ std::string CDVDDemuxFFmpeg::GetStereoModeFromMetadata(AVDictionary* pMetadata)
   }
 
   return stereoMode;
+}
+
+std::string CDVDDemuxFFmpeg::GetStereoModeFromSideData(const AVStream* pStream, bool& multiview)
+{
+  multiview = false;
+
+  const AVPacketSideData* sideData =
+      av_packet_side_data_get(pStream->codecpar->coded_side_data,
+                              pStream->codecpar->nb_coded_side_data, AV_PKT_DATA_STEREO3D);
+  if (!sideData || sideData->size < sizeof(AVStereo3D))
+    return "";
+
+  const auto* stereo = reinterpret_cast<const AVStereo3D*>(sideData->data);
+
+  // AV_STEREO3D_FLAG_INVERT: the right/bottom view is the left eye.
+  const bool inverted = (stereo->flags & AV_STEREO3D_FLAG_INVERT) != 0;
+
+  switch (stereo->type)
+  {
+    case AV_STEREO3D_SIDEBYSIDE:
+      return inverted ? "right_left" : "left_right";
+    case AV_STEREO3D_TOPBOTTOM:
+      return inverted ? "bottom_top" : "top_bottom";
+    case AV_STEREO3D_CHECKERBOARD:
+      return inverted ? "checkerboard_rl" : "checkerboard_lr";
+    case AV_STEREO3D_LINES:
+      return inverted ? "row_interleaved_rl" : "row_interleaved_lr";
+    case AV_STEREO3D_COLUMNS:
+      return inverted ? "col_interleaved_rl" : "col_interleaved_lr";
+    case AV_STEREO3D_FRAMESEQUENCE:
+      return inverted ? "block_rl" : "block_lr";
+#if FFMPEG_HAVE_MULTIVIEW
+    case AV_STEREO3D_UNSPEC:
+      // MV-HEVC "spatial video" and the like: the eyes are coded as separate
+      // views rather than packed into one frame. The decoder packs them side by
+      // side, so report the mode it is going to produce and flag that it still
+      // has that work to do. The decoder refines the eye order if the bitstream
+      // says which view is which.
+      if (stereo->view != AV_STEREO3D_VIEW_PACKED)
+        return "";
+      multiview = true;
+      return inverted ? "right_left" : "left_right";
+#endif
+    default:
+      return "";
+  }
+}
+
+bool CDVDDemuxFFmpeg::SupportsMultiviewDecode(AVCodecID codecId)
+{
+  const AVCodec* codec = avcodec_find_decoder(codecId);
+  if (!codec || !codec->priv_class)
+    return false;
+
+  // The multiview machinery hangs off the decoder's view_ids option, so whether
+  // it is in the option table is whether the dependent view can be decoded.
+  // H.264 gained it well after HEVC, so this cannot be a version check.
+  const AVClass* avClass = codec->priv_class;
+  return av_opt_find(&avClass, "view_ids", nullptr, 0, AV_OPT_SEARCH_FAKE_OBJ) != nullptr;
+}
+
+void CDVDDemuxFFmpeg::ConfigureOffsetMetadata(const AVStream* pStream,
+                                              const CDemuxStreamVideo* stream)
+{
+  ResetOffsetMetadata();
+
+  // ISO 14496-15 avcC: the low two bits of byte 4 hold lengthSizeMinusOne
+  const uint8_t* extradata = pStream->codecpar->extradata;
+  if (!extradata || pStream->codecpar->extradata_size < 5 || extradata[0] != 1)
+    return;
+  if (stream->iFpsRate <= 0 || stream->iFpsScale <= 0)
+    return;
+
+  if (!m_offsetMetadata)
+    m_offsetMetadata = std::make_shared<KODI::VIDEO::BLURAY::COffsetMetadataStore>();
+  m_offsetStreamIndex = pStream->index;
+  m_offsetNalLengthSize = (extradata[4] & 0x03) + 1;
+  m_offsetFrameDuration = DVD_TIME_BASE * static_cast<double>(stream->iFpsScale) / stream->iFpsRate;
+}
+
+void CDVDDemuxFFmpeg::ReadOffsetMetadata(const DemuxPacket& packet)
+{
+  // Enough access units to cover a couple of GOPs before concluding the stream has none
+  constexpr unsigned int ACCESS_UNITS_BEFORE_GIVING_UP{120};
+
+  KODI::VIDEO::BLURAY::OffsetMetadata metadata;
+  if (!KODI::VIDEO::BLURAY::ParseOffsetMetadataAvcc(packet.pData, packet.iSize,
+                                                    m_offsetNalLengthSize, metadata))
+  {
+    m_offsetMetadata->NoteFrame(packet.pts);
+
+    if (!m_loggedOffsetMetadata && !m_loggedOffsetMetadataMissing &&
+        ++m_offsetAccessUnitsWithout == ACCESS_UNITS_BEFORE_GIVING_UP)
+    {
+      m_loggedOffsetMetadataMissing = true;
+      CLog::Log(LOGDEBUG,
+                "CDVDDemuxFFmpeg - expected plane offsets in the MVC dependent view, found none "
+                "in {} access units",
+                m_offsetAccessUnitsWithout);
+    }
+    return;
+  }
+
+  m_offsetAccessUnitsWithout = 0;
+  if (!m_loggedOffsetMetadata)
+  {
+    m_loggedOffsetMetadata = true;
+    CLog::Log(LOGDEBUG,
+              "CDVDDemuxFFmpeg - the MVC dependent view carries plane offsets, {} sequences",
+              metadata.sequences);
+  }
+
+  m_offsetMetadata->Add(packet.pts, m_offsetFrameDuration, std::move(metadata));
+}
+
+void CDVDDemuxFFmpeg::ResetOffsetMetadata()
+{
+  // Keep the store itself: CVideoPlayer holds a reference to it across a stream rebuild
+  if (m_offsetMetadata)
+    m_offsetMetadata->Flush();
+  m_offsetStreamIndex = -1;
+  m_offsetNalLengthSize = 0;
+  m_offsetFrameDuration = 0.0;
+  m_offsetAccessUnitsWithout = 0;
+  m_loggedOffsetMetadata = false;
+  m_loggedOffsetMetadataMissing = false;
+}
+
+bool CDVDDemuxFFmpeg::HasMvcExtension(const AVStream* pStream)
+{
+  if (pStream->codecpar->codec_id != AV_CODEC_ID_H264)
+    return false;
+
+  const uint8_t* data = pStream->codecpar->extradata;
+  const int size = pStream->codecpar->extradata_size;
+  if (!data || size < 12 || data[0] != 1)
+    return false;
+
+  // H.264 MVC carries the second view's configuration in an ISO 14496-15 mvcC
+  // box appended to the base avcC. Look for the box by type and check the size
+  // that precedes it rather than walking the avcC, whose trailing high profile
+  // fields are optional and would make the end of it ambiguous.
+  for (int i = 4; i + 4 <= size; ++i)
+  {
+    if (memcmp(data + i, "mvcC", 4) != 0)
+      continue;
+
+    const uint32_t boxSize =
+        (static_cast<uint32_t>(data[i - 4]) << 24) | (static_cast<uint32_t>(data[i - 3]) << 16) |
+        (static_cast<uint32_t>(data[i - 2]) << 8) | static_cast<uint32_t>(data[i - 1]);
+    if (boxSize >= 8 && static_cast<uint64_t>(i - 4) + boxSize <= static_cast<uint64_t>(size))
+      return true;
+  }
+
+  return false;
 }
 
 std::string CDVDDemuxFFmpeg::ConvertCodecToInternalStereoMode(const std::string &mode, const StereoModeConversionMap* conversionMap)

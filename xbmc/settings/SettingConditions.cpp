@@ -512,7 +512,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   if (!caps.sourceKnown && !data.transaction.identity.Valid())
   {
     auto* window=dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
-    caps=window ? window->GetDVOutputCapabilities(nullptr) : DVBRIDGE::OutputCapabilities{};
+    caps=window ? window->GetDVOutputCapabilities(nullptr, true) : DVBRIDGE::OutputCapabilities{};
   }
   const auto& localizer=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
   const bool method=setting->GetId()=="dvbridge.hdr10method";

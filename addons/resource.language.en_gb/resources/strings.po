@@ -14486,7 +14486,7 @@ msgstr ""
 #: xbmc/playlists/SmartPlayList.cpp
 #: addons/skin.estuary/xml/DialogPlayerProcessInfo.xml
 msgctxt "#20478"
-msgid "DV profile"
+msgid "Dolby Vision profile"
 msgstr ""
 
 #. Used in the smart playlist editor to define a watched mode
@@ -25808,7 +25808,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40812"
-msgid "DV Standard (TV-Led)"
+msgid "Dolby Vision Standard (TV-Led)"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25818,7 +25818,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40814"
-msgid "DV Disabled (native Kodi)"
+msgid "Dolby Vision Disabled (native Kodi)"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25843,7 +25843,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40819"
-msgid "DV Enhanced"
+msgid "Dolby Vision Enhanced"
 msgstr ""
 
 msgctxt "#40820"
@@ -26003,16 +26003,24 @@ msgctxt "#40901"
 msgid "Prepare at most one next CB1 frame while the current frame is presented. Native and fallback playback stay unchanged. Applies to the next video."
 msgstr ""
 
+msgctxt "#40904"
+msgid "Dolby Vision fast rendering"
+msgstr ""
+
+msgctxt "#40905"
+msgid "Reduces GPU rendering load. Fine colour-detail differences are expected to be almost imperceptible during playback."
+msgstr ""
+
 msgctxt "#40858"
 msgid "Show the accepted playback mode once when a video starts."
 msgstr ""
 
 msgctxt "#40861"
-msgid "DV Enhanced - Natural"
+msgid "Dolby Vision Enhanced - Natural"
 msgstr ""
 
 msgctxt "#40862"
-msgid "DV Enhanced - Signature"
+msgid "Dolby Vision Enhanced - Signature"
 msgstr ""
 
 msgctxt "#40863"
@@ -26032,11 +26040,11 @@ msgid "HDR10 Native"
 msgstr ""
 
 msgctxt "#40867"
-msgid "DV Reference (AI)"
+msgid "Dolby Vision Reference (AI)"
 msgstr ""
 
 msgctxt "#40868"
-msgid "DV Enhanced (AI)"
+msgid "Dolby Vision Enhanced (AI)"
 msgstr ""
 
 msgctxt "#40870"
@@ -26044,11 +26052,11 @@ msgid "AI-assisted HDR10 to Dolby Vision conversion. Reference preserves grading
 msgstr ""
 
 msgctxt "#40871"
-msgid "DV Enhanced (AI) - Natural"
+msgid "Dolby Vision Enhanced (AI) - Natural"
 msgstr ""
 
 msgctxt "#40872"
-msgid "DV Enhanced (AI) - Signature"
+msgid "Dolby Vision Enhanced (AI) - Signature"
 msgstr ""
 
 msgctxt "#40875"
@@ -26058,3 +26066,4 @@ msgstr ""
 msgctxt "#40876"
 msgid "Playback modes | Source: {0}"
 msgstr ""
+

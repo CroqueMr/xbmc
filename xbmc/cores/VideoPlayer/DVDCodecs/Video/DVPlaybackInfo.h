@@ -15,6 +15,7 @@ struct ModeAdmission { bool usable{}; OutputReason reason{OutputReason::None}; }
 struct OutputCapabilities
 {
   bool sourceKnown{}, isDV{}, processingKnown{}, nativeDV{}, hdr10{};
+  bool stereoSource{};
   uint64_t generation{};
   std::array<ModeAdmission, 5> processing{};
   bool isHDR10{};
@@ -53,7 +54,7 @@ struct CDVPlaybackInfo
     if ((output & FEL) && source.find("FEL") == std::string::npos)
       source += " FEL";
     source += (output & CM4) ? " · CM4 metadata" : " · CM2.9 metadata";
-    return source + ((output & HDR10) ? " · HDR10 Basic" : " · HDMI DV");
+    return source + ((output & HDR10) ? " · HDR10 Basic" : " · HDMI Dolby Vision");
   }
 
   template<class Output> static const char* Policy(const Output& output)
@@ -62,19 +63,19 @@ struct CDVPlaybackInfo
     {
       case 2: return "HDR10 Reference Basic";
       case 3: return "HDR10 Reference Expert";
-      case 4: return "DV Enhanced";
-      default: return output.flags & HDR10 ? "HDR10 Reference Basic" : "DV Standard";
+      case 4: return "Dolby Vision Enhanced";
+      default: return output.flags & HDR10 ? "HDR10 Reference Basic" : "Dolby Vision Standard";
     }
   }
   static const char* RequestedPolicy(int mode)
   {
     switch(mode)
     {
-      case 0:return "DV Disabled (native Kodi)";
-      case 1:return "DV Standard";
+      case 0:return "Dolby Vision Disabled (native Kodi)";
+      case 1:return "Dolby Vision Standard";
       case 2:return "HDR10 Reference Basic";
       case 3:return "HDR10 Reference Expert";
-      case 4:return "DV Enhanced";
+      case 4:return "Dolby Vision Enhanced";
       default:return "";
     }
   }
@@ -83,7 +84,7 @@ struct CDVPlaybackInfo
   {
     if (!output.flags) return "Kodi default";
     std::string mode = output.flags & HDR10 ? Policy(output) :
-        output.effective == 4 ? "DV Enhanced" : "DV Standard (TV-Led)";
+        output.effective == 4 ? "Dolby Vision Enhanced" : "Dolby Vision Standard (TV-Led)";
     if (output.effective == 4)
       mode += output.enhancement ? " - Signature" : " - Natural";
     if (output.fallback)

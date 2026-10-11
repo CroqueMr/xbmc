@@ -67,6 +67,11 @@ public:
       bool allowModeSwitch = false) const;
   bool CanRetainDVSource() const;
   bool CompleteDVModeSwitch(const VideoPicture& picture);
+  bool DVModeSwitchDeferred()
+  {
+    return !m_dvRollbackFailed && m_dvShutdownFence && m_dvContext &&
+        m_dvContext->Poll() != DVBRIDGE_DV_FAILED;
+  }
   void ObserveDVImport(DVBRIDGE::SourceBinding binding, dvbridge_geometry geometry, bool usable);
   DVBRIDGE::OutputSelection SelectedDVOutput(const VideoPicture* picture) const;
   DVBRIDGE::OutputReason ConsumeDVPlaybackFailure(DVBRIDGE::SourceBinding binding);
@@ -150,6 +155,7 @@ private:
   bool m_dvShutdownFence{};
   bool m_dvRejectedSurface{}, m_dvRollbackFailed{};
   bool PollRejectedDVSurface();
+  bool StageOrdinaryDVOutput(const VideoPicture* picture);
   bool RecoverDVActivation();
   void ResetDVActivation(const VideoPicture* picture);
   bool m_dvRecoveryPending{}, m_dvNativeFailed{}, m_dvHDR10Failed{}, m_dvFallbackActive{};
@@ -196,6 +202,7 @@ private:
   CRect m_dvSubtitleBounds;
   unsigned m_dvSubtitleDraws{};
   uint64_t m_dvSubtitleContent{};
+  uint64_t m_dvGUIContentGeneration{};
   CFrameBufferObject m_dvPQSubtitleFbo;
   int m_dvPQSubtitleWidth{}, m_dvPQSubtitleHeight{}, m_dvPQPreviousFbo{};
   unsigned m_dvPQSubtitleDraws{};

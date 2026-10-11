@@ -29,6 +29,9 @@ struct OutputPreferences
   HDR10SourceMode hdr10Source{HDR10SourceMode::Native};
   int method{0}, preset{0}, panel{0}, gamut{0};
   double peak{0};
+  bool optimizedDV{true};
+  bool fastChroma{false};
+  bool processingOptimizations{false};
   uint64_t revision{1};
 
   bool ProfileValid() const
@@ -40,7 +43,9 @@ struct OutputPreferences
   bool SameValues(const OutputPreferences& other) const
   {
     return output == other.output && hdr10Source == other.hdr10Source && method == other.method && preset == other.preset &&
-        panel == other.panel && gamut == other.gamut &&
+        panel == other.panel && gamut == other.gamut && optimizedDV == other.optimizedDV &&
+        fastChroma == other.fastChroma &&
+        processingOptimizations == other.processingOptimizations &&
         std::bit_cast<uint64_t>(peak) == std::bit_cast<uint64_t>(other.peak);
   }
 
@@ -111,6 +116,7 @@ inline OutputPreferences FrameOutputSettings()
     next.peak = settings->GetNumber("dvbridge.tvpeak");
     next.panel = settings->GetInt("dvbridge.tvpanel");
     next.gamut = settings->GetInt("dvbridge.tvgamut");
+    next.fastChroma = settings->GetBool("dvbridge.fastchroma");
   }
   if (next.method < 0 || next.method > 1) next.method = 0;
   if (next.preset < 0 || next.preset > 1) next.preset = 0;
@@ -149,5 +155,9 @@ inline bool AsyncPreparationEnabled()
   const auto component = CServiceBroker::GetSettingsComponent();
   const auto settings = component ? component->GetSettings() : nullptr;
   return settings && settings->GetBool("dvbridge.asyncpreparation");
+}
+inline bool FELHardwareUpscalingEnabled()
+{
+  return true;
 }
 } // namespace DVBRIDGE
