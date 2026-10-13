@@ -505,7 +505,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   {
     if (base.binding == m_pendingBinding && prediction.id.revision == m_pendingIdentity.revision &&
         preferences.revision == m_requested.revision && m_requested.SameValues(preferences) &&
-        m_pendingOverlayRevision == m_nativeOverlayRevision && sameGeometry &&
+        (!m_direct || m_pendingOverlayRevision == m_nativeOverlayRevision) && sameGeometry &&
+        m_pendingOverlayVisible == m_overlayVisible &&
         (!m_direct || allowPacked))
       return PollReady() ? FrameStatus::Ready : FrameStatus::Pending;
     Cancel();
@@ -543,6 +544,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   m_pendingOverlayRevision = m_nativeOverlayRevision;
+  m_pendingOverlayVisible = m_overlayVisible;
   m_sourceGeometry = geometry;m_geometryKnown = true;
   m_pendingBinding = base.binding;m_pendingSourceInfo = base.sourceInfo;
   m_pendingMetadata = {};
@@ -968,7 +970,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   {
     if (base.binding == m_pendingBinding && revision == m_pendingIdentity.revision &&
         policy.mode == m_effectiveMode && (allowPacked || !m_direct) &&
-        m_pendingOverlayRevision == m_nativeOverlayRevision)
+        m_pendingOverlayVisible == m_overlayVisible &&
+        (!m_direct || m_pendingOverlayRevision == m_nativeOverlayRevision))
       return PollReady() ? FrameStatus::Ready : FrameStatus::Pending;
     Cancel();
   }
@@ -999,6 +1002,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
 #endif
   m_guiComposed = false;
   m_pendingOverlayRevision = m_nativeOverlayRevision;
+  m_pendingOverlayVisible = m_overlayVisible;
   m_requested = preferences;
   policy.revision = revision;
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);

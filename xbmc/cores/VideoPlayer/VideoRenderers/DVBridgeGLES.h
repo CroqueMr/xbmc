@@ -219,7 +219,7 @@ private:
   bool m_directUsable = true;
   dvbridge_native_overlay m_nativeOverlay{};
   unsigned m_nativeOverlayTextures[3]{};
-  bool m_nativeOverlayEnabled{}, m_nativeOverlayPrimed{}, m_overlayVisible{};
+  bool m_nativeOverlayEnabled{}, m_nativeOverlayPrimed{}, m_overlayVisible{}, m_pendingOverlayVisible{};
   uint64_t m_nativeOverlayContent{};
   uint64_t m_nativeOverlayRevision{}, m_pendingOverlayRevision{}, m_committedOverlayRevision{};
   bool m_prepared = false;
