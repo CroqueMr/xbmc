@@ -1691,6 +1691,8 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   const bool fullGUI = m_guiWillRender && GetGUIElementCount() &&
       CDVBridgeGLES::CanComposeSDRGUI(preferences.optimizedDV,m_hdrConversion,capturing,
           m_guiFboWidth,m_guiFboHeight,m_dvPQSubtitleDraws);
+  // The TV masks L5 margins. Keep controls/subtitles in letterbox bars visible.
+  m_dvBridge->SetOverlayVisible((m_guiWillRender && GetGUIElementCount()) || m_dvOverlays);
   // Prime the subtitle shader once; empty frames retain the lean native shader.
   const bool nativeOverlay = !m_hdrConversion &&
       (fullGUI || subtitlesOnly || (overlayFree && !m_dvBridge->NativeOverlayPrimed())) &&
