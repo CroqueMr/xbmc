@@ -541,6 +541,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
   dvbridge_renderer_set_fast_chroma(m_renderer,preferences.fastChroma);
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
+  dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   m_pendingOverlayRevision = m_nativeOverlayRevision;
   m_sourceGeometry = geometry;m_geometryKnown = true;
   m_pendingBinding = base.binding;m_pendingSourceInfo = base.sourceInfo;
@@ -654,6 +655,14 @@ CDVBridgeGLES::~CDVBridgeGLES()
     pl_tex_destroy(m_gl->gpu, &m_nativeOverlay.pq);
     pl_tex_destroy(m_gl->gpu, &m_scanout);
   }
+}
+
+void CDVBridgeGLES::SetOverlayVisible(bool visible)
+{
+  // Outgoing L5 differs, so a paused or packed picture must be prepared again.
+  if (visible != m_overlayVisible)
+    ++m_nativeOverlayRevision;
+  m_overlayVisible = visible;
 }
 
 bool CDVBridgeGLES::SetNativeOverlay(unsigned texture, unsigned degamma, unsigned pq,
@@ -803,6 +812,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
   dvbridge_renderer_set_optimized_dv(m_renderer,m_requested.optimizedDV);
   dvbridge_renderer_set_fast_chroma(m_renderer,m_requested.fastChroma);
   dvbridge_renderer_set_processing_optimizations(m_renderer,m_requested.processingOptimizations);
+  dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   dvbridge_gl_frame bl{}, el{};
   if (!dvbridge_gl_frame_import(&bl, m_gl->gpu, base.layout, base.width, base.height, base.planes))
     return Failure("base-import");
@@ -994,6 +1004,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
   dvbridge_renderer_set_fast_chroma(m_renderer,preferences.fastChroma);
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
+  dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   m_fallback = fallback;
   m_asyncEligible = eligible;
   const auto previousMode=m_effectiveMode;

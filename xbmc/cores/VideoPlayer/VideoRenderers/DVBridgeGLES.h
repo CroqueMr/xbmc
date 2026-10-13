@@ -129,6 +129,8 @@ public:
                         const CRect& bounds, uint64_t content, bool inputPQ);
   bool NativeOverlayComposed() const { return m_direct && m_nativeOverlayEnabled; }
   bool NativeOverlayPrimed() const { return m_nativeOverlayPrimed; }
+  // GUI or subtitles will cover the next picture: send a full-raster L5.
+  void SetOverlayVisible(bool visible);
   bool SupportsMode(dvbridge_mode mode) const { return dvbridge_renderer_supports_mode(m_renderer, mode); }
   bool SupportsHDR10AI(dvbridge_mode mode) const { return dvbridge_renderer_supports_hdr10_ai(m_renderer, mode); }
   bool HasRenderer() const { return m_renderer != nullptr; }
@@ -217,7 +219,7 @@ private:
   bool m_directUsable = true;
   dvbridge_native_overlay m_nativeOverlay{};
   unsigned m_nativeOverlayTextures[3]{};
-  bool m_nativeOverlayEnabled{}, m_nativeOverlayPrimed{};
+  bool m_nativeOverlayEnabled{}, m_nativeOverlayPrimed{}, m_overlayVisible{};
   uint64_t m_nativeOverlayContent{};
   uint64_t m_nativeOverlayRevision{}, m_pendingOverlayRevision{}, m_committedOverlayRevision{};
   bool m_prepared = false;
