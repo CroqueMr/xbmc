@@ -87,6 +87,7 @@ protected:
   void SetFilters();
   void UpdateName();
   bool SetPictureParams(VideoPicture* pVideoPicture);
+  void UpdateDropControl(int64_t pts);
 
   bool HasHardware() { return m_pHardware != nullptr; }
   void SetHardware(IHardwareDecoder *hardware);

@@ -962,21 +962,8 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVid
   }
 
   // here we got a frame
-  int64_t framePTS = m_pDecodedFrame->best_effort_timestamp;
-
-  if (m_pCodecContext->skip_frame > AVDISCARD_DEFAULT)
-  {
-    if (m_dropCtrl.m_state == CDropControl::VALID &&
-        m_dropCtrl.m_lastPTS != AV_NOPTS_VALUE &&
-        framePTS != AV_NOPTS_VALUE &&
-        framePTS > (m_dropCtrl.m_lastPTS + m_dropCtrl.m_diffPTS * 1.5))
-    {
-      m_droppedFrames++;
-      if (m_interlaced)
-        m_droppedFrames++;
-    }
-  }
-  m_dropCtrl.Process(framePTS, m_pCodecContext->skip_frame > AVDISCARD_DEFAULT);
+  if (!m_multiview)
+    UpdateDropControl(m_pDecodedFrame->best_effort_timestamp);
 
   if (m_pDecodedFrame->flags & AV_FRAME_FLAG_KEY)
   {
@@ -1004,6 +991,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVid
     int frames = 300;
     if (m_dropCtrl.m_state == CDropControl::VALID)
       frames = static_cast<int>(6000000 / m_dropCtrl.m_diffPTS);
+    else if (m_multiview && m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
+      frames = static_cast<int>(
+          std::clamp<int64_t>(6LL * m_hints.fpsrate / m_hints.fpsscale, 1, 300));
     if (m_iLastKeyframe >= frames && m_pDecodedFrame->pict_type == AV_PICTURE_TYPE_I)
     {
       m_started = true;
@@ -1098,6 +1088,22 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVid
   }
 
   return VC_NONE;
+}
+
+void CDVDVideoCodecFFmpeg::UpdateDropControl(int64_t pts)
+{
+  if (m_pCodecContext->skip_frame > AVDISCARD_DEFAULT)
+  {
+    if (m_dropCtrl.m_state == CDropControl::VALID &&
+        m_dropCtrl.m_lastPTS != AV_NOPTS_VALUE && pts != AV_NOPTS_VALUE &&
+        pts > (m_dropCtrl.m_lastPTS + m_dropCtrl.m_diffPTS * 1.5))
+    {
+      m_droppedFrames++;
+      if (m_interlaced)
+        m_droppedFrames++;
+    }
+  }
+  m_dropCtrl.Process(pts, m_pCodecContext->skip_frame > AVDISCARD_DEFAULT);
 }
 
 bool CDVDVideoCodecFFmpeg::SetPictureParams(VideoPicture* pVideoPicture)
@@ -1706,6 +1712,18 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::FilterProcess(AVFrame* frame)
   {
     CLog::Log(LOGERROR, "CDVDVideoCodecFFmpeg::FilterProcess - av_buffersink_get_frame");
     return VC_ERROR;
+  }
+
+  // hstack can rescale an unknown timestamp to AV_NOPTS_VALUE + 1.
+  if (m_multiview && m_pFilterFrame->pts > AV_NOPTS_VALUE + 1)
+  {
+    // Count temporal pictures, not the two decoded views of each MVC picture.
+    const int64_t pts = av_rescale_q(m_pFilterFrame->pts,
+                                    av_buffersink_get_time_base(m_pFilterOut),
+                                    m_pFilterIn->outputs[0]->time_base);
+    if (m_dropCtrl.m_lastPTS == AV_NOPTS_VALUE)
+      m_dropCtrl.Reset(true);
+    UpdateDropControl(pts);
   }
 
   av_frame_unref(m_pFrame);
