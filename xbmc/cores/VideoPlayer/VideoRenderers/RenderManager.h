@@ -252,6 +252,7 @@ protected:
 
   struct SPresent
   {
+    std::shared_ptr<const VideoSourceSideData> sourceSideData;
     double         pts;
 #ifdef CB1_HAS_HDR10_AI
     double duration{};

@@ -451,25 +451,47 @@ RESOLUTION CResolutionUtils::ChooseBestResolution(float fps, int width, int heig
 }
 
 RenderStereoMode CResolutionUtils::ChooseStereoArrangement(RenderStereoMode wanted,
-                                                         float fps, int width, int height)
+                                                           float fps,
+                                                           int width,
+                                                           int height)
 {
   if (wanted != RenderStereoMode::SPLIT_VERTICAL && wanted != RenderStereoMode::SPLIT_HORIZONTAL)
     return wanted;
+
   PerEyeSize(width, height);
-  const auto indexList = CServiceBroker::GetSettingsComponent()->GetSettings()->GetList(
-      CSettings::SETTING_VIDEOSCREEN_WHITELIST);
-  auto& context = CServiceBroker::GetWinSystem()->GetGfxContext();
-  const auto candidates = Find3DCandidates(indexList, indexList.empty(), width, height,
-                                          context.GetResInfo(context.GetVideoResolution()));
-  const auto tiers = StereoRefreshTiers(fps);
+
+  const std::vector<CVariant> indexList =
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetList(
+          CSettings::SETTING_VIDEOSCREEN_WHITELIST);
+  const bool noWhiteList = indexList.empty();
+
+  CGraphicContext& gfxContext = CServiceBroker::GetWinSystem()->GetGfxContext();
+  const std::vector<RESOLUTION> candidates =
+      Find3DCandidates(indexList, noWhiteList, width, height,
+                       gfxContext.GetResInfo(gfxContext.GetVideoResolution()));
+  const std::vector<float> tiers = StereoRefreshTiers(fps);
+
   const RenderStereoMode other = wanted == RenderStereoMode::SPLIT_VERTICAL
-                                    ? RenderStereoMode::SPLIT_HORIZONTAL
-                                    : RenderStereoMode::SPLIT_VERTICAL;
-  const auto wantedMatch = FindNative3DMode(candidates, StereoFlagFor(wanted), tiers);
-  const auto otherMatch = FindNative3DMode(candidates, StereoFlagFor(other), tiers);
-  if (wantedMatch.resolution == RES_INVALID && otherMatch.resolution == RES_INVALID)
-    return RenderStereoMode::MONO;
-  return BetterMatch(otherMatch, wantedMatch) ? other : wanted;
+                                     ? RenderStereoMode::SPLIT_HORIZONTAL
+                                     : RenderStereoMode::SPLIT_VERTICAL;
+
+  const StereoMatch wantedMatch = FindNative3DMode(candidates, StereoFlagFor(wanted), tiers);
+  const StereoMatch otherMatch = FindNative3DMode(candidates, StereoFlagFor(other), tiers);
+
+  // Only change the arrangement for a better mode. Neither arrangement having one
+  // leaves the choice alone, which keeps a display with no native 3D mode for this
+  // content behaving as it does today: it is one the viewer switches into 3D by hand,
+  // and which half of the frame each eye lives in is then theirs to decide.
+  if (BetterMatch(otherMatch, wantedMatch))
+  {
+    CLog::Log(LOGDEBUG,
+              "Stereoscopic 3D: changing the output arrangement to suit display mode {} at {}",
+              CDisplaySettings::GetInstance().GetResolutionInfo(otherMatch.resolution).strMode,
+              StereoTierName(otherMatch.tier));
+    return other;
+  }
+
+  return wanted;
 }
 
 void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int height, bool is3D,

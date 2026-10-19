@@ -7,6 +7,7 @@
  */
 
 #include "DVDVideoCodecFFmpeg.h"
+#include "cores/VideoSourceSideData.h"
 #ifdef CB1_HAS_HDR10_AI
 #include "HDR10AIBuffers.h"
 #endif
@@ -18,6 +19,7 @@
 #include "DVDVideoPPFFmpeg.h"
 #endif
 #include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "cores/FFmpeg.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
@@ -26,7 +28,7 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/CPUInfo.h"
-#include "utils/DVBridgeDiagnosticState.h"
+#include "utils/DVBridgeDiagnosticLog.h"
 #include "utils/StringUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
@@ -352,6 +354,8 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
   }
 
   m_hints = hints;
+  m_sourceMasteringMetadata.reset();
+  m_sourceLightMetadata.reset();
   m_options = options;
 #ifdef HAVE_DVBRIDGE
   m_dvNativeOutput = DVBRIDGE::RetainsDVSource(hints);
@@ -1134,6 +1138,8 @@ bool CDVDVideoCodecFFmpeg::SetPictureParams(VideoPicture* pVideoPicture)
 
 void CDVDVideoCodecFFmpeg::Reset()
 {
+  m_sourceMasteringMetadata.reset();
+  m_sourceLightMetadata.reset();
 #ifdef HAVE_DVBRIDGE
   m_dvSourceOwner.Seek();
   m_dvPending.clear();
@@ -1179,8 +1185,48 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::HandleHwFatal()
   return VC_REOPEN;
 }
 
+void CDVDVideoCodecFFmpeg::CaptureSourceSideData(VideoPicture* pVideoPicture)
+{
+  // Capture original native source facts before any bridge/AI/output mutation.
+  // This is deliberately independent of HAVE_DVBRIDGE and output eligibility.
+  if (const auto* sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA))
+  {
+    if (sd->data && sd->size == sizeof(AVMasteringDisplayMetadata))
+      m_sourceMasteringMetadata = *reinterpret_cast<const AVMasteringDisplayMetadata*>(sd->data);
+    else
+      m_sourceMasteringMetadata.reset();
+  }
+  if (const auto* sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL))
+  {
+    if (sd->data && sd->size == sizeof(AVContentLightMetadata))
+      m_sourceLightMetadata = *reinterpret_cast<const AVContentLightMetadata*>(sd->data);
+    else
+      m_sourceLightMetadata.reset();
+  }
+  pVideoPicture->sourceSideData = VideoSourceSideData::Capture(
+      m_videoProcessingGeneration, ++m_videoSourceSerial, m_pCodecContext->codec_id,
+      m_pFrame, m_hints.dovi.dv_profile ? &m_hints.dovi : nullptr,
+      m_sourceMasteringMetadata ? &*m_sourceMasteringMetadata : m_hints.masteringMetadata.get(),
+      m_sourceLightMetadata ? &*m_sourceLightMetadata : m_hints.contentLightMetadata.get());
+}
+
 bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
 {
+  CaptureSourceSideData(pVideoPicture);
+  if (pVideoPicture->sourceSideData && pVideoPicture->sourceSideData->RejectedSections())
+  {
+    static thread_local uint64_t rejectedGeneration{};
+    static thread_local unsigned rejectedSections{};
+    if (rejectedGeneration != m_videoProcessingGeneration)
+    {
+      rejectedGeneration = m_videoProcessingGeneration;
+      rejectedSections = 0;
+    }
+    const auto sections = pVideoPicture->sourceSideData->RejectedSections();
+    if (sections & ~rejectedSections)
+      DVBRIDGE::DiagnosticLog(LOGDEBUG, "Native source side-data omitted: sections={}", sections);
+    rejectedSections |= sections;
+  }
   if (!m_pFrame)
     return false;
 
@@ -1387,6 +1433,7 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
       pVideoPicture->hasLightMetadata ? pVideoPicture->lightMetadata.MaxFALL : 0u};
   const auto& sourceMastering = pVideoPicture->displayMetadata;
   auto& sourceInfo = pVideoPicture->doviSourceInfo;
+  sourceInfo.informationGeneration = m_videoProcessingGeneration;
   sourceInfo.compatibility = m_hints.dovi.dv_bl_signal_compatibility_id;
   sourceInfo.mastering = pVideoPicture->hasDisplayMetadata && sourceMastering.has_luminance &&
       sourceMastering.max_luminance.den > 0 && sourceMastering.min_luminance.den > 0;

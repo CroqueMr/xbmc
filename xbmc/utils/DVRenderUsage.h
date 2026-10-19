@@ -31,8 +31,8 @@ public:
     std::string line, driver, device, id;
     char boundedLine[2049];
     unsigned bytes=0, count=0;
-    Client client;
-    bool engine = false;
+    Client render, gfx;
+    bool renderEngine = false, gfxEngine = false;
     while (count++ < 128 && input.getline(boundedLine,sizeof(boundedLine)))
     {
       bytes+=input.gcount();
@@ -49,17 +49,31 @@ public:
       else if (key == "drm-engine-render")
       {
         std::string unit;
-        engine = bool(value >> client.busy >> unit) && unit == "ns";
+        renderEngine = bool(value >> render.busy >> unit) && unit == "ns";
+      }
+      else if (key == "drm-engine-gfx")
+      {
+        std::string unit;
+        gfxEngine = bool(value >> gfx.busy >> unit) && unit == "ns";
       }
       else if (key == "drm-engine-capacity-render")
       {
-        if (!(value >> client.capacity) || !client.capacity)
+        if (!(value >> render.capacity) || !render.capacity)
+          return;
+      }
+      else if (key == "drm-engine-capacity-gfx")
+      {
+        if (!(value >> gfx.capacity) || !gfx.capacity)
           return;
       }
     }
     if (!input.eof()) return; // Long lines or an exhausted record budget are unavailable.
-    if (!engine || id.empty() || device.empty() || (driver != "i915" && driver != "xe"))
+    const bool amd = driver == "amdgpu";
+    if (id.empty() || device.empty() ||
+        (amd ? !gfxEngine : (!renderEngine || (driver != "i915" && driver != "xe"))))
       return;
+    // Graphics only: compute/decode counters are not independent render utilization.
+    Client client = amd ? gfx : render;
     client.device = device;
     const auto key = driver + ":" + device + ":" + id;
     auto found = clients.find(key);

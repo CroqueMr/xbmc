@@ -2,9 +2,10 @@
 #pragma once
 
 class CWinSystemBase;
+namespace KODI::RENDERING::CAPTURE { struct ReadbackBuffer; }
 
 namespace KODI::WINDOWING::GBM
 {
 bool HasDVBridgeScreenshot(CWinSystemBase& window);
-unsigned int GetDVBridgeScreenshotFramebuffer(CWinSystemBase& window);
+bool ReadDVBridgeScreenshot(CWinSystemBase& window, KODI::RENDERING::CAPTURE::ReadbackBuffer& out);
 }

@@ -57,8 +57,9 @@
   <include name="DVAudioFields"><definition>
       <include content="DVSection"><param name="label" value="AUDIO"/><param name="gap" value="0"/><param name="height" value="42"/><param name="visible" value="true"/></include>
       <include content="DVInfoRow"><param name="label" value="Track"/><param name="value" value="No audio track"/><param name="visible" value="!Integer.IsGreater(VideoPlayer.AudioStreamCount,0)"/></include>
-      <include content="DVInfoRow"><param name="label" value="Source decoder"/><param name="value" value="$INFO[Player.Process(audiodecoder)]"/><param name="visible" value="Integer.IsGreater(VideoPlayer.AudioStreamCount,0)"/></include>
-      <include content="DVInfoRow"><param name="label" value="Resolution"/><param name="value" value="$INFO[Player.Process(audiobitspersample)] bit / $INFO[Player.Process(audiosamplerate)] Hz"/><param name="visible" value="Integer.IsGreater(VideoPlayer.AudioStreamCount,0)"/></include>
+      <include content="DVInfoRow"><param name="label" value="Source codec"/><param name="value" value="$INFO[VideoPlayer.AudioCodec]"/><param name="visible" value="Integer.IsGreater(VideoPlayer.AudioStreamCount,0)"/></include>
+      <include content="DVInfoRow"><param name="label" value="Decoder"/><param name="value" value="$INFO[Player.Process(audiodecoder)]"/><param name="visible" value="Integer.IsGreater(VideoPlayer.AudioStreamCount,0)"/></include>
+      <include content="DVInfoRow"><param name="label" value="Decoded format"/><param name="value" value="$INFO[Player.Process(audiobitspersample)] bit / $INFO[Player.Process(audiosamplerate)] Hz"/><param name="visible" value="Integer.IsGreater(VideoPlayer.AudioStreamCount,0) + !Player.Passthrough"/></include>
       <include content="DVInfoRow"><param name="label" value="Source channels"/><param name="value" value="$INFO[Player.Process(audiochannels)]"/><param name="visible" value="Integer.IsGreater(VideoPlayer.AudioStreamCount,0)"/></include>
       <include content="DVInfoRow"><param name="label" value="Player audio path"/><param name="value" value="$VAR[DVAudioOutput]"/><param name="visible" value="Integer.IsGreater(VideoPlayer.AudioStreamCount,0)"/></include>
       <include content="DVInfoRow"><param name="label" value="Bitrate"/><param name="value" value="$INFO[Player.Process(audiolivebitrate)]"/><param name="visible" value="Integer.IsGreater(VideoPlayer.AudioStreamCount,0)"/></include>
@@ -71,6 +72,7 @@
     </definition></include>
   <include name="DVRenderingFields"><param name="gauge"/><definition>
       <include content="DVSection"><param name="label" value="RENDERING &amp; SYSTEM"/><param name="gap" value="0"/><param name="height" value="42"/><param name="visible" value="true"/></include>
+      <include content="DVInfoRow"><param name="label" value="$LOCALIZE[40906]"/><param name="value" value="$INFO[Window(playerprocessinfo).Property(DV.FastRendering)]"/><param name="visible" value="!String.IsEmpty(Window(playerprocessinfo).Property(DV.FastRendering))"/></include>
       <include content="DVInfoRow"><param name="label" value="Render engine + GUI"/><param name="value" value="$INFO[Window(playerprocessinfo).Property(DV.GPURender)]"/><param name="visible" value="String.IsEqual(Window(playerprocessinfo).Property(DV.GPUAvailable),true)"/></include>
       <control type="group"><height>24</height><visible>String.IsEqual(Window(playerprocessinfo).Property(DV.GPUAvailable),true)</visible>
         <control type="progress" id="$PARAM[gauge]"><top>8</top><width>564</width><height>8</height>
@@ -85,7 +87,7 @@
       <include content="DVInfoRow"><param name="label" value="Player cache"/><param name="value" value="$INFO[Player.CacheLevel] %"/><param name="visible" value="true"/></include>
       <include content="DVInfoRow"><param name="label" value="Video queue / data"/><param name="value" value="$INFO[Player.Process(videoqueuelevel)] % / $INFO[Player.Process(videoqueuedatalevel)] %"/><param name="visible" value="true"/></include>
       <include content="DVInfoRow"><param name="label" value="Audio queue / data"/><param name="value" value="$INFO[Player.Process(audioqueuelevel)] % / $INFO[Player.Process(audioqueuedatalevel)] %"/><param name="visible" value="Integer.IsGreater(VideoPlayer.AudioStreamCount,0)"/></include>
-      <include content="DVSection"><param name="label" value="OUTPUT &amp; PROCESSING"/><param name="gap" value="18"/><param name="height" value="60"/><param name="visible" value="true"/></include>
+      <include content="DVSection"><param name="label" value="OUTPUT &amp; PROCESSING"/><param name="gap" value="18"/><param name="height" value="60"/><param name="visible" value="String.IsEqual(Window(playerprocessinfo).Property(DV.ProcessingVisible),true)"/></include>
       <include content="DVInfoRow"><param name="label" value="Engine"/><param name="value" value="$INFO[Window(playerprocessinfo).Property(DV.Engine)]"/><param name="visible" value="!String.IsEmpty(Window(playerprocessinfo).Property(DV.Engine))"/></include>
       <include content="DVInfoRow"><param name="label" value="Circuit"/><param name="value" value="$INFO[Window(playerprocessinfo).Property(DV.Circuit)]"/><param name="visible" value="!String.IsEmpty(Window(playerprocessinfo).Property(DV.Circuit))"/></include>
       <include content="DVInfoRow"><param name="label" value="Compatibility fallback"/><param name="value" value="$INFO[Window(playerprocessinfo).Property(DV.Fallback)]"/><param name="visible" value="!String.IsEmpty(Window(playerprocessinfo).Property(DV.Fallback))"/></include>
@@ -101,6 +103,7 @@
       <include content="DVInfoRow"><param name="label" value="Scanout container"/><param name="value" value="$INFO[Window(playerprocessinfo).Property(DV.Transport)]"/><param name="visible" value="!String.IsEmpty(Window(playerprocessinfo).Property(DV.Transport))"/></include>
       <include content="DVInfoRow"><param name="label" value="$LOCALIZE[40848]"/><param name="value" value="$INFO[Window(playerprocessinfo).Property(DV.MinimumLinkBits)]"/><param name="visible" value="!String.IsEmpty(Window(playerprocessinfo).Property(DV.MinimumLinkBits))"/></include>
       <include content="DVInfoRow"><param name="label" value="FEL reconstructed"/><param name="value" value="$INFO[Window(playerprocessinfo).Property(DV.FEL)]"/><param name="visible" value="String.IsEqual(VideoPlayer.HdrType,dolbyvision) + !String.IsEmpty(Window(playerprocessinfo).Property(DV.FEL)) + !String.IsEqual(Window(playerprocessinfo).Property(DV.FEL),N/A)"/></include>
+      <include content="DVInfoRow"><param name="label" value="$LOCALIZE[40907]"/><param name="value" value="$INFO[Window(playerprocessinfo).Property(DV.FELUpscaling)]"/><param name="visible" value="!String.IsEmpty(Window(playerprocessinfo).Property(DV.FELUpscaling))"/></include>
     </definition></include>
   <include name="DVDynamicFields"><definition>
       <include content="DVSection"><param name="label" value="DOLBY VISION"/><param name="gap" value="0"/><param name="height" value="42"/><param name="visible" value="true"/></include>

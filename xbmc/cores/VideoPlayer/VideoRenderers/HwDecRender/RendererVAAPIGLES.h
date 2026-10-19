@@ -60,6 +60,9 @@ public:
 #endif
   void ReleaseBuffer(int idx) override;
   bool NeedBuffer(int idx) override;
+#ifdef HAVE_DVBRIDGE
+  void SetDVBridgeFELSuccessor(int index) override;
+#endif
 
 protected:
   bool LoadShadersHook() override;
@@ -67,6 +70,7 @@ protected:
 #ifdef HAVE_DVBRIDGE
   bool RenderDVBridge(int idx) override;
   bool BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer);
+  CDVBridgeGLES::FELSuccessor m_felSuccessor;
   dvbridge_geometry DVBridgeGeometry();
   bool DVBridgeOrientationSupported(unsigned int orientation) const;
 #endif

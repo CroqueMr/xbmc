@@ -87,6 +87,9 @@ public:
   virtual void SetBufferSize(int numBuffers) { }
   virtual void ReleaseBuffer(int idx) { }
   virtual bool NeedBuffer(int idx) { return false; }
+#ifdef HAVE_DVBRIDGE
+  virtual void SetDVBridgeFELSuccessor(int index) { }
+#endif
   virtual bool IsGuiLayer() { return true; }
   //! True when video never reaches the framebuffer: a DRM plane, an Android
   //! SurfaceView, the Amlogic video layer. Such a renderer must produce its
@@ -117,6 +120,8 @@ public:
   virtual void Update() = 0;
   virtual void RenderUpdate(
       int index, int index2, bool clear, unsigned int flags, unsigned int alpha) = 0;
+  // Read-only receipt for the last video render attempt; unknown is not success.
+  virtual bool HasRenderedFrame() const { return false; }
   virtual bool ConfigChanged(const VideoPicture &picture) = 0;
 
   // Feature support

@@ -2,10 +2,12 @@
 #pragma once
 
 #include "cores/VideoPlayer/DVDCodecs/Video/DVMetadataBuffer.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackInfo.h"
 #include "utils/DVBridgeDiagnosticState.h"
 #include "utils/Geometry.h"
 #include <optional>
 #include <span>
+#include <vector>
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #ifdef CB1_HAS_HDR10_AI
 #include "HDR10AISource.h"
@@ -23,9 +25,14 @@ extern "C"
 #error "DV bridge requires DV policy API 5 and HDR10 policy API 4"
 #endif
 
+class VideoSourceSideData;
+namespace KODI::RENDERING::CAPTURE { struct ReadbackBuffer; }
+
 class CDVBridgeGLES
 {
 public:
+  void InvalidateScreenshot() { ++m_nativeOverlayRevision; }
+  bool ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out);
   static constexpr bool CanComposeSDRGUI(bool enabled, bool hdr10, bool capture,
                                          int width, int height, unsigned pqDraws)
   {
@@ -86,6 +93,7 @@ public:
     DVBRIDGE::SourceInfo sourceInfo{};
     bool fullRange{};
     pl_hdr_metadata hdr{};
+    AVChromaLocation chromaLocation{AVCHROMA_LOC_UNSPECIFIED};
   };
   enum class FrameStatus { Failed, Pending, Busy, Ready, Reused, Unsupported };
 #ifdef CB1_HAS_HDR10_AI
@@ -110,17 +118,40 @@ public:
       DVBRIDGE::SourceBinding enhancementBinding, const CDVMetadataBuffer& metadata,
       dvbridge_geometry geometry, const DVBRIDGE::OutputPreferences& preferences, bool allowPacked,
       const dvbridge_policy* selected = nullptr, bool allowAsync = false);
+  struct FELSuccessor
+  {
+    std::shared_ptr<AVFrame> frame;
+    DVBRIDGE::SourceBinding binding;
+    CDVMetadataBuffer metadata;
+  };
+  void PrefetchHardwareFEL(const FELSuccessor& successor,
+      const DVBRIDGE::OutputPreferences& preferences);
+  void ClearFELPrefetch();
   struct Submission
   {
     dvbridge_identity identity{};
     pl_tex target{};
     uint64_t resolveSerial{}, sequence{};
     bool asyncEligible{};
+    uint64_t informationGeneration{};
+    std::shared_ptr<const VideoSourceSideData> sourceSideData{};
+    int felFilter{-1}, felBackend{};
   };
-  Submission CaptureSubmission() const { return m_submission; }
+  Submission CaptureSubmission() const
+  {
+    auto submission=m_submission;
+    submission.informationGeneration=m_pendingSourceInfo.informationGeneration;
+    const bool fel=(m_pendingInfo & CDVPlaybackInfo::FEL) != 0;
+    submission.felFilter=fel ? m_requested.felUpscaling : -1;
+    submission.felBackend=fel ? (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE ? 3 :
+        m_hardwareBinding == m_pendingBinding &&
+        m_hardwareFELFilter == m_requested.felUpscaling && m_hardwareFELVpp ? 2 : 1) : 0;
+    return submission;
+  }
   bool AsyncPreparationActive() const { return m_live && m_hasCommitted && m_asyncEligible; }
   bool Presented(bool success, const Submission& submission);
   bool PollReady();
+  FrameStatus PollStatus(uint64_t timeoutNs);
   void Cancel();
   const dvbridge_hdr10_policy_output* HDR10Output() const;
   bool Fallback() const { return m_fallback; }
@@ -146,7 +177,8 @@ public:
 
   bool Initialize(bool allowSoftware = false, bool hdr10 = false,
                   std::shared_ptr<Context> context = {});
-  bool SetHDR10Session(const dvbridge_hdr10_session& session, uint64_t stream = 0);
+  bool SetHDR10Session(const dvbridge_hdr10_session& session, uint64_t stream = 0,
+                      bool limited = false);
   bool RebindOutputSurface(bool hdr10);
   void Reset();
   bool Prepare(const Layer& base, const Layer* enhancement,
@@ -160,15 +192,28 @@ public:
   bool Presented(bool success);
 
 private:
+  struct FELPrefetch;
+  std::shared_ptr<FELPrefetch> m_felPrefetch;
+  FrameStatus TakeFELPrefetch(const std::shared_ptr<AVFrame>& frame,
+      DVBRIDGE::SourceBinding binding, const DVBRIDGE::OutputPreferences& preferences,
+      std::shared_ptr<dvbridge_fel_vpp>& vpp, const dvbridge_fel_vpp_image*& image);
   void CaptureMetadata(const CDVMetadataBuffer& metadata, bool fel);
   std::shared_ptr<Context> m_context;
   CDVMetadataBuffer m_pendingMetadata;
   DVBRIDGE::SourceInfo m_pendingSourceInfo{};
   std::shared_ptr<void> m_hardwareLease;
+  std::weak_ptr<AVFrame> m_hardwareFrame;
+  std::vector<std::shared_ptr<void>> m_rawELCache;
+  uint64_t m_rawELImports{},m_rawELHits{};
   std::shared_ptr<dvbridge_fel_vpp> m_felVpp;
   uint64_t m_felVppStream{};
   bool m_felVppEnabled{}, m_felVppReported{};
+  bool m_hardwareFELVpp{};
+  int m_reportedFELKey{-1};
+  uint64_t m_reportedFELStream{};
   DVBRIDGE::SourceBinding m_hardwareBinding{};
+  int m_hardwareFELFilter{-1};
+  pl_chroma_location m_hardwareFELChroma{PL_CHROMA_UNKNOWN};
   DVBRIDGE::SourceBinding m_pendingBinding{}, m_committedBinding{};
   dvbridge_identity m_pendingIdentity{};
   dvbridge_identity m_failedIdentity{};
@@ -203,6 +248,7 @@ private:
   uint64_t m_lastSummary{0}, m_lastReported{0};
   bool m_firstFrame{true};
   bool m_hdr10{false};
+  bool m_hdr10Limited{false};
   std::optional<dvbridge_hdr10_session> m_hdr10Session;
   uint64_t m_hdr10SessionStream{};
   DVBRIDGE::DiagnosticFailures m_hdr10Fallbacks;

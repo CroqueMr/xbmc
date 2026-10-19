@@ -32,6 +32,8 @@ namespace GBM
 //
 // amdgpu drm driver needs at least 1 primary plane to active when doing a modeset
 inline constexpr int QUIRK_NEEDSPRIMARY = 1 << 0;
+// CB1 native one-ahead admission uses the physical display edge on amdgpu.
+inline constexpr int QUIRK_CB1_NATIVE_EDGE = 1 << 1;
 
 struct drm_fb
 {
@@ -136,7 +138,10 @@ private:
   std::vector<outputformat> m_output_formats = {{DRM_FORMAT_ARGB8888, 8, 8, false, {}},
                                                 {DRM_FORMAT_XRGB8888, 8, 0, false, {}},
                                                 {DRM_FORMAT_ARGB2101010, 10, 2, false, {}},
-                                                {DRM_FORMAT_XRGB2101010, 10, 0, false, {}}};
+                                                {DRM_FORMAT_XRGB2101010, 10, 0, false, {}},
+                                                {DRM_FORMAT_ABGR2101010, 10, 2, false, {}},
+                                                {DRM_FORMAT_XBGR2101010, 10, 0, false, {}},
+                                                {DRM_FORMAT_ABGR16161616F, 16, 16, false, {}}};
 };
 
 } // namespace GBM

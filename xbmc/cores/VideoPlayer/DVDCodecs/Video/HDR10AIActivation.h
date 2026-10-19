@@ -89,6 +89,17 @@ public:
     return success;
   }
 
+  Decision CancelPrepared(cb1_ai_identity id, uint64_t now)
+  {
+    if (!Matches(id) || !m_prepared || id.picture != m_identity.picture)
+      return Decision::Ignore;
+    // Settle real waiting before retiring its owner; never refund the budget.
+    if (m_waiting && Observe(CB1_AI_PENDING, id, now) == Decision::Native)
+      return Decision::Native;
+    m_prepared = m_waiting = m_waitScheduled = false;
+    return Decision::Wait;
+  }
+
   bool TakeFallbackEvent()
   {
     const bool event = m_event;

@@ -43,6 +43,9 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return result;
   }
   auto policy = preferences.Policy();
+  if (policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && preferences.fastRenderingMode == 2 &&
+      automaticFastRendering.load())
+    policy.mode = DVBRIDGE_MODE_STANDARD;
   const auto admission = [&](dvbridge_mode mode) {
     if ((mode == DVBRIDGE_MODE_HDR10_EXPERT || mode == DVBRIDGE_MODE_ENHANCED_DV) &&
         !preferences.ProfileValid())
@@ -71,6 +74,7 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return result;
   }
   policy.mode = DVBRIDGE_MODE_HDR10_BASIC;
+  policy.adaptive = DVBRIDGE_ADAPTIVE_A;
   policy.tv = {};
   return {OutputRoute::HDR10, policy, result.reason};
 }

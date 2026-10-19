@@ -252,6 +252,7 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   const auto texture = m_texturePool.Retain(m_vaapiTextures[idx]);
   if (!texture || !buffer.doviSourcePicture) return false;
   layer.sourceInfo = buffer.doviSourcePicture->doviSourceInfo;
+  layer.chromaLocation = source.chroma_position;
   if (hdr10)
   {
     layer.fullRange = source.color_range != 0;
@@ -324,6 +325,11 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
     // Preserve the original locked/native stop and readiness path.
     const bool ready = window->PrepareHDR10AIQueue(*head,layers,end,paused,presentationDeadline);
     m_aiLookahead = window->HDR10AILookaheadActive();
+    if (ready && m_aiOutputPending)
+    {
+      if (!ConfigureVideoOutput(*head)) return {};
+      m_aiOutputPending = false;
+    }
     return {ready, {}, {}};
   }
   return {false,
@@ -338,6 +344,11 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
             settings.revision != preferences.revision || !settings.SameValues(preferences))
           return false;
         m_aiLookahead = outcome.lookahead;
+        if (outcome.ready && m_aiOutputPending)
+        {
+          if (!ConfigureVideoOutput(*current)) return false;
+          m_aiOutputPending = false;
+        }
         return true;
       }};
 }
@@ -361,6 +372,16 @@ dvbridge_geometry CRendererVAAPIGLES::DVBridgeGeometry()
           static_cast<int>(std::lround(dest.Height()))};
 }
 
+void CRendererVAAPIGLES::SetDVBridgeFELSuccessor(int index)
+{
+  m_felSuccessor = {};
+  if (index < 0 || index >= MAX_RENDER_BUFFERS) return;
+  const auto& buffer = m_buffers[index];
+  if (!buffer.doviEnhancement || !buffer.doviMetadata.Data() ||
+      !(buffer.doviEnhancementBinding == buffer.doviMetadata.Binding())) return;
+  m_felSuccessor = {buffer.doviEnhancement,buffer.doviEnhancementBinding,buffer.doviMetadata};
+}
+
 bool CRendererVAAPIGLES::RenderDVBridge(int idx)
 {
   auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
@@ -369,7 +390,7 @@ bool CRendererVAAPIGLES::RenderDVBridge(int idx)
   if (!window || !BuildDVBridgeLayer(idx,layer)) return false;
   auto& buffer = m_buffers[idx];
   return window->RenderDVBridge(layer, buffer.doviEnhancement,
-      buffer.doviEnhancementBinding, buffer.doviMetadata, DVBridgeGeometry());
+      buffer.doviEnhancementBinding, buffer.doviMetadata, DVBridgeGeometry(), &m_felSuccessor);
 }
 #endif
 
