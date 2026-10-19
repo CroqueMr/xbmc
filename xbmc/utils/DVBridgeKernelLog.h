@@ -15,6 +15,7 @@ namespace DVBRIDGE
 class KernelLogFilter
 {
 public:
+  void BeginCollection() { m_lost = m_pendingLost = 0; m_truncated = false; }
   std::optional<std::string> Accept(std::string_view record, uint64_t nowUs)
   {
     uint64_t priority, sequence, timestamp;
@@ -61,8 +62,8 @@ public:
     if (message.find("DVBridge:") == message.npos && !incident && !route)
       return {};
     // Kernel escapes untrusted characters. Bound the copied record as well.
-    const std::string text(message.substr(0, 2048));
-    const bool truncated=message.size()>2048;
+    const std::string text(message.substr(0, 640));
+    const bool truncated=message.size()>640;
     m_truncated|=truncated;
     for (const auto& recent : m_recent)
       if (recent.first == text && nowUs - recent.second < 30000000)

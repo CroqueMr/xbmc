@@ -8,9 +8,7 @@
 
 #include "WinSystemGbmEGLContext.h"
 #include "windowing/GraphicContext.h"
-#ifdef HAVE_DVBRIDGE
 #include "drm/DRMAtomic.h"
-#endif
 
 #include "OptionalsReg.h"
 #include "cores/VideoPlayer/DVDCodecs/DVDFactoryCodec.h"
@@ -20,6 +18,12 @@
 
 using namespace KODI::WINDOWING::GBM;
 using namespace KODI::WINDOWING::LINUX;
+
+CWinSystemGbmEGLContext::CWinSystemGbmEGLContext(EGLenum platform,
+                                             const std::string& platformExtension)
+  : CWinSystemEGL{platform, platformExtension}
+{
+}
 
 bool CWinSystemGbmEGLContext::InitWindowSystemEGL(EGLint renderableType, EGLint apiType)
 {
@@ -93,7 +97,8 @@ bool CWinSystemGbmEGLContext::ChooseEGLConfig(EGLint renderableType, int bitDept
                            return format.bpp >= 10 && format.bpp <= bitDepth;
                          return format.bpp <= 8;
                        });
-  std::ranges::sort(candidates, std::greater<>{}, &outputformat::bpp);
+  std::stable_sort(candidates.begin(), candidates.end(),
+                   [](const auto& a, const auto& b) { return a.bpp > b.bpp; });
 
   for (const auto& format : candidates)
   {
@@ -101,7 +106,21 @@ bool CWinSystemGbmEGLContext::ChooseEGLConfig(EGLint renderableType, int bitDept
       return true;
   }
 
+  if (bitDepth > 8 && FloatOutputUsable())
+    for (const auto& format : outputformats)
+      if (format.active && format.drm == DRM_FORMAT_ABGR16161616F &&
+          m_eglContext.ChooseConfig(renderableType, format.drm, false, format.alpha, true))
+        return true;
   return false;
+}
+
+bool CWinSystemGbmEGLContext::FloatOutputUsable() const
+{
+  if (m_floatOutputBlocked || m_renderableType == EGL_OPENGL_BIT || !m_DRM) return false;
+  auto* plane = m_DRM->GetGuiPlane() ? m_DRM->GetGuiPlane() : m_DRM->GetVideoPlane();
+  if (!plane) return false;
+  const auto none = plane->GetPropertyEnumValue("NV_INPUT_COLORSPACE", "None");
+  return none && plane->GetPropertyValue("NV_INPUT_COLORSPACE") == none;
 }
 
 bool CWinSystemGbmEGLContext::CreateNewWindow(const std::string& name,
@@ -251,6 +270,17 @@ int CWinSystemGbmEGLContext::VideoOutputBitDepth(const VideoPicture* picture) co
 
 bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
 {
+  if (!m_dvOutputSurface && !videoPicture)
+  {
+    m_floatOutputBlocked = false;
+    m_floatOutputPicture.reset();
+  }
+  else if (!m_dvOutputSurface && videoPicture && FloatOutputUsable() &&
+           videoPicture != m_floatOutputPicture.get())
+  {
+    m_floatOutputPicture = std::make_unique<VideoPicture>();
+    m_floatOutputPicture->SetParams(*videoPicture);
+  }
   if (m_dvOutputSurface)
   {
     if (m_dvSurfacePending || !m_eglContext.BeginOutputSurface()) return false;
@@ -263,8 +293,13 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
       m_priorOutputModifier = m_priorOutputPlane->GetModifier();
     }
   }
-  const auto reject = [this]() {
+  const auto reject = [this,videoPicture]() {
     if (m_dvOutputSurface) RejectDVOutputSurface();
+    else if (HasFloatOutput() && !m_floatOutputBlocked)
+    {
+      m_floatOutputBlocked = true;
+      return SetVideoOutput(videoPicture);
+    }
     return false;
   };
   // Override: the base only flips the gui/video plane role. On EGL
@@ -274,7 +309,8 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   // base so plane-role tracking sees the new format. EGL context survives
   // across the rebuild, no shader-rebuild. The next flip forces a modeset
   // when needed (amdgpu), on other drivers it is a fast flip."
-  const int bitDepth = VideoOutputBitDepth(videoPicture);
+  const int bitDepth = !m_dvOutputSurface && m_floatOutputBlocked ?
+      8 : VideoOutputBitDepth(videoPicture);
 
   // Pick an EGL config matching the target bit depth, then rebuild
   // the surface only if that pick changed the native visual ID.
@@ -354,10 +390,24 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   // the now-current cached format/modifier on the active plane.
   const bool routed = CWinSystemGbm::SetVideoOutput(videoPicture);
   if (!routed) return reject();
+  if (!m_dvOutputSurface && HasFloatOutput())
+  {
+    auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+    if (!drm || !drm->TestFramebuffer(m_GBM->GetDevice().GetSurface().LockFrontBuffer().Get()))
+      return reject();
+  }
   // No new drawable exists when only a same-format policy value changes.
   if (m_dvOutputSurface && format == currentFormat)
     return CompleteDVOutputSurface(true);
   return true;
+}
+
+void CWinSystemGbmEGLContext::CheckFloatOutput(bool accepted)
+{
+  if (accepted || !HasFloatOutput()) return;
+  m_floatOutputBlocked = true;
+  if (m_floatOutputPicture && SetVideoOutput(m_floatOutputPicture.get()))
+    RequeueOutputProperties();
 }
 
 bool CWinSystemGbmEGLContext::CompleteDVOutputSurface(bool submitted)

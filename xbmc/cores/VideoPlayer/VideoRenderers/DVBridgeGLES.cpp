@@ -1,21 +1,30 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 #include "DVBridgeGLES.h"
+#include "utils/DVBridgeDiagnosticLog.h"
 #include "DVBridgeShaders.h"
+#include "DVBridgeScreenshot.h"
+#include "rendering/capture/CaptureReadback.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackInfo.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVStreamTelemetry.h"
 #include "utils/log.h"
+#include "filesystem/SpecialProtocol.h"
+#include "utils/Crc32.h"
+#include "utils/SystemInfo.h"
+#include "utils/StringUtils.h"
 extern "C"
 {
 #include <libavutil/dovi_meta.h>
 #include <libavutil/avutil.h>
 #include <libavutil/hwcontext.h>
 #include "dvbridge_placebo.h"
+#include "dvbridge_cache.h"
 }
 
 #include <EGL/egl.h>
 #include <algorithm>
 #include <chrono>
 #include <deque>
+#include <filesystem>
 #include <GLES3/gl3.h>
 #include <limits>
 #include <mutex>
@@ -27,14 +36,18 @@ namespace
 {
 void BackendLog(void*, pl_log_level level, const char* message)
 {
+  try
+  {
   // Error-only callback: no debug shader dumps or GPU timing/readback queries.
   // Shared across renderer recreation so repeated setup errors stay bounded.
   static std::mutex mutex;
   static DVBRIDGE::DiagnosticFailures failures;
   std::lock_guard<std::mutex> lock(mutex);
   if (failures.Record(DVBRIDGE::DiagnosticNowMs(), "graphics", int(level)))
-    CLog::Log(LOGERROR, "DVBridge graphics: level={} detail={}", int(level),
+    DVBRIDGE::DiagnosticLog(LOGERROR, "DVBridge graphics: association=backend-unscoped level={} detail={}", int(level),
         std::string_view(message ? message : "unavailable").substr(0, 768));
+  }
+  catch (...) {} // libplacebo invokes this as a C callback.
 }
 }
 
@@ -42,6 +55,7 @@ struct CDVBridgeGLES::Context::State
 {
   pl_opengl gl{};
   pl_log log{};
+  dvbridge_shader_cache* shaderCache{};
   dvbridge_retirement_owner* owner{};
   struct SourceUse
   {
@@ -99,7 +113,7 @@ bool CDVBridgeGLES::Context::Initialize(bool allowSoftware)
   {
     static std::once_flag versions;
     std::call_once(versions, [] {
-      CLog::Log(LOGINFO, "DVBridge build: Kodi=28ea2eac1eb7af8fdcbd2672d933ce87f594be79 cb1=b852bd0b5e4c1422e0aa5e005520bca765dcb00a FFmpeg={} libplacebo_api={}",
+      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge build: Kodi=28ea2eac1eb7af8fdcbd2672d933ce87f594be79 cb1=b852bd0b5e4c1422e0aa5e005520bca765dcb00a FFmpeg={} libplacebo_api={}",
           av_version_info(), PL_API_VER);
     });
     pl_log_params logging{};
@@ -108,6 +122,26 @@ bool CDVBridgeGLES::Context::Initialize(bool allowSoftware)
   }
   m_state->gl = pl_opengl_create(m_state->log, &params);
   if (!m_state->gl) return false;
+  const auto* vendor = glGetString(GL_VENDOR);
+  const auto* renderer = glGetString(GL_RENDERER);
+  const auto* version = glGetString(GL_VERSION);
+  if (vendor && renderer && version)
+  {
+    const std::string identity = std::string(reinterpret_cast<const char*>(vendor)) + '\n' +
+        reinterpret_cast<const char*>(renderer) + '\n' + reinterpret_cast<const char*>(version) +
+        '\n' + CSysInfo::GetOsPrettyNameWithVersion() + '\n' + pl_version();
+    const auto folder = CSpecialProtocol::TranslatePath("special://temp/cb1-programs/");
+    std::error_code error;
+    std::filesystem::create_directories(folder,error);
+    const auto path = folder + StringUtils::Format("programs-{:08x}.plcache",Crc32::Compute(identity));
+    m_state->shaderCache = dvbridge_shader_cache_open(path.c_str(),32 * 1024 * 1024,m_state->log);
+    if (m_state->shaderCache)
+    {
+      pl_gpu_set_cache(m_state->gl->gpu,dvbridge_shader_cache_get(m_state->shaderCache));
+      DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 shader cache: loaded={} api={}",
+          dvbridge_shader_cache_loaded(m_state->shaderCache),PL_API_VER);
+    }
+  }
   m_state->owner = dvbridge_retirement_owner_create(m_state->gl->gpu);
   return m_state->owner != nullptr;
 }
@@ -126,6 +160,8 @@ void CDVBridgeGLES::Context::Detach(dvbridge_renderer* renderer)
   ClearNextHDR10AI();
 #endif
   dvbridge_renderer_destroy(renderer);
+  if (m_state->shaderCache && dvbridge_shader_cache_save(m_state->shaderCache) < 0)
+    DVBRIDGE::DiagnosticLog(LOGWARNING,"CB1 shader cache: save failed; normal compilation remains available");
   m_state->attached = false;
 }
 
@@ -182,7 +218,10 @@ bool CDVBridgeGLES::Context::Close()
   if (m_state->ai) m_state->ai->ReleaseRetired();
   m_state->ai.reset();
 #endif
-  pl_opengl_destroy(&m_state->gl); pl_log_destroy(&m_state->log);
+  if (m_state->shaderCache) dvbridge_shader_cache_save(m_state->shaderCache);
+  pl_opengl_destroy(&m_state->gl);
+  dvbridge_shader_cache_close(m_state->shaderCache); m_state->shaderCache = nullptr;
+  pl_log_destroy(&m_state->log);
   return true;
 }
 bool CDVBridgeGLES::Context::Quarantined() const { return m_state->quarantined; }
@@ -430,7 +469,7 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
   // binding/policy/reset must first enter Begin's existing GPU retirement path.
   if (m_state->aiNextFailed) return Decision::Native;
   // Only drain a complete snapshot; partial queues must let the decoder enqueue.
-  source.DiscardBefore(head.binding);
+  source.DiscardBefore(head.binding, now);
   source.SetPresentationDeadline(presentationDeadline);
   const bool drain = !paused && !source.AwaitingPresentation() &&
       (end || queue.back().pts >= head.pts + 1.0 - 1e-9);
@@ -457,13 +496,21 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
         std::chrono::steady_clock::now() - started).count();
     const bool required = drain && now + elapsed >= presentationDeadline;
     const auto decision=source.Prediction(head.binding,preferences,now+elapsed,result,required);
-    // Retain only the already-captured boundary sample, never the full queue.
-    // Submit after accepted current Pack/fence/page, not on its critical path.
+    // Enhanced queues captured analysis before its current draw.
     if (decision == Decision::Prepare && !paused && m_state->attached && anticipation &&
         anticipation->pts <= head.pts + 1.0 + 1e-9 &&
         anticipation->binding.picture > source.LastSubmitted() &&
         source.Collect() == CB1_AI_READY)
-      m_state->aiNext = State::NextHDR10AI{*anticipation,head.binding,head.pts,preferences};
+    {
+      if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::EnhancedDV)
+      {
+        const auto status = AnalyseHDR10AI(*anticipation,head.pts);
+        if (status != CB1_AI_READY && status != CB1_AI_PENDING)
+          m_state->aiNextFailed = true;
+      }
+      else
+        m_state->aiNext = State::NextHDR10AI{*anticipation,head.binding,head.pts,preferences};
+    }
     // Collect may dispatch follow-up reductions after the initial import fence.
     if (!FenceHDR10AIUse())
     {
@@ -503,11 +550,22 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
     return FrameStatus::Reused;
   if (m_pending)
   {
-    if (base.binding == m_pendingBinding && prediction.id.revision == m_pendingIdentity.revision &&
+    const bool sameAITransaction = base.binding == m_pendingBinding && prediction.id.revision == m_pendingIdentity.revision &&
         preferences.revision == m_requested.revision && m_requested.SameValues(preferences) &&
-        (!m_direct || m_pendingOverlayRevision == m_nativeOverlayRevision) && sameGeometry &&
-        m_pendingOverlayVisible == m_overlayVisible &&
-        (!m_direct || allowPacked))
+        sameGeometry && (!m_direct || allowPacked);
+    if (sameAITransaction && policy.mode == DVBRIDGE_MODE_ENHANCED_DV && policy.mode == m_effectiveMode &&
+        m_dvPolicyActive && !m_direct &&
+        (m_pendingOverlayVisible != m_overlayVisible || m_pendingOverlayRevision != m_nativeOverlayRevision))
+    {
+      if (dvbridge_render_dv_policy_update_overlay(m_renderer,nullptr,m_overlayVisible))
+      {
+        m_pendingOverlayVisible = m_overlayVisible;
+        m_pendingOverlayRevision = m_nativeOverlayRevision;
+        return PollReady() ? FrameStatus::Ready : FrameStatus::Pending;
+      }
+    }
+    else if (sameAITransaction && (!m_direct || m_pendingOverlayRevision == m_nativeOverlayRevision) &&
+             m_pendingOverlayVisible == m_overlayVisible)
       return PollReady() ? FrameStatus::Ready : FrameStatus::Pending;
     Cancel();
   }
@@ -555,8 +613,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   m_direct = false;
   const auto renderStart=std::chrono::steady_clock::now();
   bool rendered = false;
-  if (allowPacked && m_directUsable && m_scanout && policy.mode == DVBRIDGE_MODE_STANDARD &&
-      geometry.x == 0 && geometry.y == 0 && geometry.width == 3840 && geometry.height == 2160)
+  if (allowPacked && m_directUsable && m_scanout &&
+      (policy.mode == DVBRIDGE_MODE_STANDARD ||
+       (policy.mode == DVBRIDGE_MODE_ENHANCED_DV && !m_overlayVisible)) &&
+      (policy.mode == DVBRIDGE_MODE_ENHANCED_DV ||
+       (geometry.x == 0 && geometry.y == 0 && geometry.width == 3840 && geometry.height == 2160) ||
+       (preferences.optimizedDV && geometry.width == geometry.source_width && geometry.height == geometry.source_height)))
   {
     rendered = dvbridge_render_hdr10_ai_packed_overlay(m_renderer,&policy,&prediction,&imported.frame,
         &geometry,m_scanout,m_scanoutFramebuffer,true,m_nativeOverlayEnabled ? &m_nativeOverlay : nullptr);
@@ -587,6 +649,9 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   }
   if (!rendered)
     rendered = dvbridge_render_hdr10_ai_rgb(m_renderer,&policy,&prediction,&imported.frame,&geometry);
+  // Kodi composes RGB GUI into the intermediate; do not present an older prepack.
+  if (rendered && !m_direct && m_overlayVisible && policy.mode == DVBRIDGE_MODE_ENHANCED_DV)
+    rendered = dvbridge_render_dv_policy_update_overlay(m_renderer,nullptr,true);
   m_aiRenderSubmitNs+=std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::steady_clock::now()-renderStart).count();
   const bool fenced = m_context->FenceLastUse();
@@ -602,17 +667,16 @@ bool CDVBridgeGLES::Failure(const char* stage)
   if (DVBRIDGE::DiagnosticsEnabled())
   {
     const auto now=DVBRIDGE::DiagnosticNowMs();
-    if (m_failures.Record(now, stage))
-      CLog::Log(LOGERROR, "DVBridge renderer: stage={} failures={} source={}/{}/{} policy={}",
-          stage,m_failures.Count(),m_pendingBinding.stream,m_pendingBinding.picture,
-          m_pendingBinding.revision,m_pendingIdentity.revision);
+    const bool changed = m_failures.Record(now, stage);
+    DVBRIDGE::DiagnosticFailureLog(stage, changed, LOGERROR,
+          "DVBridge renderer: stage={} failures={}", stage,m_failures.Count());
     const bool eligible=m_live && m_advanced && m_hasCommitted &&
         m_pendingBinding.stream==m_committedBinding.stream &&
         m_pendingBinding.revision==m_committedBinding.revision;
     if (m_failures.ReferenceDue(now,eligible))
     {
       DVBRIDGE::StreamTelemetry::ReferenceWarning();
-      CLog::Log(LOGWARNING, "DVBridge sustained render failure: consider Reference; policy unchanged");
+      DVBRIDGE::DiagnosticLog(LOGWARNING, "DVBridge sustained render failure: consider Reference; policy unchanged");
     }
   }
   return false;
@@ -626,7 +690,7 @@ void CDVBridgeGLES::PreparedAudit()
       m_auditPrepared.Record(DVBRIDGE::DiagnosticNowMs(),"prepared",m_auditSerial))
   {
     m_auditPreparedSerial=m_auditSerial;
-    CLog::Log(LOGINFO,"DVBridge policy prepared: source={}/{}/{} policy={} mode={}",
+    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy prepared: source={}/{}/{} policy={} mode={}",
         m_pendingBinding.stream,m_pendingBinding.picture,m_pendingBinding.revision,
         m_pendingIdentity.revision,int(m_effectiveMode));
   }
@@ -634,17 +698,122 @@ void CDVBridgeGLES::PreparedAudit()
 
 void CDVBridgeGLES::Summary(const char* event)
 {
-  if (!DVBRIDGE::DiagnosticsEnabled() || m_lastReported == m_prepares)
+  if (m_advanced)
+  {
+    if (!DVBRIDGE::DiagnosticsEnabled() ||
+        (std::string_view(event) == "summary" && m_lastReported == m_presentations)) return;
+    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge advanced renderer {}: presented={} presentation_failures={} stage_failures={}",
+        event,m_presentations,m_failedPresentations,m_failures.Count());
+    m_lastReported = m_presentations;
     return;
-  CLog::Log(LOGINFO,
-      "DVBridge renderer {}: prepared={} direct={} composed={} presented={} presentation_failures={} stage_failures={}",
+  }
+  if (!DVBRIDGE::DiagnosticsEnabled() ||
+      (std::string_view(event) == "summary" && m_lastReported == m_prepares))
+    return;
+  DVBRIDGE::DiagnosticLog(LOGINFO,
+      "DVBridge renderer {}: prepared={} direct={} composed={} presented={} presentation_failures={} stage_failures={} raw_el_imports={} raw_el_hits={}",
       event, m_prepares, m_directFrames, m_prepares - m_directFrames,
-      m_presentations, m_failedPresentations, m_failures.Count());
+      m_presentations, m_failedPresentations, m_failures.Count(),m_rawELImports,m_rawELHits);
   m_lastReported = m_prepares;
+}
+
+struct CDVBridgeGLES::FELPrefetch
+{
+  FELSuccessor successor;
+  DVBRIDGE::OutputPreferences preferences;
+  const void* pool{};
+  int64_t pts{};
+  int width{}, height{}, format{}, chroma{};
+  std::shared_ptr<dvbridge_fel_vpp> vpp;
+  const dvbridge_fel_vpp_image* image{};
+
+  FELPrefetch(const FELSuccessor& source, const DVBRIDGE::OutputPreferences& settings)
+    : successor(source), preferences(settings), pool(source.frame->hw_frames_ctx->data),
+      pts(source.frame->pts), width(source.frame->width), height(source.frame->height),
+      format(source.frame->format), chroma(source.frame->chroma_location)
+  {}
+  ~FELPrefetch()
+  {
+    if (image) dvbridge_fel_vpp_release(vpp.get(), image);
+  }
+  bool Matches(const std::shared_ptr<AVFrame>& frame, DVBRIDGE::SourceBinding binding,
+      const DVBRIDGE::OutputPreferences& settings) const
+  {
+    return frame && frame == successor.frame && binding == successor.binding &&
+        settings.revision == preferences.revision && settings.SameValues(preferences) &&
+        frame->hw_frames_ctx && frame->hw_frames_ctx->data == pool && frame->pts == pts &&
+        frame->width == width && frame->height == height && frame->format == format &&
+        frame->chroma_location == chroma;
+  }
+};
+
+void CDVBridgeGLES::ClearFELPrefetch()
+{
+  m_felPrefetch.reset();
+}
+
+void CDVBridgeGLES::PrefetchHardwareFEL(const FELSuccessor& successor,
+    const DVBRIDGE::OutputPreferences& preferences)
+{
+  const auto current = m_hardwareFrame.lock();
+  const auto& frame = successor.frame;
+  dvbridge_color color{};
+  if (!m_pending || !m_dvPolicyActive || !m_asyncEligible ||
+      m_effectiveMode != DVBRIDGE_MODE_ENHANCED_DV ||
+      !preferences.EffectiveFastChroma(m_effectiveMode) || preferences.felUpscaling != 0 ||
+      preferences.revision != m_requested.revision || !preferences.SameValues(m_requested) ||
+      !m_hardwareFELVpp || !m_felVppEnabled || !m_felVpp || !current || !frame ||
+      !(m_hardwareBinding == m_pendingBinding) || !successor.binding.Valid() ||
+      !(successor.binding == successor.metadata.Binding()) ||
+      successor.binding.stream != m_pendingBinding.stream ||
+      successor.binding.revision != m_pendingBinding.revision ||
+      successor.binding.picture == m_pendingBinding.picture ||
+      !std::isfinite(double(frame->pts)) || frame->pts <= current->pts ||
+      double(frame->pts) - double(current->pts) >= 250000 ||
+      !frame->hw_frames_ctx || !current->hw_frames_ctx ||
+      frame->hw_frames_ctx->data != current->hw_frames_ctx->data ||
+      frame->format != current->format || frame->format != AV_PIX_FMT_VAAPI ||
+      frame->width != current->width || frame->height != current->height ||
+      !dvbridge_map_color(&color,successor.metadata.Data(),successor.metadata.Size(),true) ||
+      !color.dovi.nlq_active)
+  {
+    ClearFELPrefetch();
+    return;
+  }
+  if (m_felPrefetch && m_felPrefetch->Matches(frame,successor.binding,preferences)) return;
+  ClearFELPrefetch();
+  auto pending = std::make_shared<FELPrefetch>(successor,preferences);
+  pending->vpp = m_felVpp;
+  if (dvbridge_fel_vpp_prefetch_chroma(pending->vpp.get(),frame.get(),PL_CHROMA_LEFT,
+      &pending->image) == DVBRIDGE_VPP_PENDING)
+    m_felPrefetch = std::move(pending);
+}
+
+CDVBridgeGLES::FrameStatus CDVBridgeGLES::TakeFELPrefetch(const std::shared_ptr<AVFrame>& frame,
+    DVBRIDGE::SourceBinding binding, const DVBRIDGE::OutputPreferences& preferences,
+    std::shared_ptr<dvbridge_fel_vpp>& vpp, const dvbridge_fel_vpp_image*& image)
+{
+  if (!m_felPrefetch) return FrameStatus::Unsupported;
+  if (!m_felPrefetch->Matches(frame,binding,preferences))
+  {
+    ClearFELPrefetch();
+    return FrameStatus::Unsupported;
+  }
+  if (dvbridge_fel_vpp_finish(m_felPrefetch->vpp.get(),m_felPrefetch->image) != DVBRIDGE_VPP_OK)
+  {
+    ClearFELPrefetch();
+    return FrameStatus::Failed;
+  }
+  vpp = m_felPrefetch->vpp;
+  image = m_felPrefetch->image;
+  m_felPrefetch->image = nullptr;
+  ClearFELPrefetch();
+  return FrameStatus::Ready;
 }
 
 CDVBridgeGLES::~CDVBridgeGLES()
 {
+  ClearFELPrefetch();
   Summary("closed");
   if (!m_live) DVBRIDGE::StreamTelemetry::ClearOutput();
   glDeleteFramebuffers(1, &m_framebuffer);
@@ -681,10 +850,11 @@ bool CDVBridgeGLES::SetNativeOverlay(unsigned texture, unsigned degamma, unsigne
   const bool formatChanged = inputPQ != m_nativeOverlay.input_pq;
   const bool enabled = m_gl && texture && degamma && pq &&
       (bounds.IsEmpty() || (nextRect[0] < nextRect[2] && nextRect[1] < nextRect[3]));
-  if (m_nativeOverlayEnabled != enabled || (enabled &&
+  const bool layoutChanged = m_nativeOverlayEnabled != enabled || (enabled &&
       (texture != m_nativeOverlayTextures[0] || degamma != m_nativeOverlayTextures[1] ||
-       pq != m_nativeOverlayTextures[2] || content != m_nativeOverlayContent || formatChanged ||
-       !std::equal(std::begin(nextRect),std::end(nextRect),std::begin(m_nativeOverlay.rect)))))
+       pq != m_nativeOverlayTextures[2] || formatChanged ||
+       !std::equal(std::begin(nextRect),std::end(nextRect),std::begin(m_nativeOverlay.rect))));
+  if (layoutChanged || (enabled && content != m_nativeOverlayContent))
     ++m_nativeOverlayRevision;
   m_nativeOverlayContent = content;
   m_nativeOverlayEnabled = false;
@@ -765,16 +935,18 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10)
   m_outputBits = std::min(red, std::min(green, blue));
   m_failedIdentity = {};
   if (DVBRIDGE::DiagnosticsEnabled())
-    CLog::Log(LOGINFO, "DVBridge renderer init: rgb={}/{}/{} samples={} linear={} direct_target={} renderer={} packer={}",
+    DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge renderer init: rgb={}/{}/{} samples={} linear={} direct_target={} renderer={} packer={}",
         red, green, blue, samples, encoding == GL_LINEAR, m_scanout != nullptr,
         m_renderer != nullptr, m_packer != nullptr);
   return true;
 }
 
-bool CDVBridgeGLES::SetHDR10Session(const dvbridge_hdr10_session& session, uint64_t stream)
+bool CDVBridgeGLES::SetHDR10Session(const dvbridge_hdr10_session& session, uint64_t stream,
+                                  bool limited)
 {
   if (m_prepared || m_pending)
     return false;
+  m_hdr10Limited = limited;
   if (m_hdr10Session && stream && stream == m_hdr10SessionStream)
     return true;
   if (m_hdr10Session && !stream)
@@ -786,7 +958,9 @@ bool CDVBridgeGLES::SetHDR10Session(const dvbridge_hdr10_session& session, uint6
 
 void CDVBridgeGLES::Reset()
 {
+  ClearFELPrefetch();
   Summary("reset");
+  m_rawELCache.clear();
   m_firstFrame = true;
   DVBRIDGE::StreamTelemetry::ClearOutput();
   m_pendingInfo = 0;
@@ -812,7 +986,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
   if (!metadata.Data())
     return Failure("metadata-unavailable");
   dvbridge_renderer_set_optimized_dv(m_renderer,m_requested.optimizedDV);
-  dvbridge_renderer_set_fast_chroma(m_renderer,m_requested.fastChroma);
+  dvbridge_renderer_set_fast_chroma(m_renderer,m_requested.EffectiveFastChroma(m_effectiveMode));
   dvbridge_renderer_set_processing_optimizations(m_renderer,m_requested.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   dvbridge_gl_frame bl{}, el{};
@@ -830,11 +1004,46 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
     bl.frame.enhancement_layer = &el.frame;
     elPts = enhancement->pts;
   }
+  if (!m_hdr10)
+  {
+    const auto location = [](const Layer& layer) {
+      if (layer.chromaLocation == AVCHROMA_LOC_UNSPECIFIED && layer.sourceInfo.profile == 7)
+        return PL_CHROMA_TOP_LEFT;
+      const auto position = dvbridge_map_chroma(layer.chromaLocation);
+      return position == PL_CHROMA_UNKNOWN ? PL_CHROMA_LEFT : position;
+    };
+    dvbridge_gl_frame_set_chroma(&bl,location(base));
+    if (enhancement) dvbridge_gl_frame_set_chroma(&el,location(*enhancement));
+  }
   // Subtitle-only frames compose before packing. Other GUI retains 32F composition.
-  if (!m_hdr10 && allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
+  if (m_hdr10 && allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
       geometry.width == 3840 && geometry.height == 2160)
   {
-    m_direct = m_nativeOverlayEnabled ?
+    m_direct = dvbridge_render_hdr10_direct(m_renderer, &*m_hdr10Session, &bl.frame,
+        metadata.Data(), metadata.Size(), base.pts, elPts, geometry, m_scanout,
+        true, m_hdr10Limited, m_outputBits);
+    if (!m_direct)
+    {
+      Failure("hdr10-direct-unavailable-using-composition");
+      m_directUsable = false;
+      m_asyncEligible = false;
+      dvbridge_renderer_reset(m_renderer);
+    }
+  }
+  if (!m_hdr10 && allowPacked && (m_directUsable || m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE) &&
+      m_scanout && (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE ||
+      (!geometry.x && !geometry.y && geometry.width == 3840 && geometry.height == 2160)))
+  {
+    if(m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE)
+    {
+      const auto status=dvbridge_render_master_reference(m_renderer,&bl.frame,metadata.Data(),metadata.Size(),
+          base.pts,elPts,geometry,m_scanout,true,m_nativeOverlayEnabled ? &m_nativeOverlay : nullptr);
+      m_direct=status==CB1_MASTER_READY;
+      if(!m_direct) Failure(status==CB1_MASTER_INVALID ? "master-reference-invalid-metadata" :
+          status==CB1_MASTER_UNSUPPORTED ? "master-reference-unsupported-contract" :
+          status==CB1_MASTER_GPU_UNAVAILABLE ? "master-reference-gpu-unavailable" : "master-reference-unavailable");
+    }
+    else m_direct = m_nativeOverlayEnabled ?
         dvbridge_render_packed_overlay(m_renderer, &bl.frame, metadata.Data(), metadata.Size(),
             base.pts, elPts, geometry, m_scanout, true, &m_nativeOverlay) :
         dvbridge_render_packed(m_renderer, &bl.frame, metadata.Data(), metadata.Size(),
@@ -843,17 +1052,20 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
       m_nativeOverlayPrimed = true;
     if (!m_direct)
     {
-      Failure("direct-path-unavailable-using-composition");
-      m_directUsable = false;
+      if(m_effectiveMode != DVBRIDGE_MODE_MASTER_REFERENCE)
+      {
+        Failure("direct-path-unavailable-using-composition");
+        m_directUsable = false;
+      }
       m_asyncEligible = false;
       dvbridge_renderer_reset(m_renderer);
     }
   }
-  m_prepared = m_direct || (m_hdr10 ?
+  m_prepared = m_direct || (m_effectiveMode != DVBRIDGE_MODE_MASTER_REFERENCE && (m_hdr10 ?
       dvbridge_render_hdr10_rgb(m_renderer, &*m_hdr10Session, &bl.frame,
           metadata.Data(), metadata.Size(), base.pts, elPts, geometry) :
       dvbridge_render_rgb(m_renderer, &bl.frame, metadata.Data(), metadata.Size(),
-          base.pts, elPts, geometry));
+          base.pts, elPts, geometry)));
   m_pendingInfo = 0;
   if (m_prepared)
   {
@@ -896,7 +1108,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
     {
       m_firstFrame = false;
       m_lastSummary = DVBRIDGE::DiagnosticNowMs();
-      CLog::Log(LOGINFO, "DVBridge first frame: source={}x{} output={}x{} offset={},{} enhancement={} fel={} cm4={} direct={}",
+      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge first frame: source={}x{} output={}x{} offset={},{} enhancement={} fel={} cm4={} direct={}",
           base.width, base.height, geometry.width, geometry.height, geometry.x, geometry.y,
           enhancement != nullptr, bool(m_pendingInfo & CDVPlaybackInfo::FEL),
           bool(m_pendingInfo & CDVPlaybackInfo::CM4), m_direct);
@@ -925,23 +1137,26 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     const DVBRIDGE::OutputPreferences& preferences, bool allowPacked, const dvbridge_policy* selected,
     bool allowAsync)
 {
+  DVBRIDGE::ObserveDiagnostic(base.binding.stream,base.binding.picture,base.binding.revision,
+      preferences.revision,"prepare-entry",preferences.output != DVBRIDGE::OutputMode::Disabled,false);
   if (m_submission.asyncEligible) m_submission = {};
   if (!base.binding.Valid() || base.binding != metadata.Binding() ||
       !std::isfinite(base.pts) ||
       (enhancement && (enhancement->binding != base.binding ||
           !std::isfinite(enhancement->pts) || enhancement->pts != base.pts)))
-  { m_asyncEligible = false; return FrameStatus::Failed; }
+  { Failure("source-association"); m_asyncEligible = false; return FrameStatus::Failed; }
   if (!m_renderer || !m_context || m_context->Quarantined())
-  { m_asyncEligible = false; return FrameStatus::Failed; }
+  { Failure("renderer-unavailable"); m_asyncEligible = false; return FrameStatus::Failed; }
   const bool asyncSetting = m_context->AsyncPreparation(base.binding.stream);
   auto policy = selected ? *selected : preferences.Policy();
   const bool fallback = selected ? policy.mode != preferences.Policy().mode :
-      policy.mode >= DVBRIDGE_MODE_HDR10_EXPERT && !preferences.ProfileValid();
+      (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid();
   if (fallback && !selected)
   {
     policy.mode = preferences.output == DVBRIDGE::OutputMode::HDR10 ?
         DVBRIDGE_MODE_HDR10_BASIC : DVBRIDGE_MODE_STANDARD;
     policy.tv = {};
+    policy.adaptive = DVBRIDGE_ADAPTIVE_A;
   }
   // Capture the proven observation key before geometry or refresh rekeys work.
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
@@ -968,8 +1183,20 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     return FrameStatus::Failed;
   if (m_pending)
   {
-    if (base.binding == m_pendingBinding && revision == m_pendingIdentity.revision &&
-        policy.mode == m_effectiveMode && (allowPacked || !m_direct) &&
+    const bool sameTransaction = base.binding == m_pendingBinding &&
+        revision == m_pendingIdentity.revision && policy.mode == m_effectiveMode &&
+        (allowPacked || !m_direct);
+    // GUI composition follows analysis; retain source work across GUI changes.
+    if (sameTransaction && m_direct && m_dvPolicyActive &&
+        m_effectiveMode == DVBRIDGE_MODE_ENHANCED_DV && m_pendingMetadata.Data() &&
+        (m_pendingOverlayRevision != m_nativeOverlayRevision || m_pendingOverlayVisible != m_overlayVisible) &&
+        dvbridge_render_dv_policy_update_overlay(m_renderer,
+            m_nativeOverlayEnabled ? &m_nativeOverlay : nullptr,m_overlayVisible))
+    {
+      m_pendingOverlayRevision = m_nativeOverlayRevision;
+      m_pendingOverlayVisible = m_overlayVisible;
+    }
+    if (sameTransaction &&
         m_pendingOverlayVisible == m_overlayVisible &&
         (!m_direct || m_pendingOverlayRevision == m_nativeOverlayRevision))
       return PollReady() ? FrameStatus::Ready : FrameStatus::Pending;
@@ -977,7 +1204,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   }
   const bool eligible = allowAsync && asyncSetting && !fallback && !m_fallback && !m_pendingHDR10Fallback &&
       policy.mode != DVBRIDGE_MODE_DISABLED && m_hasCommitted && sameGeometry &&
-      base.lease && (!enhancement || enhancement->lease) && m_directUsable &&
+      base.lease && (!enhancement || enhancement->lease) &&
+      (m_directUsable || policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE) &&
       m_committedMode == policy.mode && base.binding.stream == m_committedBinding.stream &&
       base.binding.revision == m_committedBinding.revision && revision == m_committedRevision;
   if (m_dvPolicyActive)
@@ -1006,7 +1234,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_requested = preferences;
   policy.revision = revision;
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
-  dvbridge_renderer_set_fast_chroma(m_renderer,preferences.fastChroma);
+  dvbridge_renderer_set_fast_chroma(m_renderer,preferences.EffectiveFastChroma(policy.mode));
+  dvbridge_renderer_set_fel_nearest(m_renderer,preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416));
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   m_fallback = fallback;
@@ -1018,7 +1247,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_pendingSourceInfo = base.sourceInfo;
   m_pendingIdentity = {base.binding.stream,base.binding.picture,revision};
   DVBRIDGE::StreamTelemetry::NativeRequest({base.binding.stream,base.binding.picture,revision},
-      int(preferences.Policy().mode),int(policy.mode),
+      DVBRIDGE::PolicyCode(preferences.Policy()),DVBRIDGE::PolicyCode(policy),
       admissionIdentity.Valid() ? admissionIdentity :
           DVBRIDGE::SourceBinding{base.binding.stream,base.binding.picture,preferences.revision});
   if (m_auditStream!=base.binding.stream || m_auditSource!=base.binding.revision ||
@@ -1038,17 +1267,17 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       m_auditRequested.Record(DVBRIDGE::DiagnosticNowMs(),"requested",m_auditSerial))
   {
     m_auditRequestedSerial=m_auditSerial;
-    CLog::Log(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={}",
+    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={}",
         base.binding.stream,base.binding.picture,base.binding.revision,revision,
         int(preferences.Policy().mode),int(policy.mode),!m_fallback,m_fallback);
     const auto admission=DVBRIDGE::StreamTelemetry::Read().transaction;
-    CLog::Log(LOGINFO,"DVBridge output admission: generation={} source_known={} gpu_known={} native_dv={} hdr10={} requested={} effective={} reason={}",
+    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge output admission: generation={} source_known={} gpu_known={} native_dv={} hdr10={} requested={} effective={} reason={}",
         admission.capabilities.generation,admission.capabilities.sourceKnown,admission.capabilities.processingKnown,
         admission.capabilities.nativeDV,admission.capabilities.hdr10,
         CDVPlaybackInfo::RequestedPolicy(admission.requested),CDVPlaybackInfo::RequestedPolicy(admission.effective),
         CDVPlaybackInfo::Reason(admission.reason));
   }
-  m_advanced = policy.mode >= DVBRIDGE_MODE_HDR10_EXPERT;
+  m_advanced = policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV;
   m_context->Retain(base.lease, enhancement ? enhancement->lease : nullptr);
   if (!m_advanced)
   {
@@ -1086,7 +1315,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       status = dvbridge_render_dv_policy_prepare_packed(m_renderer,&policy,&m_pendingIdentity,
           &bl.frame,metadata.Data(),metadata.Size(),base.pts,elPts,geometry,m_scanout,true,
           m_nativeOverlayEnabled ? &m_nativeOverlay : nullptr);
-      m_direct = status == DVBRIDGE_DV_READY;
+      m_direct = status == DVBRIDGE_DV_READY || status == DVBRIDGE_DV_PENDING;
       if (m_direct && m_nativeOverlayEnabled) m_nativeOverlayPrimed = true;
       if (status == DVBRIDGE_DV_UNSUPPORTED)
       {
@@ -1122,7 +1351,21 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   }
   else
   {
-    m_prepared = dvbridge_render_hdr10_policy_rgb(m_renderer,&policy,&m_pendingIdentity,
+    if (allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
+        geometry.width == 3840 && geometry.height == 2160)
+    {
+      m_direct = dvbridge_render_hdr10_policy_direct(m_renderer,&policy,&m_pendingIdentity,
+          &bl.frame,metadata.Data(),metadata.Size(),base.pts,elPts,geometry,m_scanout,
+          true,m_hdr10Limited,m_outputBits);
+      if (!m_direct)
+      {
+        Failure("hdr10-policy-direct-unavailable-using-composition");
+        m_directUsable = false;
+        m_asyncEligible = false;
+        dvbridge_render_policy_cancel(m_renderer);
+      }
+    }
+    m_prepared = m_direct || dvbridge_render_hdr10_policy_rgb(m_renderer,&policy,&m_pendingIdentity,
         &bl.frame,metadata.Data(),metadata.Size(),base.pts,elPts,geometry);
     const bool fenced = m_context->FenceLastUse();
     m_pending = m_prepared && fenced;
@@ -1144,6 +1387,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
 
 void CDVBridgeGLES::Cancel()
 {
+  ClearFELPrefetch();
 #ifdef CB1_HAS_HDR10_AI
   if (m_context) m_context->ClearNextHDR10AI();
   m_aiOutputAccepted = false;
@@ -1157,23 +1401,31 @@ void CDVBridgeGLES::Cancel()
 
 bool CDVBridgeGLES::PollReady()
 {
-  if (!m_pending) return false;
-  if (!m_dvPolicyActive) return m_prepared;
-  const auto status = dvbridge_render_dv_policy_poll(m_renderer);
+  return PollStatus(0) == FrameStatus::Ready;
+}
+
+CDVBridgeGLES::FrameStatus CDVBridgeGLES::PollStatus(uint64_t timeoutNs)
+{
+  if (!m_pending) return FrameStatus::Failed;
+  DVBRIDGE::ObserveDiagnostic(m_pendingBinding.stream,m_pendingBinding.picture,
+      m_pendingBinding.revision,m_requested.revision,"gpu-pending",true,false);
+  if (!m_dvPolicyActive) return m_prepared ? FrameStatus::Ready : FrameStatus::Pending;
+  const auto status = dvbridge_render_dv_policy_wait(m_renderer,timeoutNs);
   if (status == DVBRIDGE_DV_READY)
   {
     m_context->SourceReadComplete();
     m_prepared = true;
     PreparedAudit();
-    return true;
+    return FrameStatus::Ready;
   }
   if (status == DVBRIDGE_DV_FAILED)
   {
     m_failedIdentity = m_pendingIdentity;
     Failure("policy-analysis");
     Cancel();
+    return FrameStatus::Failed;
   }
-  return false;
+  return FrameStatus::Pending;
 }
 
 const dvbridge_hdr10_policy_output* CDVBridgeGLES::HDR10Output() const
@@ -1203,6 +1455,48 @@ unsigned int CDVBridgeGLES::GetPQTexture() const
   return texture ? pl_opengl_unwrap(m_gl->gpu, texture, nullptr, nullptr, nullptr) : 0;
 }
 
+bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
+{
+  using namespace KODI::RENDERING::CAPTURE;
+  const bool master=m_effectiveMode==DVBRIDGE_MODE_MASTER_REFERENCE;
+  if (!m_prepared || (master && !m_direct)) return false;
+  const auto framebuffer=master ? m_scanoutFramebuffer : GetPQFramebuffer();
+  if (!master && !framebuffer) return false;
+  GLint previous=0;
+  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&previous);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER,framebuffer);
+  ReadbackBuffer pixels;
+  const bool read=ReadFramebufferRegion(0,0,3840,2160,master ? 8 : 16,master,pixels);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER,previous);
+  if (!read) return false;
+  if (master)
+  {
+    dvbridge_color mapped{};
+    if (pixels.format!=AV_PIX_FMT_RGBA || !dvbridge_map_color(&mapped,
+        m_pendingMetadata.Data(),m_pendingMetadata.Size(),(m_pendingInfo&CDVPlaybackInfo::FEL)!=0))
+      return false;
+    pl_color_repr_normalize(&mapped.repr);
+    const auto tr=pl_color_repr_decode(&mapped.repr,nullptr);
+    pl_matrix3x3 linear={{{3.06441879f,-2.16597676f,.10155818f},
+        {-.65612108f,1.78554118f,-.12943749f},{.01736321f,-.04725154f,1.03004253f}}};
+    pl_matrix3x3_mul(&linear,&mapped.dovi.linear);
+    float decode[12];
+    for (unsigned i=0;i<3;i++)
+    {
+      for (unsigned j=0;j<3;j++) decode[4*i+j]=tr.mat.m[i][j];
+      decode[4*i+3]=tr.c[i];
+    }
+    auto rgb=std::make_unique<uint8_t[]>(size_t(pixels.width)*pixels.height*8);
+    if (!DVBRIDGE::DecodeReferenceScreenshot(pixels.pixels.get(),pixels.width,pixels.height,
+        decode,&linear.m[0][0],reinterpret_cast<uint16_t*>(rgb.get()))) return false;
+    pixels.pixels=std::move(rgb);
+    pixels.stride=-int(pixels.width*8);
+    pixels.format=AV_PIX_FMT_RGBA64LE;
+  }
+  out=std::move(pixels);
+  return true;
+}
+
 bool CDVBridgeGLES::PrepareHardware(const Layer& base, const AVFrame* enhancement,
                                   const CDVMetadataBuffer& metadata, dvbridge_geometry geometry, bool allowPacked)
 {
@@ -1217,6 +1511,8 @@ bool CDVBridgeGLES::PrepareHardware(const Layer& base, const AVFrame* enhancemen
   layer.width = enhancement->width;
   layer.height = enhancement->height;
   layer.pts = static_cast<double>(enhancement->pts);
+  layer.chromaLocation = enhancement->chroma_location == AVCHROMA_LOC_UNSPECIFIED ?
+      AVCHROMA_LOC_TOPLEFT : enhancement->chroma_location;
   for (int i = 0; i < 3; ++i)
     layer.planes[i] = imported.planes[i];
   bool result = Prepare(base, &layer, metadata, geometry, allowPacked);
@@ -1230,7 +1526,11 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
     const DVBRIDGE::OutputPreferences& preferences, bool allowPacked, const dvbridge_policy* selected,
     bool allowAsync)
 {
-  if (!enhancement) return PrepareFrame(base,nullptr,metadata,geometry,preferences,allowPacked,selected,allowAsync);
+  if (!enhancement)
+  {
+    ClearFELPrefetch();
+    return PrepareFrame(base,nullptr,metadata,geometry,preferences,allowPacked,selected,allowAsync);
+  }
   if (!enhancementBinding.Valid() || enhancementBinding != base.binding ||
       !std::isfinite(base.pts) || static_cast<double>(enhancement->pts) != base.pts)
   {
@@ -1240,7 +1540,15 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
   }
   struct Import
   {
+    struct Raw
+    {
+      dvbridge_dmabuf_key key{};
+      dvbridge_dmabuf image{};
+      AVBufferRef* pool{};
+      ~Raw() { dvbridge_dmabuf_release(&image); av_buffer_unref(&pool); }
+    };
     dvbridge_dmabuf image{};
+    std::shared_ptr<Raw> raw;
     std::shared_ptr<AVFrame> frame;
     std::shared_ptr<dvbridge_fel_vpp> vpp;
     const dvbridge_fel_vpp_image* scaled{};
@@ -1251,21 +1559,41 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
     }
   };
   std::shared_ptr<Import> imported;
-  if (m_hardwareBinding == enhancementBinding && m_hardwareLease)
+  const auto mode = (selected ? *selected : preferences.Policy()).mode;
+  const bool master = mode == DVBRIDGE_MODE_MASTER_REFERENCE;
+  const bool native = mode == DVBRIDGE_MODE_STANDARD || master;
+  const bool prefetchEnabled = allowAsync && allowPacked && m_context &&
+      m_context->AsyncPreparation(base.binding.stream) &&
+      mode == DVBRIDGE_MODE_ENHANCED_DV && preferences.EffectiveFastChroma(mode) &&
+      preferences.felUpscaling == 0;
+  if (!prefetchEnabled) ClearFELPrefetch();
+  const int effectiveFilter = master ? 2 : preferences.felUpscaling;
+  const auto sourceChroma = dvbridge_map_chroma(enhancement->chroma_location);
+  const auto chroma = native ? (sourceChroma == PL_CHROMA_UNKNOWN ? PL_CHROMA_TOP_LEFT : sourceChroma) : PL_CHROMA_LEFT;
+  if (m_hardwareBinding == enhancementBinding && m_hardwareLease &&
+      m_hardwareFELFilter == effectiveFilter && m_hardwareFELChroma == chroma)
     imported = std::static_pointer_cast<Import>(m_hardwareLease);
   else
   {
     imported = std::make_shared<Import>();
     imported->frame = enhancement;
+    if (prefetchEnabled && TakeFELPrefetch(enhancement,enhancementBinding,preferences,
+        imported->vpp,imported->scaled) == FrameStatus::Failed)
+      return FrameStatus::Failed;
+    if (m_hardwareFELFilter != effectiveFilter)
+      DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 FEL filter selection: requested={} backend={}",
+          master ? "reference" : preferences.felUpscaling == 1 ? "nearest" : "vaapi",
+          master ? "reference-gpu" : preferences.felUpscaling == 1 ? "shader" : "vaapi-vpp");
     if (m_felVppStream != base.binding.stream)
     {
+      m_rawELCache.clear();
       m_felVppStream = base.binding.stream;
       m_felVppEnabled = m_context && m_context->FELHardwareUpscaling(base.binding.stream);
       m_felVppReported = false;
       m_felVpp.reset();
     }
     dvbridge_color color{};
-    if (m_felVppEnabled && m_gl && enhancement->hw_frames_ctx &&
+    if (!imported->scaled && !master && preferences.felUpscaling == 0 && m_felVppEnabled && m_gl && enhancement->hw_frames_ctx &&
         dvbridge_map_color(&color,metadata.Data(),metadata.Size(),true) && color.dovi.nlq_active &&
         !(base.width & 1) && !(base.height & 1) &&
         enhancement->width == base.width / 2 && enhancement->height == base.height / 2)
@@ -1280,8 +1608,9 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
             dvbridge_fel_vpp_create(frames->device_ref,base.width,base.height),
             [](dvbridge_fel_vpp* owner) { dvbridge_fel_vpp_destroy(&owner); });
       }
-      auto status = m_felVpp ? dvbridge_fel_vpp_acquire(m_felVpp.get(),enhancement.get(),
+      auto status = m_felVpp ? dvbridge_fel_vpp_acquire_chroma(m_felVpp.get(),enhancement.get(),chroma,
           &imported->scaled) : DVBRIDGE_VPP_FAILED;
+      if (status == DVBRIDGE_VPP_BUSY && prefetchEnabled) return FrameStatus::Busy;
       if (status == DVBRIDGE_VPP_OK && !m_felVppReported)
       {
         dvbridge_gl_frame probe{};
@@ -1301,34 +1630,84 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
         if (!m_felVppReported)
         {
           m_felVppReported = true;
-          CLog::Log(LOGINFO,"CB1 FEL upscaling: VAAPI {}x{} to {}x{}, two leased surfaces, zero CPU pixel copies",
+          DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 FEL upscaling: VAAPI {}x{} to {}x{} format=Y416, two leased surfaces, zero CPU pixel copies",
               enhancement->width,enhancement->height,base.width,base.height);
         }
       }
       else if (status == DVBRIDGE_VPP_FAILED)
       {
         m_felVppEnabled = false;
-        CLog::Log(LOGINFO,"CB1 FEL upscaling: VAAPI unavailable, using full shader FEL reconstruction");
+        DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 FEL upscaling: VAAPI unavailable, using nearest GPU reconstruction");
       }
     }
-    if (!imported->scaled && !dvbridge_dmabuf_import(&imported->image,enhancement.get()))
+    if (!imported->scaled)
     {
-      if (m_submission.asyncEligible) m_submission = {};
-      m_asyncEligible = false;
-      return FrameStatus::Failed;
+      if (!dvbridge_dmabuf_map(&imported->image,enhancement.get()))
+      {
+        if (m_submission.asyncEligible) m_submission = {};
+        m_asyncEligible = false;
+        return FrameStatus::Failed;
+      }
+      dvbridge_dmabuf_key key{};
+      const bool cacheable = dvbridge_dmabuf_make_key(&key,
+          reinterpret_cast<const AVDRMFrameDescriptor*>(imported->image.mapping->data[0]),
+          imported->image.width,imported->image.height,enhancement->hw_frames_ctx->data,
+          imported->image.display,eglGetCurrentContext());
+      if (cacheable && !m_rawELCache.empty() &&
+          std::static_pointer_cast<Import::Raw>(m_rawELCache.front())->key.pool != key.pool)
+        m_rawELCache.clear();
+      if (cacheable)
+        for (const auto& entry : m_rawELCache)
+        {
+          auto raw = std::static_pointer_cast<Import::Raw>(entry);
+          if (dvbridge_dmabuf_key_equal(&key,&raw->key))
+          { imported->raw = std::move(raw); ++m_rawELHits; break; }
+        }
+      if (!imported->raw)
+      {
+        if (!dvbridge_dmabuf_import_mapped(&imported->image))
+        {
+          if (m_submission.asyncEligible) m_submission = {};
+          m_asyncEligible = false;
+          return FrameStatus::Failed;
+        }
+        auto raw = std::make_shared<Import::Raw>();
+        raw->key = key;
+        raw->image = imported->image;
+        raw->image.mapping = nullptr;
+        raw->pool = av_buffer_ref(enhancement->hw_frames_ctx);
+        std::fill(std::begin(imported->image.images),std::end(imported->image.images),nullptr);
+        std::fill(std::begin(imported->image.planes),std::end(imported->image.planes),dvbridge_gl_plane{});
+        imported->raw = raw;
+        ++m_rawELImports;
+        if (cacheable && raw->pool)
+        {
+          if (m_rawELCache.size() == 32) m_rawELCache.erase(m_rawELCache.begin());
+          m_rawELCache.push_back(std::move(raw));
+        }
+      }
     }
     m_hardwareLease = imported;
+    m_hardwareFrame = enhancement;
     m_hardwareBinding = enhancementBinding;
+    m_hardwareFELFilter = effectiveFilter;
+    m_hardwareFELChroma = chroma;
+    m_hardwareFELVpp = imported->scaled != nullptr;
   }
   Layer layer{};
-  layer.layout = imported->scaled ? DVBRIDGE_Y416 : imported->image.layout;
+  layer.layout = imported->scaled ? DVBRIDGE_Y416 : imported->raw->image.layout;
   layer.width = imported->scaled ? imported->scaled->width : enhancement->width;
   layer.height = imported->scaled ? imported->scaled->height : enhancement->height;
   layer.pts = static_cast<double>(enhancement->pts);
   layer.binding = enhancementBinding;
   layer.lease = imported;
-  if (imported->scaled) layer.planes[0] = imported->scaled->plane;
-  else std::copy(std::begin(imported->image.planes),std::end(imported->image.planes),layer.planes);
+  layer.chromaLocation = enhancement->chroma_location == AVCHROMA_LOC_UNSPECIFIED ?
+      AVCHROMA_LOC_TOPLEFT : enhancement->chroma_location;
+  if (imported->scaled)
+  {
+    layer.planes[0] = imported->scaled->plane;
+  }
+  else std::copy(std::begin(imported->raw->image.planes),std::end(imported->raw->image.planes),layer.planes);
   return PrepareFrame(base,&layer,metadata,geometry,preferences,allowPacked,selected,allowAsync);
 }
 
@@ -1354,7 +1733,8 @@ bool CDVBridgeGLES::Pack(unsigned int framebuffer, int width, int height, bool f
   {
     m_packed = framebuffer == 0 && width == 3840 && height == 2160 && flipY;
     if (m_packed && m_live)
-      m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,m_asyncEligible && m_directUsable};
+      m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,
+          m_asyncEligible && (m_directUsable || m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE)};
     return m_packed || Failure("direct-pack-target");
   }
   unsigned int count;
@@ -1368,6 +1748,15 @@ bool CDVBridgeGLES::Pack(unsigned int framebuffer, int width, int height, bool f
 
 bool CDVBridgeGLES::ResolveHDR10(bool limited)
 {
+  if (m_hdr10 && m_prepared && m_direct)
+  {
+    if (limited != m_hdr10Limited) return Failure("hdr10-output-range-changed");
+    m_packed = true;
+    if (m_live)
+      m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,
+          m_asyncEligible && !m_pendingHDR10Fallback};
+    return true;
+  }
   if (m_advanced && !m_dvPolicyActive)
   {
     m_packed = m_hdr10 && m_prepared && dvbridge_render_hdr10_policy_resolve(
@@ -1402,6 +1791,7 @@ unsigned int CDVBridgeGLES::GetPQFramebuffer()
 
 void CDVBridgeGLES::CountPresentation(bool committed)
 {
+  if (committed) DVBRIDGE::DiagnosticPresented(m_pendingBinding.stream);
   if (!DVBRIDGE::DiagnosticsEnabled() || !m_prepared) return;
   m_presentations += committed;
   m_failedPresentations += !committed;
@@ -1430,7 +1820,7 @@ bool CDVBridgeGLES::Presented(bool success)
     // Immutable session policy is announced only on its first accepted frame.
     // Picture reset and changing CM/FEL metadata do not start a new session.
     if (m_hdr10 && DVBRIDGE::DiagnosticsEnabled() && m_presentations == 1)
-      CLog::Log(LOGINFO, "DVBridge presented: policy=Basic target={} nits origin={} creative_trims=not-applied framebuffer_bits={}",
+      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge presented: policy=Basic target={} nits origin={} creative_trims=not-applied framebuffer_bits={}",
           target, level6 ? "RPU-L6" : "RPU-source-PQ", m_outputBits);
     if (m_hdr10 && m_pendingHDR10Fallback != m_hdr10FallbackReason)
     {
@@ -1440,9 +1830,9 @@ bool CDVBridgeGLES::Presented(bool success)
         const auto now = DVBRIDGE::DiagnosticNowMs();
         const char* reason = m_hdr10FallbackReason == 1 ? "missing-L1" : "unusable-L1";
         if (m_hdr10FallbackReason && m_hdr10Fallbacks.Record(now, reason))
-          CLog::Log(LOGINFO, "DVBridge Basic HDR10: presented static fallback reason={}", reason);
+          DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge Basic HDR10: presented static fallback reason={}", reason);
         else if (!m_hdr10FallbackReason && m_hdr10Fallbacks.Recovered(now))
-          CLog::Log(LOGINFO, "DVBridge Basic HDR10: presented L1 mapping recovered");
+          DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge Basic HDR10: presented L1 mapping recovered");
       }
     }
   }
@@ -1484,11 +1874,24 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
     m_failedIdentity = submission.identity;
     DVBRIDGE::StreamTelemetry::NativeStage({submission.identity.stream,submission.identity.picture,
         submission.identity.revision},"Failed commit");
+    DVBRIDGE::StreamTelemetry::PublishNativePending(submission.informationGeneration);
     Failure("presentation-commit");
     Cancel();
     return false;
   }
   m_hasCommitted = true;
+  const int felKey=submission.felBackend*4+submission.felFilter;
+  if ((m_reportedFELStream != submission.identity.stream || m_reportedFELKey != felKey) &&
+      DVBRIDGE::DiagnosticLog(LOGINFO,
+          "CB1 FEL presented: applicable={} requested={} executed={} backend={}",
+          submission.felBackend != 0,
+          submission.felFilter < 0 ? "not-applicable" : submission.felFilter == 1 ? "nearest" : "vaapi",
+          submission.felBackend == 3 ? "reference" : submission.felBackend == 0 ? "not-applicable" : submission.felBackend == 2 ? "vaapi" : "nearest",
+          submission.felBackend == 3 ? "reference-gpu" : submission.felBackend == 2 ? "vaapi-vpp" : submission.felBackend == 1 ? "shader" : "not-applicable"))
+  {
+    m_reportedFELStream=submission.identity.stream;
+    m_reportedFELKey=felKey;
+  }
 #ifdef CB1_HAS_HDR10_AI
   if (m_aiFrame && !m_context->HDR10AI().Presented(m_pendingBinding,true))
   {
@@ -1506,7 +1909,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
 #endif
   DVBRIDGE::StreamSnapshot::Output output{m_pendingInfo,m_outputBits,peak,
       m_hdr10 && !m_advanced && m_hdr10Session && m_hdr10Session->output.level6};
-  output.requested = static_cast<int>(m_requested.Policy().mode);
+  output.requested = DVBRIDGE::PolicyCode(m_requested.Policy());
+  output.felUpscaling = submission.felBackend == 3 ? 2 : submission.felBackend == 2 ? 0 : submission.felBackend == 1 ? 1 : -1;
 #ifdef CB1_HAS_HDR10_AI
   if (m_aiFrame)
   {
@@ -1520,12 +1924,22 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
     }
   }
 #endif
+  output.fastChroma = m_requested.EffectiveFastChroma(m_effectiveMode, CDVPlaybackInfo::IsHDR10AI(output));
+  output.fastRenderingMode = m_requested.EffectiveFastRenderingMode(m_effectiveMode, CDVPlaybackInfo::IsHDR10AI(output));
   output.effective = static_cast<int>(m_effectiveMode);
-  output.method = m_requested.method; output.enhancement = m_requested.preset;
+  if(m_effectiveMode==DVBRIDGE_MODE_ENHANCED_DV &&
+#ifdef CB1_HAS_HDR10_AI
+      !output.hdr10AI &&
+#endif
+      m_requested.output==DVBRIDGE::OutputMode::AdaptiveB)output.effective=6;
+  output.method = m_requested.method;
   output.panel = m_requested.panel; output.gamut = m_requested.gamut;
   output.manualPeak = m_requested.peak; output.revision = m_pendingIdentity.revision;
   output.fallback = m_fallback;
   output.stream=m_pendingIdentity.stream; output.picture=m_pendingIdentity.picture;
+  const char* pixelAlgorithm=nullptr;
+  const char* analysisModel=nullptr;
+  unsigned expansionReason=0;
   if (m_dvPolicyActive)
   {
     dvbridge_dv_policy_snapshot snapshot{};
@@ -1541,7 +1955,18 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
         std::copy(std::begin(snapshot.l1),std::end(snapshot.l1),output.emittedL1.begin());
       }
 #endif
-      if (!output.authoredLegacy)
+      if (snapshot.output_generation==DVBRIDGE_RECONSTRUCTED_ENHANCED)
+      {
+        output.creativeKnown=true;
+        output.creativeApplied=(1u<<1) | (snapshot.guidance_family==8 ? 1u<<8 :
+            snapshot.guidance_family==2 ? 1u<<2 : 0);
+        output.creativeStatus=DVBRIDGE_CREATIVE_READY;
+#ifdef CB1_HAS_HDR10_AI
+        output.emittedL1Known=true;
+        std::copy(std::begin(snapshot.l1),std::end(snapshot.l1),output.emittedL1.begin());
+#endif
+      }
+      else if (!output.authoredLegacy)
       {
         output.creativeKnown=true;
         output.creativeEdited=(snapshot.creative_edit.l2_coverage.edited ? 1u<<2 : 0) |
@@ -1552,6 +1977,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
       std::copy(std::begin(snapshot.raw_statistics),std::end(snapshot.raw_statistics),
           output.rawStatistics.begin());
       output.rawSum=snapshot.raw_sum; output.sampleCount=snapshot.sample_count;
+      pixelAlgorithm=snapshot.pixel_algorithm;analysisModel=snapshot.analysis_model;
+      expansionReason=snapshot.expansion_reason;
     }
   }
   if (m_advanced && m_effectiveMode==DVBRIDGE_MODE_HDR10_EXPERT)
@@ -1565,12 +1992,13 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
     }
   }
   DVBRIDGE::StreamTelemetry::NativePresented(m_pendingSourceInfo,m_pendingMetadata,output);
+  DVBRIDGE::StreamTelemetry::PublishNativeInfo(submission.informationGeneration);
   const auto acceptedOutput=DVBRIDGE::StreamTelemetry::Read().output;
 #ifdef CB1_HAS_HDR10_AI
   if (m_aiFrame && DVBRIDGE::DiagnosticsEnabled() && m_aiSummary.Due(DVBRIDGE::DiagnosticNowMs()))
   {
     const auto metrics=m_context->HDR10AI().Metrics();
-    CLog::Log(LOGINFO,
+    DVBRIDGE::DiagnosticLog(LOGINFO,
         "CB1 AI summary: engine={} circuit={} bundle={} source={}/{}/{} pictures={} readback_bytes={} inferences={} analysis_submit_us={} readback_latency_us={} inference_us={} render_submit_us={}",
         cb1_engine_version(),acceptedOutput.Circuit(),cb1_l1l3_bundle_id(),
         m_committedBinding.stream,m_committedBinding.picture,m_committedBinding.revision,
@@ -1585,25 +2013,29 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
     const int creativeKey=acceptedOutput.effective*1024+
         acceptedOutput.creativeStatus*32+acceptedOutput.creativeReason;
     if (acceptedOutput.creativeKnown && m_auditCreative.Record(now,"creative",creativeKey))
-      CLog::Log(LOGINFO,"CB1 treatment: mode={} source={}/{} status={} reason={} applied={} edited={}",
+      DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 treatment: mode={} source={}/{} status={} reason={} applied={} edited={}",
           acceptedOutput.effective,m_committedBinding.stream,m_committedBinding.picture,
           acceptedOutput.creativeStatus,acceptedOutput.creativeReason,
           acceptedOutput.creativeApplied,acceptedOutput.creativeEdited);
     if (m_auditCommittedSerial!=m_auditSerial && m_auditCommitted.Record(now,"committed",m_auditSerial))
     {
       m_auditCommittedSerial=m_auditSerial;
-      CLog::Log(LOGINFO,"DVBridge policy committed: source={}/{}/{} policy={} mode={} bits={} authored_legacy={} samples={} creative_status={} creative_reason={} applied={} edited={}",
+      if (pixelAlgorithm)
+        DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 Enhanced: algorithm={} analysis={} generation={} reason={}",
+            pixelAlgorithm,analysisModel ? analysisModel : "source",acceptedOutput.sampleCount ? 3 : 2,expansionReason);
+      DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy committed: source={}/{}/{} policy={} mode={} bits={} authored_legacy={} samples={} creative_status={} creative_reason={} applied={} edited={}",
           m_committedBinding.stream,m_committedBinding.picture,m_committedBinding.revision,
           m_committedRevision,acceptedOutput.effective,acceptedOutput.bits,acceptedOutput.authoredLegacy,acceptedOutput.sampleCount,
           acceptedOutput.creativeStatus,acceptedOutput.creativeReason,acceptedOutput.creativeApplied,acceptedOutput.creativeEdited);
-      CLog::Log(LOGINFO,"DVBridge output selection: requested={} effective={} preset={} reason={} minimum_link_bits={} profile={} bl={} el={} rpu={} hdr_origin={}",
-          CDVPlaybackInfo::RequestedPolicy(acceptedOutput.requested),CDVPlaybackInfo::RequestedPolicy(acceptedOutput.effective),
-          acceptedOutput.enhancement,CDVPlaybackInfo::Reason(acceptedOutput.reason),acceptedOutput.minimumLinkBits,
+      DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge output selection: requested={} effective={} reason={} minimum_link_bits={} profile={} bl={} el={} rpu={} hdr_origin={}",
+          CDVPlaybackInfo::RequestedPolicy(acceptedOutput.requested,CDVPlaybackInfo::IsHDR10AI(acceptedOutput)),
+          CDVPlaybackInfo::RequestedPolicy(acceptedOutput.effective,CDVPlaybackInfo::IsHDR10AI(acceptedOutput)),
+          CDVPlaybackInfo::Reason(acceptedOutput.reason),acceptedOutput.minimumLinkBits,
           m_pendingSourceInfo.profile,m_pendingSourceInfo.bl,m_pendingSourceInfo.el,m_pendingSourceInfo.rpu,
           acceptedOutput.flags & CDVPlaybackInfo::HDR10 ? (acceptedOutput.effective>=3 ? "manual-tv-profile" :
               acceptedOutput.level6 ? "source-L6" : "reference-default") : "source-RPU");
     }
-    if (m_failures.Recovered(now)) CLog::Log(LOGINFO,"DVBridge renderer recovered: policy unchanged");
+    if (m_failures.Recovered(now)) DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge renderer recovered: policy unchanged");
   }
   m_prepared = m_packed = m_pending = false;
   m_submission = {};

@@ -26,6 +26,7 @@ public:
 
 private:
 #ifdef HAVE_DVBRIDGE
+  void RefreshInfo();
   DVBRIDGE::RenderUsage m_renderUsage;
 #endif
   unsigned int m_nextRefresh{0};

@@ -32,12 +32,15 @@
 #include <mutex>
 #include <optional>
 #ifdef CB1_HAS_HDR10_AI
+#include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/WindowIDs.h"
 #endif
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
+#endif
+#if defined(HAVE_GBM) && defined(HAS_GLES)
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
 #endif
 
@@ -233,6 +236,7 @@ bool CRenderManager::Configure()
     m_playerPort->UpdateVideoRender(m_pRenderer->VideoBypassesFramebuffer());
 
     m_queued.clear();
+    for (auto& slot : m_Queue) slot.sourceSideData.reset();
 #ifdef CB1_HAS_HDR10_AI
     ResetHDR10AIQueue();
 #endif
@@ -333,7 +337,9 @@ bool CRenderManager::PrepareHDR10AILookahead(std::unique_lock<CCriticalSection>&
 #endif
       );
   const bool selected = m_presentstep == PRESENT_FLIP && m_pRenderer->HDR10AILookahead();
-  if (paused || pending || selected) queue.push_front(m_presentsource);
+  // A seek can retain the old scanout, but only the new queue may prime AI.
+  if (m_aiStartPts != DVD_NOPTS_VALUE && (paused || pending || selected))
+    queue.push_front(m_presentsource);
   if (queue.empty()) return false;
   uint64_t deadline = 0;
   if (m_pRenderer->HDR10AILookahead() && m_aiStartPts != DVD_NOPTS_VALUE)
@@ -435,6 +441,7 @@ void CRenderManager::ReleaseDiscardedBuffers(bool onlySignaled)
     if (!m_pRenderer->NeedBuffer(*it) || (!onlySignaled && !m_bRenderGUI))
     {
       m_pRenderer->ReleaseBuffer(*it);
+      m_Queue[*it].sourceSideData.reset();
       m_overlays.Release(*it);
       m_free.push_back(*it);
       it = m_discard.erase(it);
@@ -594,6 +601,11 @@ void CRenderManager::FrameMove()
       m_presentevent.notifyAll();
     }
 
+#ifdef HAVE_DVBRIDGE
+    m_pRenderer->SetDVBridgeFELSuccessor(
+        m_queued.empty() || m_dvdClock.IsPaused() || m_dvdClock.GetClockSpeed() != 1.0 ?
+        -1 : m_queued.front());
+#endif
     // release all previous
 #ifdef CB1_HAS_HDR10_AI
     ReleaseDiscardedBuffers();
@@ -604,6 +616,7 @@ void CRenderManager::FrameMove()
       if (!m_pRenderer->NeedBuffer(*it) || !m_bRenderGUI)
       {
         m_pRenderer->ReleaseBuffer(*it);
+        m_Queue[*it].sourceSideData.reset();
         m_overlays.Release(*it);
         m_free.push_back(*it);
         it = m_discard.erase(it);
@@ -733,6 +746,7 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
 
       if (!m_pRenderer->Flush(saveBuffers))
       {
+        for (auto& slot : m_Queue) slot.sourceSideData.reset();
         m_queued.clear();
         m_discard.clear();
         m_free.clear();
@@ -946,7 +960,15 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
   // the just-presented region is video-only: OSD, GUI and subtitles come later
   if (presented)
+  {
     ServiceVideoCaptures();
+#if defined(HAVE_GBM) && defined(HAS_GLES)
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+            CServiceBroker::GetWinSystem()))
+      window->StageVideoSource(m_pRenderer->HasRenderedFrame() ?
+          m_Queue[m_presentsource].sourceSideData : nullptr);
+#endif
+  }
 
   if (presented && !gui)
   {
@@ -1277,6 +1299,7 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
 
 
   SPresent& m = m_Queue[index];
+  m.sourceSideData = picture.sourceSideData;
   m.presentfield = displayField;
   m.presentmethod = presentmethod;
   m.pts = picture.pts;
@@ -1449,11 +1472,13 @@ void CRenderManager::PrepareNextRender()
       m_dvdClock.GetClockSpeed() < 0 ? renderPts : m_Queue[m_queued.front()].pts;
 
   bool cb1Async = false;
+  bool nativeAsync = false;
   std::optional<double> completionAge;
 #ifdef HAVE_DVBRIDGE
   if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
   {
     cb1Async = window->CB1AsyncPlayback();
+    nativeAsync = window->CB1NativeAsyncPlayback();
     if (cb1Async && !isPaused && m_dvdClock.GetClockSpeed() == 1.0)
       completionAge = window->CB1PresentationAge();
   }
@@ -1461,6 +1486,11 @@ void CRenderManager::PrepareNextRender()
 
   const bool physicalPhase = cb1Async && m_clockSync.m_enabled && !isPaused &&
       m_dvdClock.GetClockSpeed() == 1.0;
+  const bool prepareAhead = cb1Async && !isPaused && m_dvdClock.GetClockSpeed() == 1.0 &&
+      m_Queue[m_presentsource].presentmethod == PRESENT_METHOD_SINGLE &&
+      m_Queue[m_presentsource].presentfield == FS_NONE &&
+      m_Queue[m_queued.front()].presentmethod == PRESENT_METHOD_SINGLE &&
+      m_Queue[m_queued.front()].presentfield == FS_NONE;
   if (m_clockSync.m_cb1Phase != physicalPhase)
   {
     m_clockSync.m_error = 0;
@@ -1496,12 +1526,27 @@ void CRenderManager::PrepareNextRender()
       }
     }
     if (!isPaused)
-      renderPts += frametime / 2 - m_clockSync.m_syncOffset;
+    {
+      // One-ahead native pictures are prepared at the display edge, not its blend midpoint.
+      const bool nativeEdge = physicalPhase && nativeAsync && prepareAhead && completionAge &&
+          std::abs(frametime * static_cast<double>(m_fps) - DVD_TIME_BASE) < DVD_TIME_BASE * 0.0005;
+      renderPts += (nativeEdge ? frametime : frametime / 2) - m_clockSync.m_syncOffset;
+    }
   }
   else
   {
     m_dvdClock.SetVsyncAdjust(0);
   }
+
+#ifdef CB1_HAS_HDR10_AI
+  if (physicalPhase && completionAge && m_fps > 0 &&
+      frametime * m_fps < DVD_TIME_BASE * 0.75 && m_pRenderer->HDR10AILookahead() &&
+      DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::ReferenceDV)
+  {
+    // Select on the physical refresh phase, not an interpolated mid-refresh clock.
+    renderPts -= std::fmod(std::max(0.0, *completionAge), frametime);
+  }
+#endif
 
   CLog::LogFC(LOGDEBUG, LOGAVTIMING,
               "frameOnScreen: {:f} renderPts: {:f} nextFramePts: {:f} -> diff: {:f}  render: {} "
@@ -1509,11 +1554,6 @@ void CRenderManager::PrepareNextRender()
               frameOnScreen, renderPts, nextFramePts, (renderPts - nextFramePts),
               renderPts >= nextFramePts, m_forceNext);
 
-  const bool prepareAhead = cb1Async && !isPaused && m_dvdClock.GetClockSpeed() == 1.0 &&
-      m_Queue[m_presentsource].presentmethod == PRESENT_METHOD_SINGLE &&
-      m_Queue[m_presentsource].presentfield == FS_NONE &&
-      m_Queue[m_queued.front()].presentmethod == PRESENT_METHOD_SINGLE &&
-      m_Queue[m_queued.front()].presentfield == FS_NONE;
   bool combined = false;
   if (m_presentsourcePast >= 0)
   {
