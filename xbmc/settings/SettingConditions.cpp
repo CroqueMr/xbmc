@@ -377,13 +377,6 @@ void CSettingConditions::Initialize()
 #endif
 #ifdef HAVE_DVBRIDGE
   m_simpleConditions.emplace("have_dvbridge");
-#ifdef CB1_DEBUG_BUILD
-  m_simpleConditions.emplace("have_cb1_debug");
-  m_complexConditions.try_emplace("cb1driverprofilesavailable",
-      [](const std::string&, const std::string&, const SettingConstPtr&) {
-        return CDVPlaybackModes::DriverProfilesAvailable();
-      });
-#endif
 #endif
 #ifdef CB1_HAS_HDR10_AI
   m_simpleConditions.emplace("have_cb1_hdr10_ai");
@@ -536,14 +529,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   const bool hdr10Source=hdr10Menu || setting->GetId()=="dvbridge.hdr10source";
   const auto& processing=hdr10Source && !caps.sourceKnown ? caps.hdr10Processing : caps.processing;
   constexpr int menuModes[]{1,5,
-#ifdef CB1_ENABLE_MASTER_IPT
-      5,
-#endif
       4,0,2,3};
-#ifndef CB1_ENABLE_MASTER_IPT
-  if (!menu && !hdr10Menu && !method && !hdr10Source)
-    std::erase_if(list, [](const auto& option) { return option.value == 6; });
-#endif
 #ifdef CB1_HAS_HDR10_AI
   constexpr int hdr10MenuModes[]{1,4,0};
 #else
@@ -555,7 +541,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
         hdr10Source ? (option.value==1 ? 1 : option.value==2 ? 4 : 0) :
         menu ? (option.value>=0 && option.value<int(std::size(menuModes)) ? menuModes[option.value] : 0) :
         method ? (option.value==0 ? 2 : option.value==1 ? 3 : 0) :
-        (option.value==0 ? 1 : option.value==1 ? 2 : option.value==3 || option.value==5 ? 4 : option.value==4 || option.value==6 ? 5 : 0);
+        (option.value==0 ? 1 : option.value==1 ? 2 : option.value==3 || option.value==5 ? 4 : option.value==4 ? 5 : 0);
     auto reason=DVBRIDGE::OutputReason::None;
     if (mode)
     {

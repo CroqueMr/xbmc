@@ -75,7 +75,6 @@ protected:
   std::deque<std::shared_ptr<VideoPicture>> m_dvPending;
   bool m_dvFailed{false};
   bool m_dvNativeOutput{false};
-  bool m_iptDoviSource{false};
   DVBRIDGE::SourceOwner m_dvSourceOwner;
   // Last in-band HDR10 static metadata of this stream (see GetPictureCommon).
   bool m_dvHasStreamDisplayMetadata{false};

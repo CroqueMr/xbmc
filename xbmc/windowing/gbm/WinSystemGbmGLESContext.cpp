@@ -1790,7 +1790,6 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
   if (capabilities.processingKnown && capabilities.isDV &&
       (m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10 || !capabilities.nativeDV) &&
       preferences.output != DVBRIDGE::OutputMode::HDR10 &&
-      preferences.output != DVBRIDGE::OutputMode::MasterReferenceIPT &&
       preferences.output != DVBRIDGE::OutputMode::Disabled)
   {
     std::lock_guard lock(m_dvCapabilityMutex);
@@ -1802,7 +1801,7 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
   const bool ordinaryBL = !source.profile || source.profile == 7 ||
       source.compatibility == 1 || source.compatibility == 2 || source.compatibility == 4;
   if (m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla && capabilities.processingKnown &&
-      (!ordinaryBL || (capabilities.isDV && preferences.output == DVBRIDGE::OutputMode::MasterReferenceIPT)) &&
+      !ordinaryBL &&
       preferences.output != DVBRIDGE::OutputMode::Disabled &&
       !(source.el && !picture.doviEnhancement))
   {

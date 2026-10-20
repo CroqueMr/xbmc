@@ -1037,16 +1037,6 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
     if(m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE)
     {
       auto renderMaster=dvbridge_render_master_reference;
-#ifdef CB1_ENABLE_MASTER_IPT
-      if(m_requested.output==DVBRIDGE::OutputMode::MasterReferenceIPT)
-        renderMaster=dvbridge_render_master_reference_ipt;
-#else
-      if(m_requested.output==DVBRIDGE::OutputMode::MasterReferenceIPT)
-      {
-        Failure("master-ipt-not-built");
-        return false;
-      }
-#endif
       const auto status=renderMaster(m_renderer,&bl.frame,metadata.Data(),metadata.Size(),
           base.pts,elPts,geometry,m_scanout,true,m_nativeOverlayEnabled ? &m_nativeOverlay : nullptr);
       m_direct=status==CB1_MASTER_READY;
@@ -1168,7 +1158,6 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
         DVBRIDGE_MODE_HDR10_BASIC : DVBRIDGE_MODE_STANDARD;
     policy.tv = {};
     policy.adaptive = DVBRIDGE_ADAPTIVE_A;
-    policy.master_ipt = false;
   }
   // Capture the proven observation key before geometry or refresh rekeys work.
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
@@ -1473,7 +1462,6 @@ unsigned int CDVBridgeGLES::GetPQTexture() const
 
 bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
 {
-  if(m_requested.output==DVBRIDGE::OutputMode::MasterReferenceIPT)return false;
   using namespace KODI::RENDERING::CAPTURE;
   const bool master=m_effectiveMode==DVBRIDGE_MODE_MASTER_REFERENCE;
   if (!m_prepared || (master && !m_direct)) return false;
@@ -1944,8 +1932,6 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   output.fastChroma = m_requested.EffectiveFastChroma(m_effectiveMode, CDVPlaybackInfo::IsHDR10AI(output));
   output.fastRenderingMode = m_requested.EffectiveFastRenderingMode(m_effectiveMode, CDVPlaybackInfo::IsHDR10AI(output));
   output.effective = static_cast<int>(m_effectiveMode);
-  if(m_effectiveMode==DVBRIDGE_MODE_MASTER_REFERENCE &&
-      m_requested.output==DVBRIDGE::OutputMode::MasterReferenceIPT)output.effective=7;
   if(m_effectiveMode==DVBRIDGE_MODE_ENHANCED_DV &&
 #ifdef CB1_HAS_HDR10_AI
       !output.hdr10AI &&

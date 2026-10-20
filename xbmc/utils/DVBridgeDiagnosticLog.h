@@ -49,10 +49,6 @@ bool WriteDiagnosticLocked(DiagnosticEvent event, int level,
   message += fmt::format(" stream={} picture={} revision={} policy={} suppressed={} truncations={}",
       diagnosticSession.Stream(), diagnosticSession.Picture(), diagnosticSession.Revision(),
       diagnosticSession.Policy(), diagnosticSession.Suppressed(), diagnosticSession.Truncations());
-#ifdef CB1_DEBUG_BUILD
-  // Expose bounded diagnostic details without enabling Kodi's global debug log.
-  if (level == LOGDEBUG) level = LOGINFO;
-#endif
   CLog::Log(level, "{}", message);
   return true;
 }

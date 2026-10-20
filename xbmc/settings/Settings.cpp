@@ -572,7 +572,6 @@ void CSettings::UninitializeConditions()
 void CSettings::InitializeISettingsHandlers()
 {
 #ifdef HAVE_DVBRIDGE
-  GetSettingsManager()->RegisterSettingsHandler(&CDVPlaybackModes::GetInstance());
 #endif
   // register ISettingsHandler implementations
   // The order of these matters! Handlers are processed in the order they were registered.
@@ -589,7 +588,6 @@ void CSettings::InitializeISettingsHandlers()
 void CSettings::UninitializeISettingsHandlers()
 {
 #ifdef HAVE_DVBRIDGE
-  GetSettingsManager()->UnregisterSettingsHandler(&CDVPlaybackModes::GetInstance());
 #endif
   // unregister ISettingsHandler implementations
   GetSettingsManager()->UnregisterSettingsHandler(&CMediaSettings::GetInstance());
@@ -626,7 +624,7 @@ void CSettings::InitializeISettingCallbacks()
 {
 #ifdef HAVE_DVBRIDGE
   GetSettingsManager()->RegisterCallback(&CDVPlaybackModes::GetInstance(),
-      {"dvbridge.configureprofile", "debug.cb1standarddrivers"});
+      {"dvbridge.configureprofile"});
 #endif
   // register any ISettingCallback implementations
   GetSettingsManager()->RegisterCallback(
