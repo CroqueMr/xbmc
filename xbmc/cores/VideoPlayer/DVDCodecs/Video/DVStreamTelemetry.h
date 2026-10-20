@@ -86,7 +86,6 @@ struct StreamSnapshot
         if (effective==3) return cb1_circuit_version(CB1_DV_HDR10_EXPERT);
         if (effective==4) return cb1_circuit_version(CB1_DV_DV_ADAPTIVE);
         if (effective==5) return cb1_circuit_version(CB1_DV_DV_MASTER_REFERENCE);
-        if (effective==7) return cb1_circuit_version(CB1_DV_DV_MASTER_IPT);
         if (effective==6) return cb1_circuit_version(CB1_DV_DV_ADAPTIVE_B);
       }
       return "";

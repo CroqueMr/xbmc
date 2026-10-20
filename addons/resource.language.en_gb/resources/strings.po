@@ -26067,23 +26067,3 @@ msgctxt "#40915"
 msgid "Insufficient rendering headroom. Switching to Dolby Vision Standard."
 msgstr ""
 
-msgctxt "#40916"
-msgid "Dolby Vision Master Reference (IPT-PQc2)"
-msgstr ""
-
-msgctxt "#40917"
-msgid "Use standard LibreELEC drivers (reboot required)"
-msgstr ""
-
-msgctxt "#40918"
-msgid "Use unmodified LibreELEC graphics drivers after restarting. Dolby Vision output may be unavailable."
-msgstr ""
-
-msgctxt "#40919"
-msgid "Driver profile selected. Restart to apply."
-msgstr ""
-
-msgctxt "#40920"
-msgid "Driver profile selection failed. Check kodi.log."
-msgstr ""
-
