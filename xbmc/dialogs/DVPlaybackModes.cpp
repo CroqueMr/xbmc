@@ -6,6 +6,7 @@
 #include "GUIDialogNumeric.h"
 #include "GUIDialogKaiToast.h"
 #include "GUIDialogSelect.h"
+#include "GUIDialogBusy.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackNotification.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVStreamTelemetry.h"
@@ -19,6 +20,45 @@
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingDefinitions.h"
 #include "utils/StringUtils.h"
+#include "utils/JSONVariantParser.h"
+#include "utils/Variant.h"
+#include "utils/log.h"
+#include "threads/IRunnable.h"
+#include <cstdio>
+
+#ifdef CB1_DEBUG_BUILD
+namespace
+{
+bool DriverProfileCommand(const char* command, CVariant& status)
+{
+  const std::string invocation = std::string("/usr/bin/cb1-driver-profile ") + command;
+  FILE* pipe = popen(invocation.c_str(), "r");
+  if (!pipe) return false;
+  std::string output;
+  char buffer[512];
+  while (fgets(buffer, sizeof(buffer), pipe) && output.size() < 16384)
+    output += buffer;
+  const int result = pclose(pipe);
+  return result == 0 && output.size() < 16384 && CJSONVariantParser::Parse(output, status);
+}
+
+bool SelectDriverProfile(bool standard, CVariant& status)
+{
+  struct Selection : IRunnable
+  {
+    Selection(bool selected, CVariant& output) : standard(selected), status(output) {}
+    bool standard;
+    CVariant& status;
+    bool success{false};
+    void Run() override
+    {
+      success = DriverProfileCommand(standard ? "select standard" : "select modified", status);
+    }
+  } selection(standard, status);
+  return CGUIDialogBusy::Wait(&selection, 100, false) && selection.success;
+}
+}
+#endif
 
 CDVPlaybackModes& CDVPlaybackModes::GetInstance()
 {
@@ -80,7 +120,11 @@ bool CDVPlaybackModes::ShowMenu()
   const auto settings=CServiceBroker::GetSettingsComponent()->GetSettings();
   const auto& strings=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
   struct Choice { int output,method,label; };
-  constexpr Choice dvChoices[]={{0,0,40812},{4,0,40913},{5,0,40914},
+  constexpr Choice dvChoices[]={{0,0,40812},{4,0,40913},
+#ifdef CB1_ENABLE_MASTER_IPT
+      {6,0,40916},
+#endif
+      {5,0,40914},
       {2,0,40814},{1,0,40822},{1,1,40823}};
   const auto source=DVBRIDGE::StreamTelemetry::Read().transaction.capabilities;
   if (source.stereoSource || !source.sourceKnown || (!source.isDV && !source.isHDR10)) return false;
@@ -156,6 +200,64 @@ bool CDVPlaybackModes::ShowMenu()
 void CDVPlaybackModes::OnSettingAction(const std::shared_ptr<const CSetting>& setting)
 {
   if (setting && setting->GetId()=="dvbridge.configureprofile") ConfigureProfile();
+}
+
+bool CDVPlaybackModes::DriverProfilesAvailable()
+{
+  return GetInstance().m_driverProfilesAvailable;
+}
+
+void CDVPlaybackModes::OnSettingsLoaded()
+{
+#ifdef CB1_DEBUG_BUILD
+  CVariant status;
+  m_driverProfilesAvailable = DriverProfileCommand("status", status) && status["available"].asBoolean();
+  CLog::Log(LOGINFO, "CB1 driver profile: active={} pending={} available={} reason={}",
+      status["active"].asString(), status["pending"].asString(), m_driverProfilesAvailable,
+      status["reason"].asString());
+  if (m_driverProfilesAvailable)
+    CLog::Log(LOGINFO, "CB1 Debug boot: build={} kernel={} kernel_sha256={} system_sha256={} modules_sha256={}",
+        status["build"]["id"].asString(), status["kernel_release"].asString(),
+        status["payloads"]["kernel"]["sha256"].asString(),
+        status["payloads"]["system"]["sha256"].asString(),
+        status["payloads"]["modules_sha256"].asString());
+  if (m_driverProfilesAvailable)
+  {
+    m_standardProfile = status["pending"].asString() == "standard";
+    m_syncingProfile = true;
+    CServiceBroker::GetSettingsComponent()->GetSettings()->SetBool(
+        "debug.cb1standarddrivers", m_standardProfile);
+    m_syncingProfile = false;
+  }
+#endif
+}
+
+bool CDVPlaybackModes::OnSettingChanging(const std::shared_ptr<const CSetting>& setting)
+{
+#ifdef CB1_DEBUG_BUILD
+  if (!setting || setting->GetId() != "debug.cb1standarddrivers" || m_syncingProfile)
+    return true;
+  const bool standard = std::static_pointer_cast<const CSettingBool>(setting)->GetValue();
+  // Kodi repeats this callback with the previous value after a refused change.
+  if (standard == m_standardProfile) return true;
+  CVariant status;
+  const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
+  if (!SelectDriverProfile(standard, status) ||
+      !status["available"].asBoolean() ||
+      status["pending"].asString() != (standard ? "standard" : "modified"))
+  {
+    CLog::Log(LOGERROR, "CB1 driver profile selection refused: {}", status["reason"].asString());
+    CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info,
+        strings.Get(40917), strings.Get(40920), 5000, false);
+    return false;
+  }
+  m_standardProfile = standard;
+  CLog::Log(LOGINFO, "CB1 driver profile selected: active={} pending={} reboot_required=true",
+      status["active"].asString(), status["pending"].asString());
+  CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info,
+      strings.Get(40917), strings.Get(40919), 3000, false);
+#endif
+  return true;
 }
 
 void DVBRIDGE::PlaybackNotification::Emit(const std::string& text)

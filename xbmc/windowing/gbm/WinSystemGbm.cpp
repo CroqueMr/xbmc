@@ -613,6 +613,8 @@ void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture)
 bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
 {
   m_queuedHdrMetadata = 0;
+  m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
+  m_hdrBlob.Reset();
   auto settingsComponent = CServiceBroker::GetSettingsComponent();
   if (!settingsComponent)
     return false;
@@ -640,10 +642,8 @@ bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
       drm->AddProperty(connector, "HDR_OUTPUT_METADATA", 0);
       drm->SetActive(true);
 
-      m_hdrBlob.Reset();
     }
 
-    m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
     return false;
   }
 
@@ -651,12 +651,10 @@ bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
   if (videoPicture->color_transfer != AVCOL_TRC_SMPTE2084 &&
       videoPicture->color_transfer != AVCOL_TRC_ARIB_STD_B67)
   {
-    m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
     return false;
   }
 
   KODI::UTILS::Eotf eotf = KODI::UTILS::GetEOTF(*videoPicture);
-  m_eotf = eotf;
 
   if (connector->SupportsProperty("HDR_OUTPUT_METADATA") && m_info &&
       m_info->SupportsHDRStaticMetadataType1() && m_info->SupportsEOTF(eotf))
@@ -666,8 +664,6 @@ bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
     hdr_metadata.metadata_type = KODI::UTILS::HDMI_STATIC_METADATA_TYPE1;
     hdr_metadata.hdmi_metadata_type1.eotf = static_cast<uint8_t>(eotf);
     hdr_metadata.hdmi_metadata_type1.metadata_type = KODI::UTILS::HDMI_STATIC_METADATA_TYPE1;
-
-    m_hdrBlob.Reset();
 
     if (hdr_metadata.hdmi_metadata_type1.eotf)
     {
@@ -732,9 +728,23 @@ bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
       m_hdrBlob = CDRMPropertyBlob(drm->GetFileDescriptor(), &hdr_metadata, sizeof(hdr_metadata));
     }
 
-    drm->AddProperty(connector, "HDR_OUTPUT_METADATA", m_hdrBlob.Get());
+    if (!m_hdrBlob.IsValid() ||
+        !drm->AddProperty(connector, "HDR_OUTPUT_METADATA", m_hdrBlob.Get()))
+    {
+      m_hdrBlob.Reset();
+      CLog::LogF(LOGWARNING, "HDR output rejected: metadata blob allocation or property staging failed");
+      return false;
+    }
+    m_eotf = eotf;
     m_queuedHdrMetadata = m_hdrBlob.Get();
     drm->SetActive(true);
+  }
+  else
+  {
+    CLog::LogF(LOGWARNING, "HDR output unavailable: metadata_property={} display_metadata={} eotf_supported={}",
+               connector->SupportsProperty("HDR_OUTPUT_METADATA"),
+               m_info && m_info->SupportsHDRStaticMetadataType1(),
+               m_info && m_info->SupportsEOTF(eotf));
   }
 
   return m_hdrBlob.IsValid();

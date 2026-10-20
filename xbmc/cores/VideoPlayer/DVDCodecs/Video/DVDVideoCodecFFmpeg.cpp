@@ -38,6 +38,7 @@
 #include "dvbridge_metadata_bounds.h"
 #ifdef HAVE_DVBRIDGE
 #include "DVPlaybackPolicy.h"
+#include "DVOutputSettings.h"
 #include <cstdlib>
 #include <cmath>
 extern "C"
@@ -359,6 +360,7 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
   m_options = options;
 #ifdef HAVE_DVBRIDGE
   m_dvNativeOutput = DVBRIDGE::RetainsDVSource(hints);
+  m_iptDoviSource = false;
   m_dvSourceOwner.BeginStream();
   m_dvHasStreamDisplayMetadata = false;
   m_dvHasStreamLightMetadata = false;
@@ -571,6 +573,7 @@ void CDVDVideoCodecFFmpeg::Dispose()
   m_dvFel.reset();
   m_dvFailed = false;
   m_dvNativeOutput = false;
+  m_iptDoviSource = false;
 #endif
   av_frame_free(&m_pFrame);
   av_frame_free(&m_pDecodedFrame);
@@ -801,7 +804,7 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
     VCReturn paired = emit();
     if (paired != VC_NONE)
       return paired;
-    if (m_dvPending.size() >= 16)
+    if (m_dvPending.size() >= DVEnhancementPendingPictures)
       return VC_ERROR;
     auto base = std::make_shared<VideoPicture>();
     base->Reset();
@@ -1335,6 +1338,20 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   pVideoPicture->qscale_type = 0;
 
   pVideoPicture->hdrType = m_hints.hdrType;
+#ifdef HAVE_DVBRIDGE
+  bool retainStaticDV = m_dvNativeOutput;
+  // TS and headerless remuxes can carry valid RPUs without a container DV record.
+  if (DVBRIDGE::playbackMode.load() == DVBRIDGE::OutputMode::MasterReferenceIPT)
+  {
+    const auto* metadata = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DOVI_METADATA);
+    m_iptDoviSource |= metadata && dvbridge_metadata_bounds(metadata->data, metadata->size);
+    if (m_iptDoviSource)
+    {
+      pVideoPicture->hdrType = StreamHdrType::HDR_TYPE_DOLBYVISION;
+      retainStaticDV = true;
+    }
+  }
+#endif
 
   AVFrameSideData* sd;
 
@@ -1382,7 +1399,7 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   // format change, the renderer is rebuilt and native DV output is restarted
   // (two full HDMI modesets mid-playback). Keep the last in-band values for
   // the rest of this DV stream; a new SEI still replaces them.
-  else if (m_dvNativeOutput && m_dvHasStreamDisplayMetadata)
+  else if (retainStaticDV && m_dvHasStreamDisplayMetadata)
   {
     pVideoPicture->displayMetadata = m_dvStreamDisplayMetadata;
     pVideoPicture->hasDisplayMetadata = true;
@@ -1404,7 +1421,7 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
 #endif
   }
 #ifdef HAVE_DVBRIDGE
-  else if (m_dvNativeOutput && m_dvHasStreamLightMetadata)
+  else if (retainStaticDV && m_dvHasStreamLightMetadata)
   {
     pVideoPicture->lightMetadata = m_dvStreamLightMetadata;
     pVideoPicture->hasLightMetadata = true;
