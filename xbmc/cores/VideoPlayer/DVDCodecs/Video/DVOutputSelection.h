@@ -43,7 +43,7 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return result;
   }
   auto policy = preferences.Policy();
-  if (policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && preferences.fastRenderingMode == 2 &&
+  if (policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && !policy.master_ipt && preferences.fastRenderingMode == 2 &&
       automaticFastRendering.load())
     policy.mode = DVBRIDGE_MODE_STANDARD;
   const auto admission = [&](dvbridge_mode mode) {
@@ -61,6 +61,7 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return {requestedDV ? OutputRoute::NativeDV : OutputRoute::HDR10, policy, OutputReason::None};
   result.reason = !(requestedDV ? caps.nativeDV : caps.hdr10) ?
       (requestedDV ? OutputReason::NoDVTransport : OutputReason::NoHDR10Transport) : candidate.reason;
+  if (policy.master_ipt) return result;
   if (!requestedDV) return result;
   if (!caps.hdr10)
   {
@@ -74,6 +75,7 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return result;
   }
   policy.mode = DVBRIDGE_MODE_HDR10_BASIC;
+  policy.master_ipt = false;
   policy.adaptive = DVBRIDGE_ADAPTIVE_A;
   policy.tv = {};
   return {OutputRoute::HDR10, policy, result.reason};

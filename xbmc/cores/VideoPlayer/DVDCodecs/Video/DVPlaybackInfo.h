@@ -70,6 +70,7 @@ struct CDVPlaybackInfo
       case 3: return "HDR10 Reference Expert";
       case 4: return "Dolby Vision Adaptive HDR Mapping";
       case 5: return "Dolby Vision Master Reference";
+      case 7: return "Dolby Vision Master Reference (IPT-PQc2)";
       case 6: return "Dolby Vision Adaptive HDR Mapping";
       default: return output.flags & HDR10 ? "HDR10 Reference Basic" : "Dolby Vision Standard";
     }
@@ -86,6 +87,7 @@ struct CDVPlaybackInfo
       case 3:return "HDR10 Reference Expert";
       case 4:return "Dolby Vision Adaptive HDR Mapping";
       case 5:return "Dolby Vision Master Reference";
+      case 7:return "Dolby Vision Master Reference (IPT-PQc2)";
       case 6:return "Dolby Vision Adaptive HDR Mapping";
       default:return "";
     }
@@ -95,6 +97,7 @@ struct CDVPlaybackInfo
   {
     if (!output.flags) return "Kodi default";
     std::string mode = output.flags & HDR10 ? Policy(output) :
+        output.effective == 7 ? "Dolby Vision Master Reference (IPT-PQc2)" :
         output.effective == 6 ? "Dolby Vision Adaptive HDR Mapping" :
         output.effective == 5 ? "Dolby Vision Master Reference" :
         output.effective == 4 ? "Dolby Vision Adaptive HDR Mapping" : "Dolby Vision Standard";

@@ -19,6 +19,7 @@
             <options>
               <option label="40812">0</option>
               <option label="40913">4</option>
+              <option label="40916">6</option>
               <option label="40914">5</option>
               <option label="40814">2</option>
               <option label="40813">1</option>
@@ -3999,6 +4000,14 @@
       </group>
     </category>
     <category id="logging" label="14092" help="36391">
+      <group id="99" label="40810">
+        <setting id="debug.cb1standarddrivers" type="boolean" label="40917" help="40918">
+          <requirement>HAVE_CB1_DEBUG</requirement>
+          <level>2</level><default>false</default>
+          <dependencies><dependency type="enable" on="property" name="cb1driverprofilesavailable" /></dependencies>
+          <control type="toggle" />
+        </setting>
+      </group>
       <group id="1" label="14260">
         <setting id="debug.showloginfo" type="boolean" label="20191" help="36392">
           <level>1</level>

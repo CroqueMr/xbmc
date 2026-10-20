@@ -58,6 +58,7 @@ public:
   void BindHDR10AISource(VideoPicture& picture);
 #endif
 #ifdef HAVE_DVBRIDGE
+  static constexpr unsigned DVEnhancementPendingPictures = 16;
   bool NeedsDVEnhancement() const
   {
     return m_dvNativeOutput && m_hints.dovi.dv_profile == 7 && m_hints.dovi.el_present_flag;
@@ -74,6 +75,7 @@ protected:
   std::deque<std::shared_ptr<VideoPicture>> m_dvPending;
   bool m_dvFailed{false};
   bool m_dvNativeOutput{false};
+  bool m_iptDoviSource{false};
   DVBRIDGE::SourceOwner m_dvSourceOwner;
   // Last in-band HDR10 static metadata of this stream (see GetPictureCommon).
   bool m_dvHasStreamDisplayMetadata{false};
