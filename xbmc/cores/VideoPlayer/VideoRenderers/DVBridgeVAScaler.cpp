@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "DVBridgeVAScaler.h"
 struct CDVBridgeVAScaler::State {};
 CDVBridgeVAScaler::CDVBridgeVAScaler() : m_state(std::make_unique<State>()) {}
