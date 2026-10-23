@@ -23,7 +23,6 @@ enum class HDR10SourceMode : int { Native = 0, ReferenceDV = 1, EnhancedDV = 2 }
 // Decoder ingress sees the last complete frame-boundary preference snapshot.
 inline std::atomic<OutputMode> playbackMode{OutputMode::Standard};
 inline std::atomic<HDR10SourceMode> hdr10PlaybackMode{HDR10SourceMode::Native};
-inline std::atomic<bool> automaticFastRendering{false};
 
 #ifdef HAVE_DVBRIDGE
 inline int PolicyCode(const dvbridge_policy& policy)
@@ -39,8 +38,6 @@ struct OutputPreferences
   int method{0}, panel{0}, gamut{0};
   double peak{0};
   bool optimizedDV{true};
-  bool fastChroma{false};
-  int fastRenderingMode{0};
   int felUpscaling{0};
   bool processingOptimizations{false};
   uint64_t revision{1};
@@ -55,7 +52,6 @@ struct OutputPreferences
   {
     return output == other.output && hdr10Source == other.hdr10Source && method == other.method &&
         panel == other.panel && gamut == other.gamut && optimizedDV == other.optimizedDV &&
-        fastChroma == other.fastChroma && fastRenderingMode == other.fastRenderingMode &&
         felUpscaling == other.felUpscaling &&
         processingOptimizations == other.processingOptimizations &&
         std::bit_cast<uint64_t>(peak) == std::bit_cast<uint64_t>(other.peak);
@@ -68,7 +64,7 @@ struct OutputPreferences
   }
   bool EffectiveFastChroma(dvbridge_mode mode, bool hdr10AI = false) const
   {
-    return FastRenderingEnabled(EffectiveFastRenderingMode(mode, hdr10AI), fastChroma);
+    return EffectiveFastRenderingMode(mode, hdr10AI) == 1;
   }
   dvbridge_policy Policy() const
   {
@@ -141,19 +137,11 @@ inline OutputPreferences FrameOutputSettings()
     next.peak = settings->GetNumber("dvbridge.tvpeak");
     next.panel = settings->GetInt("dvbridge.tvpanel");
     next.gamut = settings->GetInt("dvbridge.tvgamut");
-    next.fastRenderingMode = settings->GetInt("dvbridge.fastchroma");
     next.felUpscaling = settings->GetInt("dvbridge.felupscaling");
-    next.fastChroma = FastRenderingEnabled(next.fastRenderingMode, automaticFastRendering.load());
   }
   if (next.method < 0 || next.method > 1) next.method = 0;
   if (next.felUpscaling < 0 || next.felUpscaling > 1) next.felUpscaling = 0;
   next.revision = previous.revision;
-  if (next.output!=previous.output || next.hdr10Source!=previous.hdr10Source ||
-      next.fastRenderingMode!=previous.fastRenderingMode)
-  {
-    automaticFastRendering.store(false);
-    next.fastChroma=FastRenderingEnabled(next.fastRenderingMode,false);
-  }
   bool changed = !next.SameValues(previous);
 #ifdef CB1_HAS_HDR10_AI
   changed |= previousReselection != hdr10Reselection;

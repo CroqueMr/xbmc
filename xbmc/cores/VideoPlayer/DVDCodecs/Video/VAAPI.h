@@ -264,6 +264,7 @@ class CVaapiRenderPicture : public CVideoBuffer
 {
 public:
   unsigned renderBufferCount{6};
+  unsigned decodeSurfaceCount{};
   explicit CVaapiRenderPicture(int id) : CVideoBuffer(id) { }
   void GetPlanes(uint8_t*(&planes)[YuvImage::MAX_PLANES]) override;
   void GetStrides(int(&strides)[YuvImage::MAX_PLANES]) override;

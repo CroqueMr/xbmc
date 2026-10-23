@@ -32,35 +32,33 @@ bool CVaapi2Texture::Import(CVaapiRenderPicture* pic)
 {
   if (m_imported)
     return true;
+  VADRMPRIMESurfaceDescriptor surface{};
+  const VAStatus status = vaExportSurfaceHandle(pic->vadsp, pic->procPic.videoSurface,
+      VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+      VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS, &surface);
+  if (status != VA_STATUS_SUCCESS)
+  {
+    CLog::Log(LOGWARNING, "CVaapi2Texture::Import: export failed: {}", vaErrorStr(status));
+    return false;
+  }
+  std::array<KODI::UTILS::POSIX::CFileHandle, 4> drmFDs;
+  for (unsigned i = 0; i < surface.num_objects && i < drmFDs.size(); ++i)
+    drmFDs[i].attach(surface.objects[i].fd);
+  return Import(pic, surface);
+}
 
+bool CVaapi2Texture::Import(CVaapiRenderPicture* pic, const VADRMPRIMESurfaceDescriptor& surface)
+{
+  if (m_imported)
+    return true;
   auto failImport = [this]()
   {
-    // also destroys images/textures a partly failed import created
     Reset();
     return false;
   };
-
-  VAStatus status;
-
-  VADRMPRIMESurfaceDescriptor surface;
-
-  status = vaExportSurfaceHandle(pic->vadsp, pic->procPic.videoSurface,
-    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
-    VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS,
-    &surface);
-
-  if (status != VA_STATUS_SUCCESS)
-  {
-    CLog::Log(LOGWARNING, "CVaapi2Texture::Import: vaExportSurfaceHandle failed - Error: {} ({})",
-              vaErrorStr(status), status);
+  if (!surface.num_objects || surface.num_objects > 4 || !surface.num_layers || surface.num_layers > 4)
     return failImport();
-  }
-
-  // EGL takes its own dma-buf reference at import; the fds need not outlive this function
-  std::array<KODI::UTILS::POSIX::CFileHandle, 4> drmFDs;
-  for (uint32_t object = 0; object < surface.num_objects && object < drmFDs.size(); object++)
-    drmFDs[object].attach(surface.objects[object].fd);
-
+  VAStatus status;
   status = vaSyncSurface(pic->vadsp, pic->procPic.videoSurface);
   if (status != VA_STATUS_SUCCESS)
   {
@@ -271,10 +269,11 @@ CVaapi2Texture* CVaapiTexturePool::Get(CVaapiRenderPicture* pic,
     return nullptr;
   }
 
-  // this export only identifies the memory; Import on a miss re-exports its own fds
+  // Retain these descriptors through a miss; EGL borrows them during import.
   const auto identity = IdentityFromVaDescriptor(surface, pic->DVDPic.iWidth, pic->DVDPic.iHeight);
-  for (uint32_t i = 0; i < surface.num_objects; i++)
-    close(surface.objects[i].fd);
+  std::array<KODI::UTILS::POSIX::CFileHandle, 4> drmFDs;
+  for (unsigned i = 0; i < surface.num_objects && i < drmFDs.size(); ++i)
+    drmFDs[i].attach(surface.objects[i].fd);
   if (!identity)
     return nullptr;
 
@@ -308,7 +307,7 @@ CVaapi2Texture* CVaapiTexturePool::Get(CVaapiRenderPicture* pic,
       m_entries[slot]->Init(m_interop);
     }
 
-    if (!m_entries[slot]->Import(pic))
+    if (!m_entries[slot]->Import(pic, surface))
     {
       m_free.push_back(slot);
       return nullptr;

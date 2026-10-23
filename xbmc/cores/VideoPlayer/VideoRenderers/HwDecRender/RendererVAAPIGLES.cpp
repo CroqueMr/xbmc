@@ -112,13 +112,16 @@ bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsig
     interop.eglDisplay = m_pWinSystem->GetEGLDisplay();
 
     m_texturePool.ReleaseAll();
+    size_t importedSurfaces = VAAPI::CVaapiTexturePool::MAX_ENTRIES;
 #ifdef CB1_HAS_HDR10_AI
-    // Keep imported textures for the expanded decoder pool.
-    m_texturePool.Init(interop, VAAPI::CVaapiTexturePool::MAX_ENTRIES +
-                                  (m_aiBuffers > NUM_BUFFERS ? m_aiBuffers - NUM_BUFFERS : 0));
-#else
-    m_texturePool.Init(interop);
+    importedSurfaces += m_aiBuffers > NUM_BUFFERS ? m_aiBuffers - NUM_BUFFERS : 0;
 #endif
+#ifdef HAVE_DVBRIDGE
+    // Pairing retains decoded surfaces, not additional rendering slots.
+    if (picture.doviSourceInfo.profile)
+      importedSurfaces = std::max(importedSurfaces, size_t(pic->decodeSurfaceCount));
+#endif
+    m_texturePool.Init(interop, importedSurfaces);
     for (auto& tex : m_vaapiTextures)
       tex = nullptr;
 

@@ -183,10 +183,8 @@ private:
   bool RetireDVContext();
   bool CB1AsyncAvailable() const;
   bool CreateCB1GPUFence(const CDVBridgeGLES::Submission& submission);
-  void ObserveCB1Headroom();
-  DVBRIDGE::FastRendering m_fastRendering;
-  bool m_fastRenderEligible{}, m_fastSubmittedEligible{};
-  uint64_t m_fastObservedPresentation{}, m_fastSourceStream{};
+  bool m_fastRenderEligible{};
+  uint64_t m_fastSourceStream{};
   double m_fastSourcePts{};
   uint64_t m_fastPreparedStream{};
   double m_fastPreparedPts{};

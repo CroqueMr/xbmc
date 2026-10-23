@@ -2306,6 +2306,7 @@ CVaapiRenderPicture* COutput::ProcessPicture(CVaapiProcessedPicture &pic)
     m_bufferPool->processedPicsAway.push_back(pic);
     retPic->procPic = pic;
     retPic->vadsp = m_config.dpy;
+    retPic->decodeSurfaceCount = m_config.maxReferences;
   }
   else
   {

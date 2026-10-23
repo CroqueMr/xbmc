@@ -154,7 +154,6 @@ bool CDVPlaybackModes::ShowMenu()
 #ifdef CB1_HAS_HDR10_AI
       if (hdr10Source && choice.output != 0) ++DVBRIDGE::hdr10Reselection;
 #endif
-      if (!hdr10Source) DVBRIDGE::automaticFastRendering.store(false);
     }
     settings->Save();
     return true;
