@@ -67,7 +67,7 @@ public:
         const DVBRIDGE::OutputPreferences& preferences);
     cb1_ai_status BeginHDR10AI(const char* bundle,
         const DVBRIDGE::OutputPreferences& preferences, DVBRIDGE::SourceBinding binding,
-        double pts, uint64_t now);
+        double pts, uint64_t now, bool buffered = true);
     cb1_ai_status AnalyseHDR10AI(const Layer& base, double headPts);
     HDR10AISource::Decision PrepareHDR10AIQueue(std::span<const Layer> queue,
         const DVBRIDGE::OutputPreferences& preferences, const char* bundle,

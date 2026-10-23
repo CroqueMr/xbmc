@@ -24,6 +24,15 @@ public:
     m_waiting = m_active;
     m_native = m_event = m_prepared = false;
     m_paused = false;
+    m_inputPending = false;
+  }
+  void WaitForInput() { m_inputPending = true; m_waiting = false; }
+  void InputReady(uint64_t now)
+  {
+    if (!m_active || m_native || !m_inputPending) return;
+    m_inputPending = false;
+    m_waiting = true;
+    m_waitSince = m_paused ? m_pauseSince : now;
   }
   void SetPaused(bool paused, uint64_t now)
   {
@@ -43,6 +52,8 @@ public:
       return Decision::Native;
     if (status == CB1_AI_INCOMPATIBLE)
       return Fallback();
+    if (m_inputPending)
+      return Decision::Wait;
     if (m_paused && now >= m_pauseSince) now = m_pauseSince;
     if (m_waiting)
     {
@@ -129,6 +140,6 @@ private:
 
   uint64_t m_stream{}, m_revision{}, m_waitSince{}, m_spent{}, m_pauseSince{}, m_deadline{};
   cb1_ai_identity m_identity{};
-  bool m_active{}, m_waiting{}, m_native{}, m_event{}, m_prepared{}, m_paused{}, m_waitScheduled{};
+  bool m_active{}, m_waiting{}, m_native{}, m_event{}, m_prepared{}, m_paused{}, m_waitScheduled{}, m_inputPending{};
 };
 }
