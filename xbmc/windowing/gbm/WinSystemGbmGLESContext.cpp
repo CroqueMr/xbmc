@@ -761,6 +761,15 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
   if (!m_guiFbo.BeginRender())
     return false;
 
+#ifdef HAVE_DVBRIDGE
+  if (m_dvState.Captured() || m_hdrConversion)
+  {
+    // CB1 can leave the video crop in GL; restore Kodi's GUI clip before clearing.
+    const auto& context = GetGfxContext();
+    CRenderSystemGLES::SetScissors(context.StereoCorrection(context.GetScissors()));
+  }
+#endif
+
   // Clear only when the FBO holds stale content; idle frames are already clean.
   if (!m_guiFboClean)
   {
