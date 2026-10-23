@@ -1035,8 +1035,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
     }
   }
   if (!m_hdr10 && allowPacked && (m_directUsable || m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE) &&
-      m_scanout && (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE ||
-      (!geometry.x && !geometry.y && geometry.width == 3840 && geometry.height == 2160)))
+      m_scanout)
   {
     if(m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE)
     {
@@ -1460,7 +1459,7 @@ unsigned int CDVBridgeGLES::GetPQTexture() const
 {
   const auto* dv = m_advanced && m_dvPolicyActive ?
       dvbridge_render_dv_policy_output(m_renderer) : nullptr;
-  const auto texture = m_prepared ? (dv ? dv->intermediate : dvbridge_render_texture(m_renderer)) : nullptr;
+  const auto texture = m_prepared ? (dv ? dvbridge_render_dv_policy_rgb(m_renderer) : dvbridge_render_texture(m_renderer)) : nullptr;
   return texture ? pl_opengl_unwrap(m_gl->gpu, texture, nullptr, nullptr, nullptr) : 0;
 }
 
