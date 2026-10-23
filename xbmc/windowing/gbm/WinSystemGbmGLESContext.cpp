@@ -1971,7 +1971,7 @@ bool CWinSystemGbmGLESContext::CreateCB1GPUFence(const CDVBridgeGLES::Submission
     const auto preferences = DVBRIDGE::FrameOutputSettings();
     const bool matched = std::isfinite(fps) && fps >= 10 && fps <= 240 &&
         std::isfinite(refresh) && std::abs(fps-refresh) < fps * .005;
-    const bool measure = preferences.fastRenderingMode == 2 && !m_fastRendering.Enabled() &&
+    const bool measure = preferences.EffectiveFastRenderingMode(m_dvSelection.policy.mode) == 2 && !m_fastRendering.Enabled() &&
         m_fastRenderEligible && matched;
     drm->SetCB1TimingPeriod(measure ? std::llround(1e9 / fps) : 0);
     m_fastSubmittedEligible = measure;
@@ -2012,7 +2012,8 @@ void CWinSystemGbmGLESContext::ObserveCB1Headroom()
   const auto margin = drm->TakeCB1Headroom();
   const auto player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
   const auto preferences = DVBRIDGE::FrameOutputSettings();
-  const bool eligible = margin && m_fastSubmittedEligible && preferences.fastRenderingMode == 2 &&
+  const bool eligible = margin && m_fastSubmittedEligible &&
+      preferences.EffectiveFastRenderingMode(m_dvSelection.policy.mode) == 2 &&
       player && player->IsPlayingVideo() && player->GetPlaySpeed() == 1 &&
       !(m_guiWillRender && GetGUIElementCount()) && !m_dvOverlays;
   if (m_fastRendering.Enabled() && !DVBRIDGE::automaticFastRendering.load())
