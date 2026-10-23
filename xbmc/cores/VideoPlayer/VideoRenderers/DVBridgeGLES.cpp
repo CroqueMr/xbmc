@@ -602,7 +602,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   m_effectiveMode = policy.mode;
   m_requested = preferences;
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
-  dvbridge_renderer_set_fast_chroma(m_renderer,preferences.fastChroma);
+  dvbridge_renderer_set_fast_chroma(m_renderer,preferences.EffectiveFastChroma(policy.mode, true));
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   m_pendingOverlayRevision = m_nativeOverlayRevision;

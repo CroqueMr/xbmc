@@ -62,10 +62,9 @@ struct OutputPreferences
   }
 
 #ifdef HAVE_DVBRIDGE
-  int EffectiveFastRenderingMode(dvbridge_mode mode, bool hdr10AI = false) const
+  int EffectiveFastRenderingMode(dvbridge_mode mode, bool /*hdr10AI*/ = false) const
   {
-    return hdr10AI ? fastRenderingMode : mode == DVBRIDGE_MODE_STANDARD ? 1 :
-        mode == DVBRIDGE_MODE_MASTER_REFERENCE ? 0 : fastRenderingMode;
+    return mode == DVBRIDGE_MODE_DISABLED || mode == DVBRIDGE_MODE_MASTER_REFERENCE ? 0 : 1;
   }
   bool EffectiveFastChroma(dvbridge_mode mode, bool hdr10AI = false) const
   {
