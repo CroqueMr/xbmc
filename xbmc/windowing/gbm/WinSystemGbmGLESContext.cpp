@@ -346,7 +346,11 @@ bool CWinSystemGbmGLESContext::Show(bool raise)
 bool CWinSystemGbmGLESContext::BeginRender()
 {
   // A prepared picture already includes its GUI; wait before drawing it again.
-  if (m_cb1FramePending && m_dvFrame && !CompleteDVBridgePage(8)) return false;
+  if (m_cb1FramePending && m_dvFrame)
+  {
+    PresentFrame(false, true);
+    return false;
+  }
   return CRenderSystemGLES::BeginRender();
 }
 #endif
