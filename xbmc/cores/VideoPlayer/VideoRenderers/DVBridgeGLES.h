@@ -51,6 +51,7 @@ public:
     bool Close();
     bool Quarantined() const;
     bool AsyncPreparation(uint64_t stream);
+    bool AsyncPreparationConfigured() const;
     bool FELHardwareUpscaling(uint64_t stream);
     pl_opengl GL() const;
     pl_log Log() const;

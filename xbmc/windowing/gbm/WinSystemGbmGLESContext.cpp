@@ -79,7 +79,12 @@ using namespace std::chrono_literals;
 #ifdef HAVE_DVBRIDGE
 float CWinSystemGbmGLESContext::GetDisplayLatency()
 {
-  if (CB1AsyncPlayback())
+  // Native policy changes commit synchronously without changing the configured queue depth.
+  const bool authored = CB1AsyncAvailable() && !m_hdrConversion && !m_dvBridge->Advanced() &&
+      (m_dvSelection.policy.mode == DVBRIDGE_MODE_STANDARD ||
+       m_dvSelection.policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
+  const auto context = authored ? m_dvBridge->GetContext() : nullptr;
+  if (CB1AsyncPlayback() || (context && context->AsyncPreparationConfigured()))
   {
     const float refresh = m_DRM->GetCurrentMode().fRefreshRate;
     const float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
