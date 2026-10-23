@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <va/va.h>
+#include <va/va_drmcommon.h>
 
 #include "system_egl.h"
 #include "system_gl.h"
@@ -58,6 +59,7 @@ class CVaapi2Texture : public CVaapiTexture
 {
 public:
   bool Import(CVaapiRenderPicture* pic) override;
+  bool Import(CVaapiRenderPicture* pic, const VADRMPRIMESurfaceDescriptor& surface);
   void Reset() override;
   void Init(InteropInfo &interop) override;
 

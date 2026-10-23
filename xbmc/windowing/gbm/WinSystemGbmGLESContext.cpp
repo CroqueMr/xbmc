@@ -390,7 +390,6 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 #ifdef HAVE_DVBRIDGE
   // Yield to the pending scanout instead of repeatedly redrawing the GUI.
   if (!CompleteDVBridgePage(8)) return;
-  ObserveCB1Headroom();
   if (m_modeHold.Holding() == CModeChangeHold::Kind::START && !m_dvFrame &&
       !m_modeHold.Commits(DVBRIDGE::DiagnosticNowMs()))
   {
@@ -1964,18 +1963,6 @@ bool CWinSystemGbmGLESContext::CB1AsyncAvailable() const
 
 bool CWinSystemGbmGLESContext::CreateCB1GPUFence(const CDVBridgeGLES::Submission& submission)
 {
-  if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
-  {
-    const double fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
-    const double refresh = m_DRM->GetCurrentMode().fRefreshRate;
-    const auto preferences = DVBRIDGE::FrameOutputSettings();
-    const bool matched = std::isfinite(fps) && fps >= 10 && fps <= 240 &&
-        std::isfinite(refresh) && std::abs(fps-refresh) < fps * .005;
-    const bool measure = preferences.EffectiveFastRenderingMode(m_dvSelection.policy.mode) == 2 && !m_fastRendering.Enabled() &&
-        m_fastRenderEligible && matched;
-    drm->SetCB1TimingPeriod(measure ? std::llround(1e9 / fps) : 0);
-    m_fastSubmittedEligible = measure;
-  }
 #if defined(EGL_ANDROID_native_fence_sync) && defined(EGL_KHR_fence_sync)
   const auto current = m_dvBridge ? m_dvBridge->CaptureSubmission() : CDVBridgeGLES::Submission{};
   if (submission.asyncEligible && current.asyncEligible && submission.sequence &&
@@ -2000,32 +1987,6 @@ bool CWinSystemGbmGLESContext::CreateCB1GPUFence(const CDVBridgeGLES::Submission
   }
 #endif
   return false;
-}
-
-void CWinSystemGbmGLESContext::ObserveCB1Headroom()
-{
-  const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-  if (!drm) return;
-  const uint64_t presentation = drm->CB1PresentationTime();
-  if (!presentation || presentation == m_fastObservedPresentation) return;
-  m_fastObservedPresentation = presentation;
-  const auto margin = drm->TakeCB1Headroom();
-  const auto player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
-  const auto preferences = DVBRIDGE::FrameOutputSettings();
-  const bool eligible = margin && m_fastSubmittedEligible &&
-      preferences.EffectiveFastRenderingMode(m_dvSelection.policy.mode) == 2 &&
-      player && player->IsPlayingVideo() && player->GetPlaySpeed() == 1 &&
-      !(m_guiWillRender && GetGUIElementCount()) && !m_dvOverlays;
-  if (m_fastRendering.Enabled() && !DVBRIDGE::automaticFastRendering.load())
-    m_fastRendering.Reset();
-  if (m_fastRendering.Observe(presentation, margin.value_or(0), eligible))
-  {
-    DVBRIDGE::automaticFastRendering.store(true);
-    if (m_dvSelection.policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE)
-      DVBRIDGE::PlaybackNotification::ArmMasterRecovery();
-    DVBRIDGE::DiagnosticLog(LOGINFO, "CB1 fast rendering: decision=enable policy=Auto reason=low-presentation-headroom margin_ms={:.3f} threshold_ms=2.5",
-        double(*margin) / 1e6);
-  }
 }
 
 bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
@@ -2345,10 +2306,8 @@ bool CWinSystemGbmGLESContext::StopDVBridgePlayback()
   }
   if (m_modeHold.Holding() == CModeChangeHold::Kind::STOP &&
       !m_modeHold.Commits(DVBRIDGE::DiagnosticNowMs())) return false;
-  m_fastRendering.Reset();
-  DVBRIDGE::automaticFastRendering.store(false);
-  m_fastRenderEligible = m_fastSubmittedEligible = false;
-  m_fastSourceStream = m_fastObservedPresentation = 0;
+  m_fastRenderEligible = false;
+  m_fastSourceStream = 0;
   m_fastSourcePts = 0;
   if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM)) drm->SetCB1TimingPeriod(0);
   // The window outlives the renderer when a pending scanout defers teardown.
