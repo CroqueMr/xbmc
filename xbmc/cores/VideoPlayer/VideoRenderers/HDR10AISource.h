@@ -21,7 +21,7 @@ public:
   // Called only after the owning context's retirement fence has completed.
   void ReleaseRetired();
   cb1_ai_status Begin(pl_gpu gpu, const char* bundle, const DVBRIDGE::OutputPreferences& preferences,
-      DVBRIDGE::SourceBinding binding, double pts, uint64_t now);
+      DVBRIDGE::SourceBinding binding, double pts, uint64_t now, bool buffered = true);
   cb1_ai_status Submit(const pl_frame* frame, DVBRIDGE::SourceBinding binding, double pts,
       double headPts, std::shared_ptr<void> lease);
   cb1_ai_status Seal(double pts);
@@ -42,6 +42,7 @@ public:
   }
   uint64_t LastSubmitted() const { return m_lastSubmitted; }
   void SetPresentationDeadline(uint64_t deadline) { m_activation.SetPresentationDeadline(deadline); }
+  void InputReady(uint64_t now) { m_activation.InputReady(now); }
   void SetPaused(bool paused, uint64_t now)
   {
     m_paused = paused;

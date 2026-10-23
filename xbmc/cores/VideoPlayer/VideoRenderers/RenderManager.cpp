@@ -1568,11 +1568,8 @@ void CRenderManager::PrepareNextRender()
     auto iter = m_queued.begin();
     int idx = *iter;
     ++iter;
-    // Future display preparation and CPU scheduling phase are not presentation lateness.
-    double latePts = cb1Async && !isPaused ?
-        frameOnScreen + std::min(0.0, m_displayLatency) :
-        renderPts;
-    latePts -= completionAge.value_or(0.0);
+    // Catch up against the same deadline used to admit this presentation.
+    const double latePts = renderPts;
     while (iter != m_queued.end())
     {
       // the slot for rendering in time is [pts .. (pts +  x * frametime)]

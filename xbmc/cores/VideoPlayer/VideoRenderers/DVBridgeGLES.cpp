@@ -340,12 +340,12 @@ void HDR10Color(pl_frame& frame, const CDVBridgeGLES::Layer& layer)
 
 cb1_ai_status CDVBridgeGLES::Context::BeginHDR10AI(const char* bundle,
     const DVBRIDGE::OutputPreferences& preferences, DVBRIDGE::SourceBinding binding,
-    double pts, uint64_t now)
+    double pts, uint64_t now, bool buffered)
 {
   ClearNextHDR10AI();
   m_state->aiNextFailed = false;
   return m_state->gl && !Quarantined() ?
-      HDR10AI().Begin(m_state->gl->gpu,bundle,preferences,binding,pts,now) :
+      HDR10AI().Begin(m_state->gl->gpu,bundle,preferences,binding,pts,now,buffered) :
       HDR10AI().RecordStatus("analysis-context",CB1_AI_INCOMPATIBLE);
 }
 
@@ -458,13 +458,13 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
   }
   const auto started = std::chrono::steady_clock::now();
   const auto& head = queue.front();
+  const bool buffered = end || queue.back().pts >= head.pts + 1.0 - 1e-9;
   auto& source = HDR10AI();
   source.SetPaused(paused,now);
   if (!source.Current(head.binding,preferences) || source.ResetPending())
   {
-    // Buffer the required anticipation before starting the analysis wait budget.
-    if (!end && queue.back().pts < head.pts + 1.0 - 1e-9) return Decision::Wait;
-    const auto status = BeginHDR10AI(bundle,preferences,head.binding,head.pts,now);
+    // Analyse available pictures while the decoder fills the existing queue.
+    const auto status = BeginHDR10AI(bundle,preferences,head.binding,head.pts,now,buffered);
     if (status == CB1_AI_PENDING) { FenceLastUse(); return Decision::Wait; }
     if (status == CB1_AI_INVALID) { StopHDR10AI(); return Decision::Wait; }
     if (status == CB1_AI_INCOMPATIBLE) { FenceLastUse(); return Decision::Native; }
@@ -472,11 +472,11 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
   // A fatal future sample belongs to the current activation only. A new
   // binding/policy/reset must first enter Begin's existing GPU retirement path.
   if (m_state->aiNextFailed) return Decision::Native;
+  if (buffered) source.InputReady(now);
   // Only drain a complete snapshot; partial queues must let the decoder enqueue.
   source.DiscardBefore(head.binding, now);
   source.SetPresentationDeadline(presentationDeadline);
-  const bool drain = !paused && !source.AwaitingPresentation() &&
-      (end || queue.back().pts >= head.pts + 1.0 - 1e-9);
+  const bool drain = !paused && !source.AwaitingPresentation() && buffered;
   for (;;)
   {
     bool covered = false;

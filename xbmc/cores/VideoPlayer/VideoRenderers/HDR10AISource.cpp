@@ -41,7 +41,7 @@ cb1_ai_status HDR10AISource::Collect()
 
 cb1_ai_status HDR10AISource::Begin(pl_gpu gpu, const char* bundle,
     const DVBRIDGE::OutputPreferences& preferences, DVBRIDGE::SourceBinding binding,
-    double pts, uint64_t now)
+    double pts, uint64_t now, bool buffered)
 {
   if (!binding.Valid() || !std::isfinite(pts) || !gpu)
     return RecordStatus("analysis-begin",CB1_AI_INVALID);
@@ -63,11 +63,13 @@ cb1_ai_status HDR10AISource::Begin(pl_gpu gpu, const char* bundle,
     if (m_active)
     {
       m_activation.Begin(binding.stream,m_revision,now);
+      if (!buffered) m_activation.WaitForInput();
       m_activation.SetPaused(m_paused,now);
     }
     else m_activation.Stop();
   }
   if (m_fallback) return CB1_AI_INCOMPATIBLE;
+  if (buffered) m_activation.InputReady(now);
   // A policy/seek reset must not release a decoder surface still read by the GPU.
   if (m_job)
   {
