@@ -1197,7 +1197,31 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
                          0);
 
           // update streams
+#ifdef HAVE_DVBRIDGE
+          const bool wasJoined = bool(m_blurayDovi);
+#endif
           CreateStreams(m_program);
+
+#ifdef HAVE_DVBRIDGE
+          if (!wasJoined && m_blurayDovi)
+          {
+            // Start at a complete pair; never expose a saved raw layer as joined video.
+            m_blurayDovi->Reset(true);
+            m_blurayAwaitBase = true;
+            if (m_pkt.pkt.stream_index == m_blurayBase)
+            {
+              m_blurayAwaitBase = !m_blurayDovi->Push(&m_pkt.pkt, false);
+              if (m_blurayAwaitBase)
+                CLog::Log(LOGERROR, "DV layers: saved BL rejected: {}", m_blurayDovi->LastError());
+            }
+            if (m_pkt.pkt.stream_index == m_blurayBase ||
+                m_pkt.pkt.stream_index == m_blurayEnhancement)
+            {
+              av_packet_unref(&m_pkt.pkt);
+              m_pkt.result = -1;
+            }
+          }
+#endif
 
           pPacket = CDVDDemuxUtils::AllocateDemuxPacket(0);
           pPacket->iStreamId = DMX_SPECIALID_STREAMCHANGE;
@@ -2600,6 +2624,13 @@ std::string CDVDDemuxFFmpeg::GetStreamCodecName(int iStreamId)
 
 bool CDVDDemuxFFmpeg::IsProgramChange()
 {
+#ifdef HAVE_DVBRIDGE
+  unsigned groups = 0;
+  for (unsigned i = 0; i < m_pFormatContext->nb_stream_groups; ++i)
+    groups += m_pFormatContext->stream_groups[i]->type == AV_STREAM_GROUP_PARAMS_DOLBY_VISION;
+  if (groups != m_doviGroups)
+    return true;
+#endif
   if (m_program == UINT_MAX)
     return false;
 
@@ -3202,6 +3233,7 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
         group->streams[1]->codecpar->codec_id == AV_CODEC_ID_HEVC)
       ++qualified;
   }
+  m_doviGroups = groups;
   // No source URL, filename or metadata: cloud URLs can contain access tokens.
   const auto report = [&](const char* reason)
   {
@@ -3241,6 +3273,7 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
     }
   m_blurayDovi.reset();
   m_blurayBase = m_blurayEnhancement = -1;
+  m_blurayAwaitBase = false;
   const bool mov = std::strcmp(format, "mov") == 0 || std::strncmp(format, "mov,", 4) == 0;
   const bool transport = std::strcmp(format, "mpegts") == 0;
   const bool normalize = !bluray && (m_bMatroska || mov || transport);
@@ -3415,7 +3448,15 @@ int CDVDDemuxFFmpeg::ReadBlurayDovi(AVPacket* packet)
     }
     if (packet->stream_index != m_blurayBase && packet->stream_index != m_blurayEnhancement)
       return result;
+    if (m_blurayAwaitBase && packet->stream_index == m_blurayEnhancement)
+    {
+      av_packet_unref(packet);
+      result = AVERROR(EAGAIN);
+      continue;
+    }
     const bool accepted = m_blurayDovi->Push(packet, packet->stream_index == m_blurayEnhancement);
+    if (accepted && packet->stream_index == m_blurayBase)
+      m_blurayAwaitBase = false;
     if (m_blurayDovi->TakeDiscontinuity())
       CLog::Log(LOGINFO, "DV Blu-ray: reset layer pairing after transport DTS discontinuity");
     if (!accepted)
