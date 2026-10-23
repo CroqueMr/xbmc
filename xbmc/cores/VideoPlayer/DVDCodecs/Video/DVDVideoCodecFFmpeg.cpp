@@ -845,6 +845,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVid
   {
     int flags = m_codecControlFlags;
     flags &= ~DVD_CODEC_CTRL_DRAIN;
+#ifdef HAVE_DVBRIDGE
+    if (m_dvFel) flags &= ~DVD_CODEC_CTRL_DROP_ANY;
+#endif
     m_pHardware->SetCodecControl(flags);
     CDVDVideoCodec::VCReturn ret = m_pHardware->Decode(m_pCodecContext, nullptr);
     if (ret == VC_PICTURE)
@@ -913,6 +916,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVid
     {
       int flags = m_codecControlFlags;
       flags |= DVD_CODEC_CTRL_DRAIN;
+#ifdef HAVE_DVBRIDGE
+      if (m_dvFel) flags &= ~DVD_CODEC_CTRL_DROP_ANY;
+#endif
       m_pHardware->SetCodecControl(flags);
       int ret = m_pHardware->Decode(m_pCodecContext, nullptr);
       if (ret == VC_PICTURE)
@@ -1846,6 +1852,11 @@ bool CDVDVideoCodecFFmpeg::GetCodecStats(double &pts, int &droppedFrames, int &s
 void CDVDVideoCodecFFmpeg::SetCodecControl(int flags)
 {
   m_codecControlFlags = flags;
+#ifdef HAVE_DVBRIDGE
+  // Keep the native drop request on the picture, not either layer's decoder.
+  if (m_dvFel)
+    flags &= ~DVD_CODEC_CTRL_DROP_ANY;
+#endif
 
   if (m_pCodecContext)
   {
