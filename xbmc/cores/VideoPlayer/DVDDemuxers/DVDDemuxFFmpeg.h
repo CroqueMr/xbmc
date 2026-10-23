@@ -183,6 +183,8 @@ protected:
   int ReadBlurayDovi(AVPacket* packet);
   std::unique_ptr<CBlurayDovi> m_blurayDovi;
   int m_blurayBase{-1}, m_blurayEnhancement{-1};
+  unsigned m_doviGroups{0};
+  bool m_blurayAwaitBase{false};
 #endif
 
   CCriticalSection m_critSection;
