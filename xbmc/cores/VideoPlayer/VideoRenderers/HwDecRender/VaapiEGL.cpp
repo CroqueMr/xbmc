@@ -59,7 +59,7 @@ bool CVaapi2Texture::Import(CVaapiRenderPicture* pic, const VADRMPRIMESurfaceDes
   if (!surface.num_objects || surface.num_objects > 4 || !surface.num_layers || surface.num_layers > 4)
     return failImport();
   VAStatus status;
-  status = vaSyncSurface(pic->vadsp, pic->procPic.videoSurface);
+  status = pic->decodeCompleted ? VA_STATUS_SUCCESS : vaSyncSurface(pic->vadsp, pic->procPic.videoSurface);
   if (status != VA_STATUS_SUCCESS)
   {
     CLog::Log(LOGERROR, "CVaapi2Texture::Import: vaSyncSurface - Error: {} ({})",
@@ -280,8 +280,8 @@ CVaapi2Texture* CVaapiTexturePool::Get(CVaapiRenderPicture* pic,
   uint32_t handle = m_cache.Lookup(*identity);
   if (handle)
   {
-    // Import syncs only on a miss; a cached texture still needs this frame's decode done
-    status = vaSyncSurface(pic->vadsp, pic->procPic.videoSurface);
+    // The producer's completion belongs to this picture, not to the cached storage.
+    status = pic->decodeCompleted ? VA_STATUS_SUCCESS : vaSyncSurface(pic->vadsp, pic->procPic.videoSurface);
     if (status != VA_STATUS_SUCCESS)
     {
       CLog::Log(LOGERROR, "CVaapiTexturePool::{}: vaSyncSurface - Error: {} ({})", __FUNCTION__,
