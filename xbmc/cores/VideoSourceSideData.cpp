@@ -73,11 +73,10 @@ bool HDRValue(AVRational q, int scale, unsigned bits, bool wide = false)
       uint64_t(q.num) * scale / q.den < (uint64_t{1} << bits);
 }
 
-bool HDR10Plus(const AVDynamicHDRPlus& value)
+bool ValidHDR10Plus(const AVDynamicHDRPlus& value)
 {
-  // FFmpeg9 writes application version 1 and has no safe general multi-window
-  // color-saturation serialization. Omit unsupported forms, never rewrite facts.
-  if (value.application_version != 1 || value.num_windows != 1 ||
+  // Retain native metadata. JSON serialization below is limited to version 1.
+  if (value.application_version > 1 || value.num_windows != 1 ||
       value.targeted_system_display_actual_peak_luminance_flag > 1 ||
       value.mastering_display_actual_peak_luminance_flag > 1 ||
       !HDRValue(value.targeted_system_display_maximum_luminance, 1, 27, true))
@@ -170,7 +169,7 @@ std::shared_ptr<const VideoSourceSideData> VideoSourceSideData::Capture(
         {
           if (!sd->data || sd->size != sizeof(AVDynamicHDRPlus)) return false;
           const auto& value = *reinterpret_cast<const AVDynamicHDRPlus*>(sd->data);
-          if (!HDR10Plus(value)) return false;
+          if (!ValidHDR10Plus(value)) return false;
           result->m_hdr10plus = std::make_unique<AVDynamicHDRPlus>(value);
           return true;
         });
@@ -215,7 +214,7 @@ const std::string& VideoSourceSideData::JSON() const
       };
       add("dovi.config", m_config); add("dovi.rpu", m_rpu);
       add("mdcv", m_mdcv); add("cll", m_cll);
-      if (m_hdr10plus)
+      if (m_hdr10plus && m_hdr10plus->application_version == 1)
       {
         // Stack storage avoids a raw allocation whose ownership could escape on failure.
         std::array<uint8_t, AV_HDR_PLUS_MAX_PAYLOAD_SIZE + HDR10PLUS_HEADER.size()> bytes{};

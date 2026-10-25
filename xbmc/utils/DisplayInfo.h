@@ -67,6 +67,7 @@ public:
   bool SupportsEOTF(Eotf eotf) const;
 
   bool SupportsDolbyVision() const { return m_dolbyVision; }
+  int HDR10PlusVersion() const { return m_hdr10plusVersion; }
   bool SupportsStandardDolbyVision() const { return m_dvCaps.status == DV_EDID_STANDARD; }
   bool SupportsRGBQuantizationSelection() const { return m_rgbQuantizationSelectable; }
   const dvbridge_sink_caps& GetDolbyVisionCaps() const { return m_dvCaps; }
@@ -93,6 +94,7 @@ private:
   const di_cta_colorimetry_block* m_colorimetry = nullptr;
   const di_cta_hdr_static_metadata_block* m_hdr_static_metadata = nullptr;
   bool m_dolbyVision = false;
+  int m_hdr10plusVersion = -1;
   bool m_rgbQuantizationSelectable = false;
   dvbridge_sink_caps m_dvCaps{};
 };

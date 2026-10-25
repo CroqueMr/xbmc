@@ -162,6 +162,10 @@ private:
 #endif
   void PublishVideoSource(bool accepted, const std::shared_ptr<const VideoSourceSideData>& source);
   std::shared_ptr<const VideoSourceSideData> m_videoSourceSideData;
+#ifdef HAVE_DVBRIDGE
+  void StageNativeHDR10Plus(bool overlay);
+  std::string m_hdr10plusReason;
+#endif
   void PresentFrame(bool rendered, bool videoLayer);
   bool m_guiCompositing{false};
   CFrameBufferObject m_guiFbo;

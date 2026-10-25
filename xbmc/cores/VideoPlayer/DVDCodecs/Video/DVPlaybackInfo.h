@@ -10,16 +10,18 @@
 namespace DVBRIDGE
 {
 enum class OutputReason { None, NoDVTransport, NoHDR10Transport,
-  NoGPUProcessing, SourceIneligible, TVProfileRequired, ActivationFailed, RestoreFailed };
+  NoGPUProcessing, SourceIneligible, TVProfileRequired, ActivationFailed, RestoreFailed,
+  NoHDR10PlusTransport };
 struct ModeAdmission { bool usable{}; OutputReason reason{OutputReason::None}; };
 struct OutputCapabilities
 {
   bool sourceKnown{}, isDV{}, processingKnown{}, nativeDV{}, hdr10{};
   bool stereoSource{};
   uint64_t generation{};
-  std::array<ModeAdmission, 6> processing{};
+  std::array<ModeAdmission, 7> processing{};
   bool isHDR10{};
-  std::array<ModeAdmission, 6> hdr10Processing{};
+  std::array<ModeAdmission, 7> hdr10Processing{};
+  bool hdr10plus{};
 };
 }
 
@@ -32,10 +34,11 @@ struct CDVPlaybackInfo
     if constexpr (requires { output.hdr10AI; }) return output.hdr10AI;
     return false;
   }
-  enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4, HDR10 = 8 };
+  enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4, HDR10 = 8, HDR10PLUS = 16 };
   inline static std::atomic<unsigned> presented{0};
   static int ReasonLabel(DVBRIDGE::OutputReason reason)
-  { return reason == DVBRIDGE::OutputReason::None ? 0 : 40840 + static_cast<int>(reason); }
+  { return reason == DVBRIDGE::OutputReason::NoHDR10PlusTransport ? 40921 :
+      reason == DVBRIDGE::OutputReason::None ? 0 : 40840 + static_cast<int>(reason); }
 
   static const char* Reason(DVBRIDGE::OutputReason reason)
   {
@@ -48,6 +51,7 @@ struct CDVPlaybackInfo
       case DVBRIDGE::OutputReason::TVProfileRequired: return "tv-profile-required";
       case DVBRIDGE::OutputReason::ActivationFailed: return "activation-failed";
       case DVBRIDGE::OutputReason::RestoreFailed: return "restoration-failed";
+      case DVBRIDGE::OutputReason::NoHDR10PlusTransport: return "no-hdr10plus-transport";
       default: return "none";
     }
   }
@@ -71,6 +75,7 @@ struct CDVPlaybackInfo
       case 4: return "Dolby Vision Adaptive HDR Mapping";
       case 5: return "Dolby Vision Master Reference";
       case 6: return "Dolby Vision Adaptive HDR Mapping";
+      case 7: return output.flags & HDR10PLUS ? "HDR10+ conversion" : "HDR10 conversion";
       default: return output.flags & HDR10 ? "HDR10 Reference Basic" : "Dolby Vision Standard";
     }
   }
@@ -87,6 +92,7 @@ struct CDVPlaybackInfo
       case 4:return "Dolby Vision Adaptive HDR Mapping";
       case 5:return "Dolby Vision Master Reference";
       case 6:return "Dolby Vision Adaptive HDR Mapping";
+      case 7:return "HDR10+ conversion";
       default:return "";
     }
   }

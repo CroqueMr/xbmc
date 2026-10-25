@@ -27,6 +27,7 @@ inline std::atomic<HDR10SourceMode> hdr10PlaybackMode{HDR10SourceMode::Native};
 #ifdef HAVE_DVBRIDGE
 inline int PolicyCode(const dvbridge_policy& policy)
 {
+  if (policy.mode==DVBRIDGE_MODE_HDR10PLUS) return 7;
   return policy.mode==DVBRIDGE_MODE_ENHANCED_DV && policy.adaptive!=DVBRIDGE_ADAPTIVE_A ? 6 : int(policy.mode);
 }
 #endif
@@ -84,7 +85,8 @@ struct OutputPreferences
       case OutputMode::MasterReference:
         result.mode = DVBRIDGE_MODE_MASTER_REFERENCE; result.master_ipt = masterIPT; break;
       case OutputMode::HDR10:
-        result.mode = method == 1 ? DVBRIDGE_MODE_HDR10_EXPERT : DVBRIDGE_MODE_HDR10_BASIC;
+        result.mode = method == 2 ? DVBRIDGE_MODE_HDR10PLUS :
+            method == 1 ? DVBRIDGE_MODE_HDR10_EXPERT : DVBRIDGE_MODE_HDR10_BASIC;
         break;
     }
     // Basic/native paths never consume calibration. Keep invalid user values
@@ -145,7 +147,7 @@ inline OutputPreferences FrameOutputSettings()
     next.masterIPT = settings->GetInt("dvbridge.masteroutput")==1;
     next.allowMasterFallback = settings->GetBool("dvbridge.masterfallback");
   }
-  if (next.method < 0 || next.method > 1) next.method = 0;
+  if (next.method < 0 || next.method > 2) next.method = 0;
   if (next.felUpscaling < 0 || next.felUpscaling > 1) next.felUpscaling = 0;
   next.revision = previous.revision;
   bool changed = !next.SameValues(previous);

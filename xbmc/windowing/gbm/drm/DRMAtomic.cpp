@@ -136,6 +136,55 @@ void CDRMAtomic::ReportDVCommit(const char* stage) noexcept try
 }
 catch (...) {}
 
+void CDRMAtomic::StageHDR10Plus(std::optional<std::array<uint8_t, 31>> packet, uint64_t generation)
+{
+  m_hdr10plusGeneration = generation;
+  const uint64_t edid = m_connector ? m_connector->GetPropertyValue("EDID").value_or(0) : 0;
+  m_hdr10plusPacket = generation == m_hdr10plusRejectedGeneration &&
+      edid == m_hdr10plusRejectedEdid ? std::nullopt : std::move(packet);
+}
+
+bool CDRMAtomic::PrepareHDR10Plus(int& flags, bool& frameMetadata)
+{
+  auto packet = std::exchange(m_hdr10plusPacket, std::nullopt);
+  frameMetadata = false;
+  if (!m_connector || !m_connector->SupportsProperty("HDR10PLUS_METADATA"))
+    return !m_hdr10plusActive;
+  if (!packet && !m_hdr10plusActive) return true;
+  frameMetadata = true;
+  if (packet)
+  {
+    m_req->hdr10plusBlob = CDRMPropertyBlob(m_fd, packet->data(), packet->size());
+    if (!m_req->hdr10plusBlob.IsValid()) return false;
+  }
+  if (!AddProperty(m_connector, "HDR10PLUS_METADATA", packet ? m_req->hdr10plusBlob.Get() : 0))
+    return false;
+  m_req->hdr10plus = packet.has_value();
+  if (packet.has_value() != m_hdr10plusActive) flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
+  return true;
+}
+
+bool CDRMAtomic::RemoveRejectedHDR10Plus(int& flags)
+{
+  if (!m_req->hdr10plus.value_or(false) ||
+      !AddProperty(m_connector, "HDR10PLUS_METADATA", 0)) return false;
+  m_req->hdr10plus = false;
+  m_req->hdr10plusBlob.Reset();
+  m_hdr10plusRejectedGeneration = m_hdr10plusGeneration;
+  m_hdr10plusRejectedEdid = m_connector->GetPropertyValue("EDID").value_or(0);
+  flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
+  CLog::Log(LOGWARNING, "HDR10+ output rejected by driver; using HDR10 for this playback");
+  return true;
+}
+
+int CDRMAtomic::TestAtomicFrame(int& flags, bool frameMetadata)
+{
+  int ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags | DRM_MODE_ATOMIC_TEST_ONLY, nullptr);
+  if (ret < 0 && frameMetadata && RemoveRejectedHDR10Plus(flags))
+    ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags | DRM_MODE_ATOMIC_TEST_ONLY, nullptr);
+  return ret;
+}
+
 bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer, bool strict)
 {
   CDRMCrtc* oldCrtc = m_old_crtc;
@@ -154,6 +203,10 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   // destroying it before the commit returns leaves the atomic request
   // referencing an invalid id and the kernel rejects with EINVAL.
   CDRMPropertyBlob modeBlob;
+
+  bool frameMetadata = false;
+  if (!PrepareHDR10Plus(flags, frameMetadata))
+    return reject("hdr10plus-property", EINVAL);
 
   if (m_old_crtc != nullptr)
   {
@@ -268,11 +321,11 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
 
   const bool auditCommit = strict && DVBRIDGE::DiagnosticsEnabled() &&
       (!m_dvCommitReported || m_dvLastCommitRestore != m_dvRestoring);
-  auto ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags | DRM_MODE_ATOMIC_TEST_ONLY, nullptr);
+  auto ret = TestAtomicFrame(flags, frameMetadata);
   if (ret < 0)
   {
     const int testError = errno;
-    if (strict || (m_mode->flags & DRM_MODE_FLAG_3D_MASK))
+    if (strict || frameMetadata || (m_mode->flags & DRM_MODE_FLAG_3D_MASK))
     {
       return reject("atomic-test", testError);
     }
@@ -332,6 +385,7 @@ void CDRMAtomic::FinishRequest(bool accepted)
     // after Disable()). Without this, stale cached values cause
     // incorrect plane cleanup on subsequent video playback.
     m_req->CacheProperties();
+    if (m_req->hdr10plus) m_hdr10plusActive = *m_req->hdr10plus;
     if (m_req->signalMode)
       m_committedMode = *m_req->signalMode;
     if (m_signalDirty && DVBRIDGE::DiagnosticsEnabled())
@@ -546,6 +600,7 @@ void CDRMAtomic::FlipPage(struct gbm_bo* bo, bool rendered, bool videoLayer, boo
     drm_fb = CDRMUtils::DrmFbGetFromBo(bo);
     if (!drm_fb)
     {
+      m_hdr10plusPacket.reset();
       CLog::LogF(LOGERROR, "Failed to get a new FBO");
       return;
     }
@@ -613,6 +668,11 @@ bool CDRMAtomic::InitDrm()
 void CDRMAtomic::DestroyDrm()
 {
   ResetCB1PresentationTime();
+  m_hdr10plusPacket.reset();
+  m_hdr10plusActive = false;
+  m_hdr10plusGeneration = 0;
+  m_hdr10plusRejectedGeneration = 0;
+  m_hdr10plusRejectedEdid = 0;
   CDRMUtils::DestroyDrm();
 }
 

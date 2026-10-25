@@ -89,7 +89,7 @@ bool CDVPlaybackModes::ShowMenu()
   struct Choice { int output,method,label; };
   constexpr Choice dvChoices[]={{0,0,40812},{4,0,40913},
       {5,0,40914},
-      {2,0,40814},{1,0,40822},{1,1,40823}};
+      {2,0,40814},{1,0,40822},{1,1,40823},{1,2,40920}};
   const auto source=DVBRIDGE::StreamTelemetry::Read().transaction.capabilities;
   if (source.stereoSource || !source.sourceKnown || (!source.isDV && !source.isHDR10)) return false;
   const bool hdr10Source=source.isHDR10 && !source.isDV;

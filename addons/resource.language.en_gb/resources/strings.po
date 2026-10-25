@@ -25813,7 +25813,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40813"
-msgid "HDR10 conversion"
+msgid "HDR10 / HDR10+ conversion"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25851,7 +25851,15 @@ msgid "HDR10 conversion method"
 msgstr ""
 
 msgctxt "#40821"
-msgid "Basic uses source metadata. Expert requires a TV profile. Unsupported output uses a visible compatibility fallback."
+msgid "Basic uses source metadata. Expert requires a TV profile. HDR10+ sends picture statistics and representable trims to a compatible display."
+msgstr ""
+
+msgctxt "#40920"
+msgid "HDR10+ conversion (experimental)"
+msgstr ""
+
+msgctxt "#40921"
+msgid "HDR10+ output requires a supported HDMI driver and display."
 msgstr ""
 
 msgctxt "#40822"

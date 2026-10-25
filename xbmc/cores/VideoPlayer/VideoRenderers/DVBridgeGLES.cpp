@@ -820,6 +820,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::TakeFELPrefetch(const std::shared_ptr<
 
 CDVBridgeGLES::~CDVBridgeGLES()
 {
+  cb1_hdr10plus_analysis_destroy(&m_hdr10plusAnalysis);
   ClearFELPrefetch();
   Summary("closed");
   if (!m_live) DVBRIDGE::StreamTelemetry::ClearOutput();
@@ -965,6 +966,8 @@ bool CDVBridgeGLES::SetHDR10Session(const dvbridge_hdr10_session& session, uint6
 
 void CDVBridgeGLES::Reset()
 {
+  cb1_hdr10plus_analysis_reset(m_hdr10plusAnalysis);
+  m_hdr10plusMetadata.reset();
   ClearFELPrefetch();
   Summary("reset");
   m_rawELCache.clear();
@@ -1023,7 +1026,8 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
     if (enhancement) dvbridge_gl_frame_set_chroma(&el,location(*enhancement));
   }
   // Subtitle-only frames compose before packing. Other GUI retains 32F composition.
-  if (m_hdr10 && allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
+  const bool hdr10plus = m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS;
+  if (m_hdr10 && !hdr10plus && allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
       geometry.width == 3840 && geometry.height == 2160)
   {
     m_direct = dvbridge_render_hdr10_direct(m_renderer, &*m_hdr10Session, &bl.frame,
@@ -1068,7 +1072,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
       dvbridge_renderer_reset(m_renderer);
     }
   }
-  m_prepared = m_direct || (m_effectiveMode != DVBRIDGE_MODE_MASTER_REFERENCE && (m_hdr10 ?
+  m_prepared = m_direct || (m_effectiveMode != DVBRIDGE_MODE_MASTER_REFERENCE && (m_hdr10 && !hdr10plus ?
       dvbridge_render_hdr10_rgb(m_renderer, &*m_hdr10Session, &bl.frame,
           metadata.Data(), metadata.Size(), base.pts, elPts, geometry) :
       dvbridge_render_rgb(m_renderer, &bl.frame, metadata.Data(), metadata.Size(),
@@ -1078,7 +1082,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
   {
     // The renderer has validated all metadata offsets and extension bounds.
     const auto* parsed = reinterpret_cast<const AVDOVIMetadata*>(metadata.Data());
-    if (m_hdr10)
+    if (m_hdr10 && !hdr10plus)
     {
       const auto* l1 = av_dovi_find_level(parsed, 1);
       const bool usable = l1 && l1->l1.min_pq <= l1->l1.avg_pq &&
@@ -1255,6 +1259,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_asyncEligible = eligible;
   const auto previousMode=m_effectiveMode;
   m_effectiveMode = policy.mode;
+  m_hdr10plusMetadata.reset();
+  if (policy.mode == DVBRIDGE_MODE_HDR10PLUS) m_pendingHDR10Fallback = 0;
   if (policy.mode == DVBRIDGE_MODE_DISABLED) return FrameStatus::Unsupported;
   m_pendingBinding = base.binding;
   m_pendingSourceInfo = base.sourceInfo;
@@ -1295,10 +1301,14 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   if (!m_advanced)
   {
     const bool prepared = Prepare(base,enhancement,metadata,geometry,allowPacked);
+    const auto hdr10plus = prepared && policy.mode == DVBRIDGE_MODE_HDR10PLUS ?
+        BeginHDR10Plus() : FrameStatus::Ready;
     const bool fenced = m_context->FenceLastUse();
-    m_pending = prepared && fenced;
-    if (m_pending) PreparedAudit();
-    return m_pending ? FrameStatus::Ready : FrameStatus::Failed;
+    m_pending = prepared && fenced &&
+        (hdr10plus == FrameStatus::Ready || hdr10plus == FrameStatus::Pending);
+    if (m_pending && m_prepared) PreparedAudit();
+    if (!fenced || !prepared) return FrameStatus::Failed;
+    return hdr10plus;
   }
   if (!base.lease || (enhancement && !enhancement->lease))
   { Failure("policy-source-lease"); return FrameStatus::Failed; }
@@ -1400,6 +1410,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
 
 void CDVBridgeGLES::Cancel()
 {
+  cb1_hdr10plus_analysis_reset(m_hdr10plusAnalysis);
+  m_hdr10plusMetadata.reset();
   ClearFELPrefetch();
 #ifdef CB1_HAS_HDR10_AI
   if (m_context) m_context->ClearNextHDR10AI();
@@ -1422,6 +1434,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PollStatus(uint64_t timeoutNs)
   if (!m_pending) return FrameStatus::Failed;
   DVBRIDGE::ObserveDiagnostic(m_pendingBinding.stream,m_pendingBinding.picture,
       m_pendingBinding.revision,m_requested.revision,"gpu-pending",true,false);
+  if (m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS && !m_prepared)
+    return PollHDR10Plus();
   if (!m_dvPolicyActive) return m_prepared ? FrameStatus::Ready : FrameStatus::Pending;
   const auto status = dvbridge_render_dv_policy_wait(m_renderer,timeoutNs);
   if (status == DVBRIDGE_DV_READY)
@@ -1439,6 +1453,49 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PollStatus(uint64_t timeoutNs)
     return FrameStatus::Failed;
   }
   return FrameStatus::Pending;
+}
+
+CDVBridgeGLES::FrameStatus CDVBridgeGLES::BeginHDR10Plus()
+{
+  m_prepared = false;
+  m_hdr10plusMetadata.reset();
+  if (!m_hdr10plusAnalysis)
+    m_hdr10plusAnalysis = cb1_hdr10plus_analysis_create(m_log, m_gl->gpu);
+  const auto rgb = dvbridge_render_texture(m_renderer);
+  unsigned margins[4];
+  if (m_hdr10plusAnalysis && rgb && dvbridge_frame_area(margins,
+      m_pendingMetadata.Data(), m_pendingMetadata.Size(), m_sourceGeometry))
+  {
+    const pl_rect2d area{static_cast<int>(margins[0]), static_cast<int>(margins[2]),
+        rgb->params.w - static_cast<int>(margins[1]), rgb->params.h - static_cast<int>(margins[3])};
+    const auto status = cb1_hdr10plus_analysis_submit(m_hdr10plusAnalysis, rgb, area, m_pendingIdentity);
+    if (status == CB1_HDR10PLUS_ANALYSIS_PENDING) return FrameStatus::Pending;
+    if (status == CB1_HDR10PLUS_ANALYSIS_BUSY) return FrameStatus::Busy;
+  }
+  m_failedIdentity = m_pendingIdentity;
+  Failure("hdr10plus-analysis-submit");
+  Cancel();
+  return FrameStatus::Failed;
+}
+
+CDVBridgeGLES::FrameStatus CDVBridgeGLES::PollHDR10Plus()
+{
+  cb1_hdr10plus_statistics statistics{};
+  const auto status = cb1_hdr10plus_analysis_poll(m_hdr10plusAnalysis, m_pendingIdentity, &statistics);
+  if (status == CB1_HDR10PLUS_ANALYSIS_PENDING) return FrameStatus::Pending;
+  AVDynamicHDRPlus metadata{};
+  if (status != CB1_HDR10PLUS_ANALYSIS_READY || !cb1_dv_hdr10plus_metadata(&metadata,
+      &m_hdr10plusReport, m_pendingMetadata.Data(), m_pendingMetadata.Size(), &statistics))
+  {
+    m_failedIdentity = m_pendingIdentity;
+    Failure("hdr10plus-analysis");
+    Cancel();
+    return FrameStatus::Failed;
+  }
+  m_hdr10plusMetadata = metadata;
+  m_prepared = true;
+  PreparedAudit();
+  return FrameStatus::Ready;
 }
 
 const dvbridge_hdr10_policy_output* CDVBridgeGLES::HDR10Output() const
@@ -1869,7 +1926,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
       submission.identity.revision != m_pendingIdentity.revision)
     return false;
   const auto* hdrOutput = HDR10Output();
-  const float peak = hdrOutput ? hdrOutput->nominal_target.hdr.max_luma :
+  const float peak = m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS ? 992.0f :
+      hdrOutput ? hdrOutput->nominal_target.hdr.max_luma :
       m_advanced && m_effectiveMode == DVBRIDGE_MODE_ENHANCED_DV ? static_cast<float>(m_requested.peak) :
       m_hdr10 && m_hdr10Session ? m_hdr10Session->target.hdr.max_luma : 0.0f;
   const bool committed = success && m_prepared && m_packed &&
@@ -1942,6 +2000,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   output.fastChroma = m_requested.EffectiveFastChroma(m_effectiveMode, CDVPlaybackInfo::IsHDR10AI(output));
   output.fastRenderingMode = m_requested.EffectiveFastRenderingMode(m_effectiveMode, CDVPlaybackInfo::IsHDR10AI(output));
   output.effective = static_cast<int>(m_effectiveMode);
+  if (m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS) output.effective = 7;
   if(m_effectiveMode==DVBRIDGE_MODE_ENHANCED_DV &&
 #ifdef CB1_HAS_HDR10_AI
       !output.hdr10AI &&
@@ -1951,6 +2010,29 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   output.panel = m_requested.panel; output.gamut = m_requested.gamut;
   output.manualPeak = m_requested.peak; output.revision = m_pendingIdentity.revision;
   output.fallback = m_fallback;
+  if (m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS)
+  {
+    if (submission.hdr10plusAccepted)
+    {
+      output.flags |= CDVPlaybackInfo::HDR10PLUS;
+      if (m_hdr10plusReport.coverage >= CB1_DV_HDR10PLUS_L1) output.creativeEdited |= 1u<<1;
+      if (m_hdr10plusReport.coverage == CB1_DV_HDR10PLUS_L2) output.creativeEdited |= 1u<<2;
+      if (m_hdr10plusReport.coverage == CB1_DV_HDR10PLUS_L8) output.creativeEdited |= 1u<<8;
+      if (m_hdr10plusReport.l3_used && output.creativeEdited) output.creativeEdited |= 1u<<3;
+    }
+    else
+    {
+      output.fallback = true;
+      output.reason = DVBRIDGE::OutputReason::NoHDR10PlusTransport;
+    }
+    if (m_auditCreative.Record(DVBRIDGE::DiagnosticNowMs(), "hdr10plus",
+        int(m_hdr10plusReport.coverage)*32 + int(m_hdr10plusReport.reason)*2 + submission.hdr10plusAccepted))
+      DVBRIDGE::DiagnosticLog(LOGINFO,
+          "CB1 HDR10+ output: active={} coverage={} reason={} l3={} curve_error_pq={} color_error_pq={}",
+          submission.hdr10plusAccepted, int(m_hdr10plusReport.coverage), int(m_hdr10plusReport.reason),
+          m_hdr10plusReport.l3_used, m_hdr10plusReport.maximum_curve_pq_error,
+          m_hdr10plusReport.maximum_color_pq_error);
+  }
   output.stream=m_pendingIdentity.stream; output.picture=m_pendingIdentity.picture;
   const char* pixelAlgorithm=nullptr;
   const char* analysisModel=nullptr;
@@ -2047,6 +2129,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
           CDVPlaybackInfo::RequestedPolicy(acceptedOutput.effective,CDVPlaybackInfo::IsHDR10AI(acceptedOutput)),
           CDVPlaybackInfo::Reason(acceptedOutput.reason),acceptedOutput.minimumLinkBits,
           m_pendingSourceInfo.profile,m_pendingSourceInfo.bl,m_pendingSourceInfo.el,m_pendingSourceInfo.rpu,
+          acceptedOutput.effective == 7 ? "reconstructed-picture-statistics" :
           acceptedOutput.flags & CDVPlaybackInfo::HDR10 ? (acceptedOutput.effective>=3 ? "manual-tv-profile" :
               acceptedOutput.level6 ? "source-L6" : "reference-default") : "source-RPU");
     }
