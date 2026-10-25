@@ -28,6 +28,7 @@ struct VideoProcessingInfoGUI
           {
             case VideoOutputType::SDR: value="sdr"; break;
             case VideoOutputType::HDR10: value="hdr10"; break;
+            case VideoOutputType::HDR10Plus: value="hdr10plus"; break;
             case VideoOutputType::HLG: value="hlg"; break;
             case VideoOutputType::DolbyVision: value="dolbyvision"; break;
           }

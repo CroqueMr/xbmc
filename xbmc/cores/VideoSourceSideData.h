@@ -30,6 +30,7 @@ public:
   uint64_t Generation() const { return m_generation; }
   uint64_t Serial() const { return m_serial; }
   unsigned RejectedSections() const { return m_rejected; }
+  const AVDynamicHDRPlus* HDR10Plus() const { return m_hdr10plus.get(); }
   const std::string& JSON() const;
 
 private:

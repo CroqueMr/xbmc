@@ -43,6 +43,13 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return result;
   }
   auto policy = preferences.Policy();
+  if (policy.mode == DVBRIDGE_MODE_HDR10PLUS && !caps.hdr10plus)
+  {
+    if (!caps.hdr10 || !caps.processing[DVBRIDGE_MODE_HDR10_BASIC].usable)
+      return {OutputRoute::Vanilla, {}, OutputReason::NoHDR10PlusTransport};
+    policy.mode = DVBRIDGE_MODE_HDR10_BASIC;
+    return {OutputRoute::HDR10, policy, OutputReason::NoHDR10PlusTransport};
+  }
   const auto admission = [&](dvbridge_mode mode) {
     if ((mode == DVBRIDGE_MODE_HDR10_EXPERT || mode == DVBRIDGE_MODE_ENHANCED_DV) &&
         !preferences.ProfileValid())

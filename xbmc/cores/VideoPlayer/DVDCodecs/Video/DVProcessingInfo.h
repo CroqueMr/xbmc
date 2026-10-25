@@ -34,6 +34,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   if (output.flags) { accepted.engine=cb1_engine_version(); accepted.circuit=output.Circuit(); }
 #endif
   if (output.flags & CDVPlaybackInfo::HDMI) info.outputType=VideoOutputType::DolbyVision;
+  else if (output.flags & CDVPlaybackInfo::HDR10PLUS) info.outputType=VideoOutputType::HDR10Plus;
   else if (output.flags & CDVPlaybackInfo::HDR10) info.outputType=VideoOutputType::HDR10;
   info.profile=source.profile; info.level=source.level; info.major=source.major; info.minor=source.minor;
   info.bl=source.bl; info.el=source.el; info.rpu=source.rpu; info.fel=source.fel;
