@@ -183,6 +183,8 @@ private:
   bool RetireDVContext();
   bool CB1AsyncAvailable() const;
   bool CreateCB1GPUFence(const CDVBridgeGLES::Submission& submission);
+  DVBRIDGE::MasterSafety m_masterSafety;
+  uint64_t m_masterFramePeriodNs{};
   bool m_fastRenderEligible{};
   uint64_t m_fastSourceStream{};
   double m_fastSourcePts{};

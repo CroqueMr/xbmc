@@ -38,6 +38,7 @@ struct OutputPreferences
   int method{0}, panel{0}, gamut{0};
   double peak{0};
   bool optimizedDV{true};
+  bool masterIPT{false}, allowMasterFallback{true};
   int felUpscaling{0};
   bool processingOptimizations{false};
   uint64_t revision{1};
@@ -52,6 +53,7 @@ struct OutputPreferences
   {
     return output == other.output && hdr10Source == other.hdr10Source && method == other.method &&
         panel == other.panel && gamut == other.gamut && optimizedDV == other.optimizedDV &&
+        masterIPT == other.masterIPT && allowMasterFallback == other.allowMasterFallback &&
         felUpscaling == other.felUpscaling &&
         processingOptimizations == other.processingOptimizations &&
         std::bit_cast<uint64_t>(peak) == std::bit_cast<uint64_t>(other.peak);
@@ -79,7 +81,8 @@ struct OutputPreferences
         result.mode=DVBRIDGE_MODE_ENHANCED_DV;
         result.adaptive=DVBRIDGE_ADAPTIVE_B_FP16;
         break;
-      case OutputMode::MasterReference: result.mode = DVBRIDGE_MODE_MASTER_REFERENCE; break;
+      case OutputMode::MasterReference:
+        result.mode = DVBRIDGE_MODE_MASTER_REFERENCE; result.master_ipt = masterIPT; break;
       case OutputMode::HDR10:
         result.mode = method == 1 ? DVBRIDGE_MODE_HDR10_EXPERT : DVBRIDGE_MODE_HDR10_BASIC;
         break;
@@ -95,6 +98,7 @@ struct OutputPreferences
   {
     auto result = Policy();
     result.adaptive=DVBRIDGE_ADAPTIVE_A;
+    result.master_ipt=false;
     result.mode = hdr10Source == HDR10SourceMode::ReferenceDV ? DVBRIDGE_MODE_STANDARD :
         hdr10Source == HDR10SourceMode::EnhancedDV ? DVBRIDGE_MODE_ENHANCED_DV : DVBRIDGE_MODE_DISABLED;
     result.tv = result.mode == DVBRIDGE_MODE_ENHANCED_DV ?
@@ -138,6 +142,8 @@ inline OutputPreferences FrameOutputSettings()
     next.panel = settings->GetInt("dvbridge.tvpanel");
     next.gamut = settings->GetInt("dvbridge.tvgamut");
     next.felUpscaling = settings->GetInt("dvbridge.felupscaling");
+    next.masterIPT = settings->GetInt("dvbridge.masteroutput")==1;
+    next.allowMasterFallback = settings->GetBool("dvbridge.masterfallback");
   }
   if (next.method < 0 || next.method > 1) next.method = 0;
   if (next.felUpscaling < 0 || next.felUpscaling > 1) next.felUpscaling = 0;

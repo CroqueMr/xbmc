@@ -26,6 +26,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   accepted.creativeEdited=output.creativeEdited; accepted.creativeStatus=output.creativeStatus;
   accepted.creativeReason=output.creativeReason; accepted.fastChroma=output.fastChroma;
   accepted.fastRenderingMode=output.fastRenderingMode;
+  accepted.iptTransport=output.iptTransport;
   accepted.felUpscaling=output.felUpscaling;
 #ifdef CB1_HAS_HDR10_AI
   accepted.hdr10AI=output.hdr10AI; accepted.aiL1L3=output.aiL1L3;
