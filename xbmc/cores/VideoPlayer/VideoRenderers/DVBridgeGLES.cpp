@@ -580,7 +580,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
       policy.mode == preferences.HDR10Policy().mode;
   if (m_dvPolicyActive)
   {
-    const auto status = eligible && allowPacked && policy.mode == DVBRIDGE_MODE_STANDARD ?
+    const auto status = eligible && allowPacked ?
         dvbridge_render_dv_policy_advance(m_renderer) : dvbridge_render_dv_policy_poll(m_renderer);
     if (status != DVBRIDGE_DV_IDLE)
       return status == DVBRIDGE_DV_FAILED ? FrameStatus::Failed : FrameStatus::Busy;
