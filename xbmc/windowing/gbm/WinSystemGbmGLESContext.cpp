@@ -2033,7 +2033,6 @@ bool CWinSystemGbmGLESContext::CB1AsyncAvailable() const
       !m_dvRecoveryPending && !m_dvRejectedSurface && !m_dvRollbackFailed &&
       !m_dvOutputRetiring && !m_dvShutdownFence && !m_dvStopPending && !HasPendingDVOutputSurface() &&
       m_dvSelection.route != DVBRIDGE::OutputRoute::Vanilla &&
-      m_dvSelection.reason == DVBRIDGE::OutputReason::None &&
       (m_hdrConversion || m_dvState.Captured());
 }
 
