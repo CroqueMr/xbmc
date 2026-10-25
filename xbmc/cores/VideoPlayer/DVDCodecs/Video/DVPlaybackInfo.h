@@ -37,7 +37,7 @@ struct CDVPlaybackInfo
   enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4, HDR10 = 8, HDR10PLUS = 16 };
   inline static std::atomic<unsigned> presented{0};
   static int ReasonLabel(DVBRIDGE::OutputReason reason)
-  { return reason == DVBRIDGE::OutputReason::NoHDR10PlusTransport ? 40921 :
+  { return reason == DVBRIDGE::OutputReason::NoHDR10PlusTransport ? 40923 :
       reason == DVBRIDGE::OutputReason::None ? 0 : 40840 + static_cast<int>(reason); }
 
   static const char* Reason(DVBRIDGE::OutputReason reason)
