@@ -573,17 +573,20 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
       return PollReady() ? FrameStatus::Ready : FrameStatus::Pending;
     Cancel();
   }
-  if (m_dvPolicyActive)
-  {
-    const auto status = dvbridge_render_dv_policy_poll(m_renderer);
-    if (status != DVBRIDGE_DV_IDLE)
-      return status == DVBRIDGE_DV_FAILED ? FrameStatus::Failed : FrameStatus::Busy;
-  }
   const bool eligible = allowAsync && asyncSetting && !m_fallback && m_hasCommitted && m_aiOutputAccepted &&
       sameGeometry && m_aiFrame && base.binding.stream == m_committedBinding.stream &&
       base.binding.revision == m_committedBinding.revision &&
       prediction.id.revision == m_committedRevision && policy.mode == m_committedMode &&
       policy.mode == preferences.HDR10Policy().mode;
+  if (m_dvPolicyActive)
+  {
+    const auto status = eligible && allowPacked && policy.mode == DVBRIDGE_MODE_STANDARD ?
+        dvbridge_render_dv_policy_advance(m_renderer) : dvbridge_render_dv_policy_poll(m_renderer);
+    if (status != DVBRIDGE_DV_IDLE)
+      return status == DVBRIDGE_DV_FAILED ? FrameStatus::Failed : FrameStatus::Busy;
+    m_dvPolicyActive = false;
+    m_context->SourceReadComplete();
+  }
   const auto retired = m_context->Poll(eligible);
   if (retired != DVBRIDGE_DV_IDLE)
     return retired == DVBRIDGE_DV_FAILED ? FrameStatus::Failed : FrameStatus::Busy;
