@@ -374,12 +374,12 @@ CDRMAtomic::~CDRMAtomic()
   ResetCB1Timing();
 }
 
-void CDRMAtomic::ResetCB1Timing()
+void CDRMAtomic::ResetCB1Timing(bool discardSample)
 {
   if (m_cb1TimingInput >= 0) close(m_cb1TimingInput);
   m_cb1TimingInput = -1;
   m_cb1SubmittedNs = 0;
-  m_cb1Headroom.reset();
+  if (discardSample) m_cb1Headroom.reset();
 }
 
 void CDRMAtomic::SetCB1TimingPeriod(uint64_t periodNs)
@@ -480,7 +480,8 @@ bool CDRMAtomic::FlipPageTransactional(struct gbm_bo* bo, bool restore, bool asy
   }
   // Stable scanout keeps the accepted mode. Transitions still validate it fully.
   const bool asynchronous = async && !restore && CanAsyncDVBridge() && m_inFenceFd >= 0;
-  ResetCB1Timing();
+  // The next render still owns the completed picture's timing sample.
+  ResetCB1Timing(false);
   if (asynchronous && m_cb1TimingPeriodNs)
     m_cb1TimingInput = fcntl(m_inFenceFd, F_DUPFD_CLOEXEC, 3);
   const int flags = (m_need_modeset || m_dvActivating || restore)

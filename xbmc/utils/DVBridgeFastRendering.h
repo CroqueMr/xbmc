@@ -46,6 +46,12 @@ private:
   bool m_enabled{},m_active{};
 };
 
+inline uint64_t MasterFramePeriodNs(double fps)
+{
+  return std::isfinite(fps) && fps >= 10 && fps <= 240 ?
+      static_cast<uint64_t>(std::llround(1e9/fps)) : 0;
+}
+
 inline std::optional<int64_t> PresentationHeadroom(uint64_t previousNs, uint64_t readyNs,
     uint64_t submittedNs, uint64_t presentedNs, uint64_t periodNs)
 {
