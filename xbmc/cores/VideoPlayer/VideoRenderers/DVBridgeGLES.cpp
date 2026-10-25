@@ -1160,11 +1160,10 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   { Failure("renderer-unavailable"); m_asyncEligible = false; return FrameStatus::Failed; }
   const bool asyncSetting = m_context->AsyncPreparation(base.binding.stream);
   auto policy = selected ? *selected : preferences.Policy();
-  const bool masterRecovery=selected && preferences.output==DVBRIDGE::OutputMode::MasterReference &&
-      preferences.allowMasterFallback && policy.mode==DVBRIDGE_MODE_STANDARD;
-  const bool fallback = selected ? policy.mode != preferences.Policy().mode && !masterRecovery :
+  // A selected policy already passed output admission, including compatibility routes.
+  const bool fallback = !selected &&
       (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid();
-  if (fallback && !selected)
+  if (fallback)
   {
     policy.mode = preferences.output == DVBRIDGE::OutputMode::HDR10 ?
         DVBRIDGE_MODE_HDR10_BASIC : DVBRIDGE_MODE_STANDARD;

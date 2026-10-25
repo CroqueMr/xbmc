@@ -251,6 +251,7 @@ public:
     {
       if (output.effective!=7 || output.reason==OutputReason::None)
         m_snapshot.output.reason=m_snapshot.transaction.reason;
+      m_snapshot.output.fallback |= m_snapshot.output.reason!=OutputReason::None;
       m_snapshot.output.requested=m_snapshot.transaction.requested;
       m_snapshot.output.minimumLinkBits=(output.flags & CDVPlaybackInfo::HDR10) ? 10 : 0;
     }
