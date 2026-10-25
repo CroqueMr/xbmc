@@ -2035,8 +2035,10 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
       m_fastSourceStream == layer.binding.stream &&
       DVBRIDGE::ContinuousFastRenderingPicture(layer.pts, m_fastSourcePts) &&
       m_dvSelection.reason == DVBRIDGE::OutputReason::None;
-  m_masterFramePeriodNs=m_fastRenderEligible ?
-      static_cast<uint64_t>(std::llround((layer.pts-m_fastSourcePts)*1000.0)) : 0;
+  const auto preferences = DVBRIDGE::FrameOutputSettings();
+  m_masterFramePeriodNs=m_fastRenderEligible && preferences.allowMasterFallback &&
+      m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE ?
+      DVBRIDGE::MasterFramePeriodNs(CServiceBroker::GetDataCacheCore().GetVideoFps()) : 0;
   if(auto drm=std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
   {
     const auto margin=drm->TakeCB1Headroom();
@@ -2048,7 +2050,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
     }
     if(switched)
     {
-      DVBRIDGE::DiagnosticLog(LOGWARNING,
+      CLog::Log(LOGWARNING,
           "CB1 Master safety: sustained headroom below 2.5ms; next accepted mode is Standard");
       DVBRIDGE::PlaybackNotification::ArmMasterRecovery();
     }
@@ -2056,7 +2058,6 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   }
   m_fastPreparedStream = layer.binding.stream;
   m_fastPreparedPts = layer.pts;
-  const auto preferences = DVBRIDGE::FrameOutputSettings();
   const bool subtitlesOnly = !capturing && m_guiWillRender && m_guiFbo.IsValid() &&
       m_guiFboWidth == 3840 && m_guiFboHeight == 2160 && m_compositeShader &&
       m_dvSubtitleDraws && m_dvSubtitleDraws == GetGUIElementCount() &&

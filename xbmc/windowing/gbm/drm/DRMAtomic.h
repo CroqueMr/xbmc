@@ -97,7 +97,7 @@ private:
   int m_cb1TimingInput{-1};
   uint64_t m_cb1TimingPeriodNs{}, m_cb1SubmittedNs{};
   std::optional<int64_t> m_cb1Headroom;
-  void ResetCB1Timing();
+  void ResetCB1Timing(bool discardSample = true);
   void ResetCB1PresentationTime() { m_cb1CompletedNs = m_cb1PreviousCompletedNs = 0; }
   bool m_lastPageAccepted{};
   bool m_active = true;
