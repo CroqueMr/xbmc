@@ -3,10 +3,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <optional>
-#include <cctype>
 #include <cmath>
-#include <string>
-#include <string_view>
 
 namespace DVBRIDGE
 {
@@ -17,15 +14,37 @@ inline bool ContinuousFastRenderingPicture(double currentUs, double previousUs)
       currentUs > previousUs && currentUs - previousUs < 250000;
 }
 
-inline std::optional<int> LegacyFastRendering(std::string_view value)
+// One picture of timing per accepted fence; no quality change before a latched switch.
+class MasterSafety
 {
-  std::string text(value);
-  std::transform(text.begin(), text.end(), text.begin(),
-      [](unsigned char c) { return std::tolower(c); });
-  if (text == "false") return 0;
-  if (text == "true") return 1;
-  return std::nullopt;
-}
+public:
+  void Begin(uint64_t stream,uint64_t policy,uint64_t source,double pts,bool enabled)
+  {
+    const bool reset=!enabled || stream!=m_stream || policy!=m_policy || source!=m_source ||
+        !std::isfinite(pts) || (pts!=m_pts && !ContinuousFastRenderingPicture(pts,m_pts));
+    if(reset){m_warm=m_samples=m_low=0;m_active=false;}
+    m_stream=stream;m_policy=policy;m_source=source;m_pts=pts;m_enabled=enabled;
+  }
+  bool Observe(std::optional<int64_t> headroom,bool eligible)
+  {
+    if(!m_enabled || m_active || !eligible || !headroom)return false;
+    if(m_warm<60){++m_warm;return false;}
+    m_low+=*headroom<2500000;
+    if(++m_samples<60)return false;
+    const bool switchNow=m_low>=12;
+    m_samples=m_low=0;
+    m_active=switchNow;
+    return switchNow;
+  }
+  bool Active() const{return m_active;}
+  bool Active(uint64_t stream,uint64_t policy,uint64_t source) const
+  {return m_active && stream==m_stream && policy==m_policy && source==m_source;}
+private:
+  uint64_t m_stream{},m_policy{},m_source{};
+  double m_pts{};
+  unsigned m_warm{},m_samples{},m_low{};
+  bool m_enabled{},m_active{};
+};
 
 inline std::optional<int64_t> PresentationHeadroom(uint64_t previousNs, uint64_t readyNs,
     uint64_t submittedNs, uint64_t presentedNs, uint64_t periodNs)

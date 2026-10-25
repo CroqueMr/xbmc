@@ -64,6 +64,7 @@ struct StreamSnapshot
     uint32_t creativeApplied{}, creativeEdited{};
     int creativeStatus{}, creativeReason{};
     bool fastChroma{};
+    bool iptTransport{};
     int fastRenderingMode{};
     int felUpscaling{-1};
 #ifdef CB1_HAS_HDR10_AI
@@ -85,7 +86,7 @@ struct StreamSnapshot
         if (effective==2) return cb1_circuit_version(CB1_DV_HDR10_BASIC);
         if (effective==3) return cb1_circuit_version(CB1_DV_HDR10_EXPERT);
         if (effective==4) return cb1_circuit_version(CB1_DV_DV_ADAPTIVE);
-        if (effective==5) return cb1_circuit_version(CB1_DV_DV_MASTER_REFERENCE);
+        if (effective==5) return cb1_circuit_version(iptTransport ? CB1_DV_DV_MASTER_IPT : CB1_DV_DV_MASTER_REFERENCE);
         if (effective==6) return cb1_circuit_version(CB1_DV_DV_ADAPTIVE_B);
       }
       return "";

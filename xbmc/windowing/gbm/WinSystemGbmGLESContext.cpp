@@ -1300,6 +1300,17 @@ DVBRIDGE::OutputSelection CWinSystemGbmGLESContext::SelectedDVOutput(const Video
     }
   }
   auto result = DVBRIDGE::SelectOutput(preferences, caps);
+  if(result.route==DVBRIDGE::OutputRoute::NativeDV &&
+      result.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE && preferences.allowMasterFallback &&
+      caps.processing[DVBRIDGE_MODE_STANDARD].usable)
+  {
+    std::lock_guard lock(m_dvCapabilityMutex);
+    if(m_masterSafety.Active(binding.stream,preferences.revision,binding.revision))
+    {
+      result.policy.mode=DVBRIDGE_MODE_STANDARD;
+      result.policy.master_ipt=false;
+    }
+  }
 #ifdef CB1_HAS_HDR10_AI
   if (caps.isHDR10)
   {
@@ -1783,6 +1794,14 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
       (!capabilities.processingKnown || (picture.strDVELType == "FEL" && !picture.doviEnhancement)))
     return false;
   auto selectionCapabilities = capabilities;
+  {
+    const auto masterBinding=picture.doviSourceBinding.Valid() ?
+        picture.doviSourceBinding : picture.doviMetadata.Binding();
+    std::lock_guard lock(m_dvCapabilityMutex);
+    m_masterSafety.Begin(masterBinding.stream,preferences.revision,masterBinding.revision,picture.pts,
+        capabilities.isDV && preferences.output==DVBRIDGE::OutputMode::MasterReference &&
+        preferences.allowMasterFallback);
+  }
   m_dvSelection = SelectedDVOutput(&picture, preferences, selectionCapabilities);
   // Retained renderer facts belong to this render-side phase, never Configure.
   const auto binding = picture.doviSourceBinding.Valid() ?
@@ -1817,8 +1836,10 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
   const auto& source = picture.doviSourceInfo;
   const bool ordinaryBL = !source.profile || source.profile == 7 ||
       source.compatibility == 1 || source.compatibility == 2 || source.compatibility == 4;
+  const bool strictMaster=preferences.output==DVBRIDGE::OutputMode::MasterReference &&
+      !preferences.allowMasterFallback;
   if (m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla && capabilities.processingKnown &&
-      !ordinaryBL &&
+      (!ordinaryBL || strictMaster) &&
       preferences.output != DVBRIDGE::OutputMode::Disabled &&
       !(source.el && !picture.doviEnhancement))
   {
@@ -2014,6 +2035,25 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
       m_fastSourceStream == layer.binding.stream &&
       DVBRIDGE::ContinuousFastRenderingPicture(layer.pts, m_fastSourcePts) &&
       m_dvSelection.reason == DVBRIDGE::OutputReason::None;
+  m_masterFramePeriodNs=m_fastRenderEligible ?
+      static_cast<uint64_t>(std::llround((layer.pts-m_fastSourcePts)*1000.0)) : 0;
+  if(auto drm=std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
+  {
+    const auto margin=drm->TakeCB1Headroom();
+    bool switched=false;
+    {
+      std::lock_guard lock(m_dvCapabilityMutex);
+      switched=m_masterSafety.Observe(margin,m_fastRenderEligible &&
+          m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE);
+    }
+    if(switched)
+    {
+      DVBRIDGE::DiagnosticLog(LOGWARNING,
+          "CB1 Master safety: sustained headroom below 2.5ms; next accepted mode is Standard");
+      DVBRIDGE::PlaybackNotification::ArmMasterRecovery();
+    }
+    drm->SetCB1TimingPeriod(m_masterFramePeriodNs);
+  }
   m_fastPreparedStream = layer.binding.stream;
   m_fastPreparedPts = layer.pts;
   const auto preferences = DVBRIDGE::FrameOutputSettings();
@@ -2306,6 +2346,11 @@ bool CWinSystemGbmGLESContext::StopDVBridgePlayback()
   }
   if (m_modeHold.Holding() == CModeChangeHold::Kind::STOP &&
       !m_modeHold.Commits(DVBRIDGE::DiagnosticNowMs())) return false;
+  {
+    std::lock_guard lock(m_dvCapabilityMutex);
+    m_masterSafety={};
+  }
+  m_masterFramePeriodNs=0;
   m_fastRenderEligible = false;
   m_fastSourceStream = 0;
   m_fastSourcePts = 0;

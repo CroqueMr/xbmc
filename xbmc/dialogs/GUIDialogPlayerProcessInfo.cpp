@@ -181,7 +181,8 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.MinimumLinkBits", active && data.output.minimumLinkBits ?
         StringUtils::Format(localizer.Get(40852),data.output.minimumLinkBits) : "");
     SetProperty("DV.Transport", active ? CDVPlaybackInfo::Transport(data.output.format) : "");
-    SetProperty("DV.SignalIntent", active & CDVPlaybackInfo::HDMI ? "TV-Led Dolby Vision tunnel" :
+    SetProperty("DV.SignalIntent", active & CDVPlaybackInfo::HDMI ?
+        (data.output.iptTransport ? "TV-Led / IPT-PQc2 tunnel" : "TV-Led / YCbCr tunnel") :
         hdr10 ? "PQ / BT.2020" : "");
     SetProperty("DV.Committed", active && data.output.stream ? StringUtils::Format("{} / {} / {}",
         data.output.stream,data.output.picture,data.output.revision) : "");

@@ -1042,7 +1042,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
   {
     if(m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE)
     {
-      auto renderMaster=dvbridge_render_master_reference;
+      auto renderMaster=m_requested.masterIPT ? dvbridge_render_master_reference_ipt : dvbridge_render_master_reference;
       const auto status=renderMaster(m_renderer,&bl.frame,metadata.Data(),metadata.Size(),
           base.pts,elPts,geometry,m_scanout,true,m_nativeOverlayEnabled ? &m_nativeOverlay : nullptr);
       m_direct=status==CB1_MASTER_READY;
@@ -1156,7 +1156,9 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   { Failure("renderer-unavailable"); m_asyncEligible = false; return FrameStatus::Failed; }
   const bool asyncSetting = m_context->AsyncPreparation(base.binding.stream);
   auto policy = selected ? *selected : preferences.Policy();
-  const bool fallback = selected ? policy.mode != preferences.Policy().mode :
+  const bool masterRecovery=selected && preferences.output==DVBRIDGE::OutputMode::MasterReference &&
+      preferences.allowMasterFallback && policy.mode==DVBRIDGE_MODE_STANDARD;
+  const bool fallback = selected ? policy.mode != preferences.Policy().mode && !masterRecovery :
       (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid();
   if (fallback && !selected)
   {
@@ -1935,6 +1937,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
     }
   }
 #endif
+  output.iptTransport = (output.flags & CDVPlaybackInfo::HDMI) &&
+      (m_pendingSourceInfo.profile==5 || (m_effectiveMode==DVBRIDGE_MODE_MASTER_REFERENCE && m_requested.masterIPT));
   output.fastChroma = m_requested.EffectiveFastChroma(m_effectiveMode, CDVPlaybackInfo::IsHDR10AI(output));
   output.fastRenderingMode = m_requested.EffectiveFastRenderingMode(m_effectiveMode, CDVPlaybackInfo::IsHDR10AI(output));
   output.effective = static_cast<int>(m_effectiveMode);
