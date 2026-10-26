@@ -1400,6 +1400,8 @@ bool CWinSystemGbmGLESContext::PrepareHDR10AIQueue(const VideoPicture& picture,
     }
     return !m_dvContext || m_dvContext->StopHDR10AI();
   }
+  // The ordinary commit retires the prior renderer before AI can prime it again.
+  if (m_dvOrdinaryFrame || m_dvEndPending || m_dvStopPending) return false;
   const auto binding = picture.doviSourceBinding;
   if (queue.empty() || !(queue.front().binding == binding)) return false;
   {

@@ -557,7 +557,8 @@ void CRenderManager::FrameMove()
       m_aiGuiReady = true;
       m_presentevent.notifyAll();
     }
-    if (m_aiStartPts == DVD_NOPTS_VALUE || m_pRenderer->HDR10AILookahead())
+    if (m_aiQueuePreparationStale || m_aiStartPts == DVD_NOPTS_VALUE ||
+        m_pRenderer->HDR10AILookahead())
     {
       PrepareHDR10AILookahead(lock2);
       if (m_aiQueuePreparationStale) return;
