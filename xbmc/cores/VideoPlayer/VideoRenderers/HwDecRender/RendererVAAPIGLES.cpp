@@ -217,8 +217,8 @@ bool CRendererVAAPIGLES::RenderHook(int idx)
 #ifdef HAVE_DVBRIDGE
 bool CRendererVAAPIGLES::DVBridgeOrientationSupported(unsigned int orientation) const
 {
-  // Native orientation includes the saved playback rotation; CB1 ignores only that part.
-  return orientation == static_cast<unsigned int>(m_videoSettings.m_Orientation);
+  // Nonzero native presentation rotation uses the established unsupported path.
+  return orientation == 0;
 }
 
 bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer)
@@ -378,13 +378,25 @@ dvbridge_geometry CRendererVAAPIGLES::DVBridgeGeometry()
   const auto& context = window->GetGfxContext();
   if (width <= 0 || height <= 0 || context.GetWidth() <= 0 || context.GetHeight() <= 0)
     return {};
+  const CRect original = dest;
+  dest.Intersect(CRect(0, 0, context.GetWidth(), context.GetHeight()));
+  if (dest.Width() <= 0 || dest.Height() <= 0 || original.Width() <= 0 || original.Height() <= 0)
+    return {};
+  const float sourceX = source.Width() / original.Width();
+  const float sourceY = source.Height() / original.Height();
+  source.x1 += (dest.x1 - original.x1) * sourceX;
+  source.x2 += (dest.x2 - original.x2) * sourceX;
+  source.y1 += (dest.y1 - original.y1) * sourceY;
+  source.y2 += (dest.y2 - original.y2) * sourceY;
   const float sx = float(width) / context.GetWidth();
   const float sy = float(height) / context.GetHeight();
+  const float left = dest.x1 * sx, top = dest.y1 * sy;
+  const float right = dest.x2 * sx, bottom = dest.y2 * sy;
+  const int x = std::floor(left), y = std::floor(top);
   return {static_cast<int>(m_sourceWidth), static_cast<int>(m_sourceHeight),
-          static_cast<int>(std::lround(dest.x1 * sx)), static_cast<int>(std::lround(dest.y1 * sy)),
-          static_cast<int>(std::lround(dest.Width() * sx)),
-          static_cast<int>(std::lround(dest.Height() * sy)), width, height,
-          {source.x1, source.y1, source.x2, source.y2}};
+          x, y, static_cast<int>(std::ceil(right)) - x,
+          static_cast<int>(std::ceil(bottom)) - y, width, height,
+          {source.x1, source.y1, source.x2, source.y2}, {left, top, right, bottom}};
 }
 
 void CRendererVAAPIGLES::SetDVBridgeFELSuccessor(int index)

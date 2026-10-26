@@ -721,6 +721,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
       geometry.target_width == m_sourceGeometry.target_width &&
       geometry.target_height == m_sourceGeometry.target_height &&
       std::equal(std::begin(geometry.crop), std::end(geometry.crop), std::begin(m_sourceGeometry.crop)) &&
+      std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
       base.scalingMethod == m_spatialMethod;
   if (m_aiFrame && m_aiOutputAccepted && !m_pending && m_hasCommitted && base.binding == m_committedBinding &&
       m_pendingBinding == m_committedBinding &&
@@ -1365,6 +1366,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       geometry.target_width == m_sourceGeometry.target_width &&
       geometry.target_height == m_sourceGeometry.target_height &&
       std::equal(std::begin(geometry.crop), std::end(geometry.crop), std::begin(m_sourceGeometry.crop)) &&
+      std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
       base.scalingMethod == m_spatialMethod;
   if (m_geometryKnown && !sameGeometry)
     m_geometryRevision = DVBRIDGE::NextRevisionAfter(std::max(preferences.revision,base.binding.revision));
