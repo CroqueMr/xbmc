@@ -248,9 +248,11 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   }
   layer.width = m_sourceWidth;
   layer.height = m_sourceHeight;
-  layer.pts = hdr10 ? double(source.doviSourcePts) / DVD_TIME_BASE : buffer.doviPts;
+  // AI follows Kodi's repaired presentation timestamps; DV pairing keeps source timestamps.
+  layer.pts = hdr10 ? source.pts / DVD_TIME_BASE : buffer.doviPts;
   layer.binding = hdr10 ? source.doviSourceBinding : buffer.doviMetadata.Binding();
-  if (!std::isfinite(layer.pts) || (hdr10 && source.doviSourcePts == AV_NOPTS_VALUE))
+  if (!std::isfinite(layer.pts) ||
+      (hdr10 && (source.pts == DVD_NOPTS_VALUE || source.doviSourcePts == AV_NOPTS_VALUE)))
     return false;
   const auto texture = m_texturePool.Retain(m_vaapiTextures[idx]);
   if (!texture || !buffer.doviSourcePicture) return false;
@@ -306,7 +308,7 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
   // Copy ownership, not a reference to a slot that the decoder may replace.
   const auto head = m_buffers[queue.front()].doviSourcePicture;
   if (!head) return {};
-  const auto horizon = double(head->doviSourcePts) / DVD_TIME_BASE + 1.0;
+  const auto horizon = head->pts / DVD_TIME_BASE + 1.0;
   for (const auto idx : queue)
   {
     const auto* pic = dynamic_cast<CVaapiRenderPicture*>(m_buffers[idx].videoBuffer);
@@ -333,7 +335,7 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
     m_aiLookahead = window->HDR10AILookaheadActive();
     if (ready && m_aiOutputPending)
     {
-      if (!ConfigureVideoOutput(*head)) return {};
+      if (!ConfigureVideoOutput(*head)) return {false, {}, {}};
       m_aiOutputPending = false;
     }
     return {ready, {}, {}};

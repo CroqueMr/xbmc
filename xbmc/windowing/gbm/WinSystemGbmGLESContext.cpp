@@ -1398,7 +1398,13 @@ bool CWinSystemGbmGLESContext::PrepareHDR10AIQueue(const VideoPicture& picture,
       std::lock_guard lock(m_dvCapabilityMutex);
       m_aiActive=false;
     }
-    return !m_dvContext || m_dvContext->StopHDR10AI();
+    const bool ready = !m_dvContext || m_dvContext->StopHDR10AI();
+    if (ready)
+    {
+      std::lock_guard lock(m_dvCapabilityMutex);
+      m_aiSelectionPolicy=preferences.revision;
+    }
+    return ready;
   }
   // The ordinary commit retires the prior renderer before AI can prime it again.
   if (m_dvOrdinaryFrame || m_dvEndPending || m_dvStopPending) return false;
@@ -1451,6 +1457,8 @@ bool CWinSystemGbmGLESContext::PrepareHDR10AIQueue(const VideoPicture& picture,
     m_aiReady |= decision == HDR10AISource::Decision::Prepare;
     m_aiFallback = decision == HDR10AISource::Decision::Native;
     m_aiActive = !m_aiFallback;
+    if (decision != HDR10AISource::Decision::Wait)
+      m_aiSelectionPolicy=preferences.revision;
   }
   if (decision == HDR10AISource::Decision::Native)
   {

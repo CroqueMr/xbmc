@@ -243,6 +243,7 @@ bool CLinuxRendererGLES::ConfigureVideoOutput(const VideoPicture& picture)
     m_dvRequested = true;
     m_passthroughHDR = false;
     m_hdrFboActive = window && window->BeginDVBridge();
+    m_bConfigured = m_hdrFboActive;
     return m_hdrFboActive;
   }
 #endif
@@ -280,6 +281,7 @@ bool CLinuxRendererGLES::ConfigureVideoOutput(const VideoPicture& picture)
       CLog::Log(LOGERROR, "DVBridge: native output initialization rejected");
       return false;
     }
+    m_bConfigured = true;
     return true;
   }
 #endif
@@ -294,6 +296,7 @@ bool CLinuxRendererGLES::ConfigureVideoOutput(const VideoPicture& picture)
     CLog::Log(LOGWARNING, "LinuxRendererGLES::Configure: HDR passthrough active but GUI "
                           "compositing not supported by windowing system");
 
+  m_bConfigured = true;
   return true;
 }
 
