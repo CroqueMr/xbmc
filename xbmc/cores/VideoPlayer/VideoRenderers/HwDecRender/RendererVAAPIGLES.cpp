@@ -246,6 +246,7 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
     case VA_FOURCC_P016: layer.layout = DVBRIDGE_P016; break;
     default: return false;
   }
+  layer.scalingMethod = SelectScalingMethod();
   layer.width = m_sourceWidth;
   layer.height = m_sourceHeight;
   // AI follows Kodi's repaired presentation timestamps; DV pairing keeps source timestamps.
@@ -370,14 +371,20 @@ bool CRendererVAAPIGLES::HDR10AIFrameCommitted() const
 
 dvbridge_geometry CRendererVAAPIGLES::DVBridgeGeometry()
 {
-  const CRect view = CServiceBroker::GetWinSystem()->GetGfxContext().GetViewWindow();
-  CRect dest;
-  CalcDestRect(view.x1, view.y1, view.Width(), view.Height(), GetAspectRatio(),
-               1.0f, 0.0f, dest, false);
+  auto* window = CServiceBroker::GetWinSystem();
+  CRect source, dest, view;
+  GetVideoRect(source, dest, view);
+  const int width = window->GetWidth(), height = window->GetHeight();
+  const auto& context = window->GetGfxContext();
+  if (width <= 0 || height <= 0 || context.GetWidth() <= 0 || context.GetHeight() <= 0)
+    return {};
+  const float sx = float(width) / context.GetWidth();
+  const float sy = float(height) / context.GetHeight();
   return {static_cast<int>(m_sourceWidth), static_cast<int>(m_sourceHeight),
-          static_cast<int>(std::lround(dest.x1)), static_cast<int>(std::lround(dest.y1)),
-          static_cast<int>(std::lround(dest.Width())),
-          static_cast<int>(std::lround(dest.Height()))};
+          static_cast<int>(std::lround(dest.x1 * sx)), static_cast<int>(std::lround(dest.y1 * sy)),
+          static_cast<int>(std::lround(dest.Width() * sx)),
+          static_cast<int>(std::lround(dest.Height() * sy)), width, height,
+          {source.x1, source.y1, source.x2, source.y2}};
 }
 
 void CRendererVAAPIGLES::SetDVBridgeFELSuccessor(int index)

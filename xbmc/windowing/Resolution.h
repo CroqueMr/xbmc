@@ -136,7 +136,6 @@ class CResolutionUtils
 public:
   static bool IsCB1RefreshRate(double refresh);
   static RESOLUTION ChooseBestResolution(float fps, int width, int height, bool is3D,
-                                        bool allowNativeProgressiveRates = false,
                                         RenderStereoMode outputMode = RenderStereoMode::UNDEFINED);
   static RenderStereoMode ChooseStereoArrangement(RenderStereoMode wanted, float fps,
                                                  int width, int height);
@@ -152,8 +151,7 @@ public:
 
 protected:
   static void FindResolutionFromWhitelist(float fps, int width, int height, bool is3D,
-                                          RESOLUTION &resolution, bool allowNativeProgressiveRates,
-                                          RenderStereoMode outputMode);
+                                          RESOLUTION &resolution, RenderStereoMode outputMode);
   static bool FindResolutionFromOverride(float fps, int width, bool is3D, RESOLUTION &resolution, float& weight, bool fallback);
   static float RefreshWeight(float refresh, float fps);
 };

@@ -576,7 +576,7 @@ RESOLUTION CStereoscopicsManager::GetResolutionForPlayingVideo(RenderStereoMode 
 
   return CResolutionUtils::ChooseBestResolution(static_cast<float>(info.fpsRate) /
                                                     static_cast<float>(info.fpsScale),
-                                                info.width, info.height, is3D, false, mode);
+                                                info.width, info.height, is3D, mode);
 }
 
 void CStereoscopicsManager::ApplyStereoMode(const RenderStereoMode mode, bool notify)

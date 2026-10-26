@@ -4545,7 +4545,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
                                                    (hint.fpsrate * (hint.interlaced ? 2 : 1)));
 
       const bool nativeDV = WantsNativePresentation(hint);
-      RESOLUTION res = CResolutionUtils::ChooseBestResolution(static_cast<float>(framerate), hint.width, hint.height, !hint.stereo_mode.empty(), nativeDV);
+      RESOLUTION res = CResolutionUtils::ChooseBestResolution(static_cast<float>(framerate), hint.width, hint.height, !hint.stereo_mode.empty());
 #ifdef HAVE_DVBRIDGE
       DVBRIDGE::modeChangeResolution.store(nativeDV ? static_cast<int>(res) : -1);
 #endif
