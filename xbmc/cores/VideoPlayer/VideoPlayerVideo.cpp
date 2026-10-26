@@ -722,10 +722,10 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
     CLog::Log(LOGDEBUG, "CVideoPlayerVideo - video decoder was flushed");
     while (!m_packets.empty())
     {
-      auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
-      m_packets.pop_front();
+      auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.back().message);
+      m_packets.pop_back();
 
-      SendMessage(msg, 10);
+      SendMessageBack(msg);
     }
 
     m_pVideoCodec->SetVideoProcessingGeneration(
@@ -741,9 +741,9 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
   {
     while (!m_packets.empty())
     {
-      auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.front().message);
-      m_packets.pop_front();
-      SendMessage(msg, 10);
+      auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.back().message);
+      m_packets.pop_back();
+      SendMessageBack(msg);
     }
 
     m_pVideoCodec->SetVideoProcessingGeneration(

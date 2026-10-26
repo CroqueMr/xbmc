@@ -500,20 +500,13 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
         std::chrono::steady_clock::now() - started).count();
     const bool required = drain && now + elapsed >= presentationDeadline;
     const auto decision=source.Prediction(head.binding,preferences,now+elapsed,result,required);
-    // Enhanced queues captured analysis before its current draw.
+    // Capture anticipation without placing it ahead of the current draw.
     if (decision == Decision::Prepare && !paused && m_state->attached && anticipation &&
         anticipation->pts <= head.pts + 1.0 + 1e-9 &&
         anticipation->binding.picture > source.LastSubmitted() &&
         source.Collect() == CB1_AI_READY)
     {
-      if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::EnhancedDV)
-      {
-        const auto status = AnalyseHDR10AI(*anticipation,head.pts);
-        if (status != CB1_AI_READY && status != CB1_AI_PENDING)
-          m_state->aiNextFailed = true;
-      }
-      else
-        m_state->aiNext = State::NextHDR10AI{*anticipation,head.binding,head.pts,preferences};
+      m_state->aiNext = State::NextHDR10AI{*anticipation,head.binding,head.pts,preferences};
     }
     // Collect may dispatch follow-up reductions after the initial import fence.
     if (!FenceHDR10AIUse())
@@ -665,6 +658,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   dvbridge_gl_frame_release(&imported);
   if (!rendered || !fenced) return FrameStatus::Failed;
   m_pending = true;
+  if (policy.mode == DVBRIDGE_MODE_ENHANCED_DV)
+    m_context->AdvanceNextHDR10AI(base.binding,preferences);
   return PollReady() ? FrameStatus::Ready : FrameStatus::Pending;
 }
 #endif
@@ -966,19 +961,15 @@ bool CDVBridgeGLES::SetHDR10Session(const dvbridge_hdr10_session& session, uint6
 
 void CDVBridgeGLES::Reset()
 {
-  cb1_hdr10plus_analysis_reset(m_hdr10plusAnalysis);
-  m_hdr10plusMetadata.reset();
-  ClearFELPrefetch();
   Summary("reset");
+  Cancel();
   m_rawELCache.clear();
   m_firstFrame = true;
   DVBRIDGE::StreamTelemetry::ClearOutput();
   m_pendingInfo = 0;
-  m_prepared = m_packed = false;
   m_direct = false;
 #ifdef CB1_HAS_HDR10_AI
-  if (m_context) m_context->ClearNextHDR10AI();
-  m_aiFrame = m_aiOutputAccepted = false;
+  m_aiFrame = false;
 #endif
   m_pendingHDR10Fallback = 0;
   dvbridge_renderer_reset(m_renderer);
