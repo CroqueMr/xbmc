@@ -811,6 +811,37 @@ void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsig
   glEnable(GL_BLEND);
 }
 
+ESCALINGMETHOD CLinuxRendererGLES::SelectScalingMethod() const
+{
+  auto method = m_videoSettings.m_ScalingMethod;
+  if(!Supports(method))
+  {
+    CLog::Log(LOGWARNING,
+              "CLinuxRendererGLES::UpdateVideoFilter - chosen scaling method {}, is not supported "
+              "by renderer",
+              method);
+    method = VS_SCALINGMETHOD_LINEAR;
+  }
+
+  if (method == VS_SCALINGMETHOD_AUTO)
+  {
+    bool scaleSD = m_sourceHeight < 720 && m_sourceWidth < 1280;
+    bool scaleUp =
+        (int)m_sourceHeight < m_viewRect.Height() && (int)m_sourceWidth < m_viewRect.Width();
+    bool scaleFps =
+        m_fps <
+        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAutoScaleMaxFps +
+            0.01f;
+
+    if (Supports(VS_SCALINGMETHOD_LANCZOS3_FAST) && scaleSD && scaleUp && scaleFps)
+      method = VS_SCALINGMETHOD_LANCZOS3_FAST;
+    else
+      method = VS_SCALINGMETHOD_LINEAR;
+  }
+
+  return method;
+}
+
 void CLinuxRendererGLES::UpdateVideoFilter()
 {
   CRect srcRect;
@@ -840,18 +871,9 @@ void CLinuxRendererGLES::UpdateVideoFilter()
 
   const ESCALINGMETHOD previousMethod = m_scalingMethod;
   m_scalingMethodGui = m_videoSettings.m_ScalingMethod;
-  m_scalingMethod = m_scalingMethodGui;
+  m_scalingMethod = SelectScalingMethod();
   m_lastViewRect = viewRect;
   m_lastSourceRect = srcRect;
-
-  if(!Supports(m_scalingMethod))
-  {
-    CLog::Log(LOGWARNING,
-              "CLinuxRendererGLES::UpdateVideoFilter - chosen scaling method {}, is not supported "
-              "by renderer",
-              m_scalingMethod);
-    m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
-  }
 
   if (m_pVideoFilterShader)
   {
@@ -862,22 +884,6 @@ void CLinuxRendererGLES::UpdateVideoFilter()
   m_fbo.fbo.Cleanup();
 
   VerifyGLState();
-
-  if (m_scalingMethod == VS_SCALINGMETHOD_AUTO)
-  {
-    bool scaleSD = m_sourceHeight < 720 && m_sourceWidth < 1280;
-    bool scaleUp =
-        (int)m_sourceHeight < m_viewRect.Height() && (int)m_sourceWidth < m_viewRect.Width();
-    bool scaleFps =
-        m_fps <
-        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAutoScaleMaxFps +
-            0.01f;
-
-    if (Supports(VS_SCALINGMETHOD_LANCZOS3_FAST) && scaleSD && scaleUp && scaleFps)
-      m_scalingMethod = VS_SCALINGMETHOD_LANCZOS3_FAST;
-    else
-      m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
-  }
 
   if (m_scalingMethod != previousMethod)
     m_reloadShaders = true;
