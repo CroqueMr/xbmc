@@ -63,9 +63,7 @@ struct StreamSnapshot
     bool creativeKnown{};
     uint32_t creativeApplied{}, creativeEdited{};
     int creativeStatus{}, creativeReason{};
-    bool fastChroma{};
     bool iptTransport{};
-    int fastRenderingMode{};
     int felUpscaling{-1};
 #ifdef CB1_HAS_HDR10_AI
     bool hdr10AI{};
@@ -390,13 +388,13 @@ private:
 inline void DVBRIDGE::StreamTelemetry::PublishNativeInfo(uint64_t generation)
 {
   // Bounded summaries refresh at 2 Hz; accepted mode/format changes publish immediately.
-  using Key=std::tuple<uint64_t,uint64_t,uint64_t,unsigned,int,uint32_t,bool,bool,int>;
+  using Key=std::tuple<uint64_t,uint64_t,uint64_t,unsigned,int,uint32_t,bool,int>;
   static Key previous{};
   static std::chrono::steady_clock::time_point next;
   const auto source=Read();
   const auto& output=source.output;
   const Key key{generation,output.stream,output.revision,output.flags,output.effective,
-      output.format,output.fastChroma,output.fallback,int(output.reason)};
+      output.format,output.fallback,int(output.reason)};
   const auto now=std::chrono::steady_clock::now();
   if (now<next && key==previous) return;
   if (CServiceBroker::GetDataCacheCore().SetVideoProcessingInfo(generation,NativeProcessingInfo(source)))

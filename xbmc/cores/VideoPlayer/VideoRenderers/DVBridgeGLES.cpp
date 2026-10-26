@@ -598,7 +598,6 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   m_effectiveMode = policy.mode;
   m_requested = preferences;
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
-  dvbridge_renderer_set_fast_chroma(m_renderer,preferences.EffectiveFastChroma(policy.mode, true));
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   m_pendingOverlayRevision = m_nativeOverlayRevision;
@@ -762,7 +761,7 @@ void CDVBridgeGLES::PrefetchHardwareFEL(const FELSuccessor& successor,
   dvbridge_color color{};
   if (!m_pending || !m_dvPolicyActive || !m_asyncEligible ||
       m_effectiveMode != DVBRIDGE_MODE_ENHANCED_DV ||
-      !preferences.EffectiveFastChroma(m_effectiveMode) || preferences.felUpscaling != 0 ||
+      preferences.felUpscaling != 0 ||
       preferences.revision != m_requested.revision || !preferences.SameValues(m_requested) ||
       !m_hardwareFELVpp || !m_felVppEnabled || !m_felVpp || !current || !frame ||
       !(m_hardwareBinding == m_pendingBinding) || !successor.binding.Valid() ||
@@ -987,7 +986,6 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
   if (!metadata.Data())
     return Failure("metadata-unavailable");
   dvbridge_renderer_set_optimized_dv(m_renderer,m_requested.optimizedDV);
-  dvbridge_renderer_set_fast_chroma(m_renderer,m_requested.EffectiveFastChroma(m_effectiveMode));
   dvbridge_renderer_set_processing_optimizations(m_renderer,m_requested.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   dvbridge_gl_frame bl{}, el{};
@@ -1241,7 +1239,6 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_requested = preferences;
   policy.revision = revision;
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
-  dvbridge_renderer_set_fast_chroma(m_renderer,preferences.EffectiveFastChroma(policy.mode));
   dvbridge_renderer_set_fel_nearest(m_renderer,preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416));
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
@@ -1624,7 +1621,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
   const bool native = mode == DVBRIDGE_MODE_STANDARD || master;
   const bool prefetchEnabled = allowAsync && allowPacked && m_context &&
       m_context->AsyncPreparation(base.binding.stream) &&
-      mode == DVBRIDGE_MODE_ENHANCED_DV && preferences.EffectiveFastChroma(mode) &&
+      mode == DVBRIDGE_MODE_ENHANCED_DV &&
       preferences.felUpscaling == 0;
   if (!prefetchEnabled) ClearFELPrefetch();
   const int effectiveFilter = master ? 2 : preferences.felUpscaling;
@@ -1987,8 +1984,6 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
 #endif
   output.iptTransport = (output.flags & CDVPlaybackInfo::HDMI) &&
       (m_pendingSourceInfo.profile==5 || (m_effectiveMode==DVBRIDGE_MODE_MASTER_REFERENCE && m_requested.masterIPT));
-  output.fastChroma = m_requested.EffectiveFastChroma(m_effectiveMode, CDVPlaybackInfo::IsHDR10AI(output));
-  output.fastRenderingMode = m_requested.EffectiveFastRenderingMode(m_effectiveMode, CDVPlaybackInfo::IsHDR10AI(output));
   output.effective = static_cast<int>(m_effectiveMode);
   if (m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS) output.effective = 7;
   if(m_effectiveMode==DVBRIDGE_MODE_ENHANCED_DV &&

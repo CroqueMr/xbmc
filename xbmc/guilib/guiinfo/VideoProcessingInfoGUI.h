@@ -67,9 +67,6 @@ struct VideoProcessingInfoGUI
       case PLAYER_PROCESS_VIDEODVLAYERS:
         if (info.profile) value=info.fel ? "FEL" : info.el ? "MEL" : "BL";
         break;
-      case PLAYER_PROCESS_VIDEOPROCESSINGFAST:
-        if (info.output.flags) value=info.output.fastChroma ? "On" : "Off";
-        break;
       case PLAYER_PROCESS_VIDEOOUTPUTFORMAT:
         if (info.output.flags) value=CDVPlaybackInfo::Transport(info.output.format);
         break;
