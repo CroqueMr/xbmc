@@ -470,8 +470,8 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     if (m_dvBridge && m_dvBridge->Presented(presented,submitted))
     {
       PublishVideoSource(true, submitted.sourceSideData);
-      m_fastSourceStream = m_fastPreparedStream;
-      m_fastSourcePts = m_fastPreparedPts;
+      m_previousSourceStream = m_preparedSourceStream;
+      m_previousSourcePts = m_preparedSourcePts;
       DVBRIDGE::PlaybackNotification::NativeOutputAccepted(DVBRIDGE::StreamTelemetry::Read().output);
       const auto* plane=m_DRM->GetGuiPlane() ? m_DRM->GetGuiPlane() : m_DRM->GetVideoPlane();
       DVBRIDGE::StreamTelemetry::NativeFormat(
@@ -544,8 +544,8 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     if (m_dvBridge && m_dvBridge->Presented(presented,submitted))
     {
       PublishVideoSource(true, submitted.sourceSideData);
-      m_fastSourceStream = m_fastPreparedStream;
-      m_fastSourcePts = m_fastPreparedPts;
+      m_previousSourceStream = m_preparedSourceStream;
+      m_previousSourcePts = m_preparedSourcePts;
       DVBRIDGE::PlaybackNotification::NativeOutputAccepted(DVBRIDGE::StreamTelemetry::Read().output);
       const auto* plane=m_DRM->GetGuiPlane() ? m_DRM->GetGuiPlane() : m_DRM->GetVideoPlane();
       DVBRIDGE::StreamTelemetry::NativeFormat(
@@ -2095,12 +2095,12 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   const bool overlayFree = (!capturing || masterCapture) &&
       (!m_guiWillRender || GetGUIElementCount() == 0) && !m_dvOverlays;
   const auto player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
-  m_fastRenderEligible = !capturing && overlayFree && player && player->GetPlaySpeed() == 1 &&
-      m_fastSourceStream == layer.binding.stream &&
-      DVBRIDGE::ContinuousFastRenderingPicture(layer.pts, m_fastSourcePts) &&
+  m_continuousFrameEligible = !capturing && overlayFree && player && player->GetPlaySpeed() == 1 &&
+      m_previousSourceStream == layer.binding.stream &&
+      DVBRIDGE::ContinuousPresentationPicture(layer.pts, m_previousSourcePts) &&
       m_dvSelection.reason == DVBRIDGE::OutputReason::None;
   const auto preferences = DVBRIDGE::FrameOutputSettings();
-  m_masterFramePeriodNs=m_fastRenderEligible && preferences.allowMasterFallback &&
+  m_masterFramePeriodNs=m_continuousFrameEligible && preferences.allowMasterFallback &&
       m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE ?
       DVBRIDGE::MasterFramePeriodNs(CServiceBroker::GetDataCacheCore().GetVideoFps()) : 0;
   if(auto drm=std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
@@ -2109,7 +2109,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
     bool switched=false;
     {
       std::lock_guard lock(m_dvCapabilityMutex);
-      switched=m_masterSafety.Observe(margin,m_fastRenderEligible &&
+      switched=m_masterSafety.Observe(margin,m_continuousFrameEligible &&
           m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE);
     }
     if(switched)
@@ -2120,8 +2120,8 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
     }
     drm->SetCB1TimingPeriod(m_masterFramePeriodNs);
   }
-  m_fastPreparedStream = layer.binding.stream;
-  m_fastPreparedPts = layer.pts;
+  m_preparedSourceStream = layer.binding.stream;
+  m_preparedSourcePts = layer.pts;
   const bool subtitlesOnly = !capturing && m_guiWillRender && m_guiFbo.IsValid() &&
       m_guiFboWidth == 3840 && m_guiFboHeight == 2160 && m_compositeShader &&
       m_dvSubtitleDraws && m_dvSubtitleDraws == GetGUIElementCount() &&
@@ -2185,8 +2185,8 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   const auto preparedAt = std::chrono::steady_clock::now();
   const auto initialStatus = status;
   const bool prefetchFEL = successor && successor->frame && metadata.Data() &&
-      policy.mode == DVBRIDGE_MODE_ENHANCED_DV && preferences.EffectiveFastChroma(policy.mode) &&
-      allowAsync && m_dvContext->AsyncPreparation(layer.binding.stream) && m_fastRenderEligible &&
+      policy.mode == DVBRIDGE_MODE_ENHANCED_DV &&
+      allowAsync && m_dvContext->AsyncPreparation(layer.binding.stream) && m_continuousFrameEligible &&
       overlayFree && geometry.source_width == 3840 && geometry.source_height == 2160 &&
       !geometry.x && !geometry.y && geometry.width == 3840 && geometry.height == 2160;
   if (!prefetchFEL)
@@ -2418,9 +2418,9 @@ bool CWinSystemGbmGLESContext::StopDVBridgePlayback()
     m_masterSafety={};
   }
   m_masterFramePeriodNs=0;
-  m_fastRenderEligible = false;
-  m_fastSourceStream = 0;
-  m_fastSourcePts = 0;
+  m_continuousFrameEligible = false;
+  m_previousSourceStream = 0;
+  m_previousSourcePts = 0;
   if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM)) drm->SetCB1TimingPeriod(0);
   // The window outlives the renderer when a pending scanout defers teardown.
   m_dvStopPending = true;

@@ -5,7 +5,6 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "DVMetadataBuffer.h"
-#include "utils/DVBridgeFastRendering.h"
 #include <atomic>
 #include <bit>
 #include <cmath>
@@ -39,7 +38,7 @@ struct OutputPreferences
   int method{0}, panel{0}, gamut{0};
   double peak{0};
   bool optimizedDV{true};
-  bool masterIPT{false}, allowMasterFallback{true};
+  bool masterIPT{false}, allowMasterFallback{false};
   int felUpscaling{0};
   bool processingOptimizations{false};
   uint64_t revision{1};
@@ -61,14 +60,6 @@ struct OutputPreferences
   }
 
 #ifdef HAVE_DVBRIDGE
-  int EffectiveFastRenderingMode(dvbridge_mode mode, bool /*hdr10AI*/ = false) const
-  {
-    return mode == DVBRIDGE_MODE_DISABLED || mode == DVBRIDGE_MODE_MASTER_REFERENCE ? 0 : 1;
-  }
-  bool EffectiveFastChroma(dvbridge_mode mode, bool hdr10AI = false) const
-  {
-    return EffectiveFastRenderingMode(mode, hdr10AI) == 1;
-  }
   dvbridge_policy Policy() const
   {
     dvbridge_policy result{};

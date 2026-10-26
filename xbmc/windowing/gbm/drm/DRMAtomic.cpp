@@ -18,7 +18,7 @@
 #include "utils/DVBridgeDiagnosticLog.h"
 #include "DVBridgeKernelLogReader.h"
 #include "utils/DVBridgeEdid.h"
-#include "utils/DVBridgeFastRendering.h"
+#include "utils/DVBridgePresentation.h"
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/DVDCodecs/Video/DVStreamTelemetry.h"
 #endif

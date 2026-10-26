@@ -142,9 +142,6 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.FELUpscaling", active & CDVPlaybackInfo::FEL ?
         (data.output.felUpscaling == 2 ? "Reference GPU" : data.output.felUpscaling == 0 ? "VAAPI" : data.output.felUpscaling == 1 ? "Nearest neighbour (GPU)" : "") : "");
     SetProperty("DV.Mode", active ? VideoProcessingInfoGUI::Mode(data) : "Kodi default");
-    SetProperty("DV.FastRendering", active ?
-        std::string(data.output.fastChroma ? "On" : "Off") +
-        (data.output.fastRenderingMode == 2 ? " (Auto)" : "") : "");
     SetProperty("DV.Engine", data.output.engine);
     SetProperty("DV.Circuit", data.output.circuit);
     SetProperty("DV.Reconstruction", "");

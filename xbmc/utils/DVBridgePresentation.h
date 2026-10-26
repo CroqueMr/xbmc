@@ -7,7 +7,7 @@
 
 namespace DVBRIDGE
 {
-inline bool ContinuousFastRenderingPicture(double currentUs, double previousUs)
+inline bool ContinuousPresentationPicture(double currentUs, double previousUs)
 {
   // Kodi picture timestamps use microseconds; seeks and repeats are excluded.
   return std::isfinite(currentUs) && std::isfinite(previousUs) &&
@@ -21,7 +21,7 @@ public:
   void Begin(uint64_t stream,uint64_t policy,uint64_t source,double pts,bool enabled)
   {
     const bool reset=!enabled || stream!=m_stream || policy!=m_policy || source!=m_source ||
-        !std::isfinite(pts) || (pts!=m_pts && !ContinuousFastRenderingPicture(pts,m_pts));
+        !std::isfinite(pts) || (pts!=m_pts && !ContinuousPresentationPicture(pts,m_pts));
     if(reset){m_warm=m_samples=m_low=0;m_active=false;}
     m_stream=stream;m_policy=policy;m_source=source;m_pts=pts;m_enabled=enabled;
   }
