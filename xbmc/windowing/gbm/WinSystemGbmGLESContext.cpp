@@ -1299,8 +1299,7 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
     {
       pl_cb1_dovi_reference raw{};
       if(cb1_master_reference_map(&raw,metadata.Data(),metadata.Size(),paired)!=CB1_MASTER_READY ||
-         !cb1_master_reference_transport(metadata.Data(),metadata.Size()) ||
-         ((margins[0]|margins[1])&1))
+         !cb1_master_reference_transport(metadata.Data(),metadata.Size()))
         caps.processing[mode]={false,DVBRIDGE::OutputReason::SourceIneligible};
       const auto masterChroma = picture->chroma_position == AVCHROMA_LOC_UNSPECIFIED ?
           (picture->doviSourceInfo.profile == 7 ? AVCHROMA_LOC_TOPLEFT : AVCHROMA_LOC_LEFT) : picture->chroma_position;
