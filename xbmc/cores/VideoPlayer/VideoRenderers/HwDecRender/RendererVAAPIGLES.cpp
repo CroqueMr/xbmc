@@ -323,6 +323,9 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
   const auto index = queue.front();
   const auto binding = head->doviSourceBinding;
   const auto preferences = DVBRIDGE::FrameOutputSettings();
+  // A mode switch can reuse the decoded pool without another Configure().
+  m_aiOutputPending |=
+      (preferences.hdr10Source != DVBRIDGE::HDR10SourceMode::Native) != m_dvRequested;
   if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::Native)
   {
     // Preserve the original locked/native stop and readiness path.
