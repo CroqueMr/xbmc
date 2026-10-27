@@ -1326,6 +1326,11 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
     {
       auto policy = preferences.Policy();
       policy.mode = static_cast<dvbridge_mode>(mode);
+      if (mode!=DVBRIDGE_MODE_ENHANCED_DV)
+      {
+        policy.adaptive=DVBRIDGE_ADAPTIVE_A;
+        policy.adaptive_rev_b=false;
+      }
       policy.tv = {preferences.peak, static_cast<dvbridge_panel>(preferences.panel),
           static_cast<dvbridge_gamut>(preferences.gamut)};
       pl_color_space nominal{};
