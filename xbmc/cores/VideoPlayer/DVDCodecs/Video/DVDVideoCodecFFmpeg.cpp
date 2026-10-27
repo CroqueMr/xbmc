@@ -724,7 +724,7 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
     if (!dvbridge_fel_submit(m_dvFel.get(), avpkt))
       m_dvFailed = true;
     else
-      ReportDVStartup(2, "el-submitted");
+      ReportDVStartup(2, "fel-input-accepted");
   }
 #endif
 
@@ -768,7 +768,7 @@ void CDVDVideoCodecFFmpeg::ReportDVStartup(unsigned fact, const char* stage) noe
 {
   if (!DVBRIDGE::DiagnosticsEnabled() || (m_dvStartupReported & fact)) return;
   m_dvStartupReported |= fact;
-  DVBRIDGE::DiagnosticStartup(m_dvDiagnosticGeneration, stage, bool(m_dvFel),
+  DVBRIDGE::DiagnosticStartup(m_dvDiagnosticGeneration, m_dvSourceOwner.Stream(), stage, bool(m_dvFel),
                              m_dvPending.size());
 }
 #endif

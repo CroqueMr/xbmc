@@ -93,17 +93,21 @@ void DiagnosticFailureLog(const char* stage, bool changed, int level,
   catch (...) {}
 }
 
-inline void DiagnosticStartup(uint64_t generation, const char* stage, bool fel,
+inline void DiagnosticStartup(uint64_t generation, uint64_t stream, const char* stage, bool fel,
                               size_t pending) noexcept
 {
   if (!DiagnosticsEnabled()) return;
   try
   {
     std::lock_guard lock(diagnosticMutex);
-    if (!generation || generation != diagnosticGeneration || diagnosticSession.Ended()) return;
-    diagnosticSession.Stage(stage);
+    if (!generation || generation != diagnosticGeneration || !stream ||
+        stream < diagnosticSession.Stream() || diagnosticSession.Ended()) return;
+    // A decoder can reopen before the renderer adopts its first new picture.
+    if (!diagnosticSession.Stream() || stream == diagnosticSession.Stream())
+      diagnosticSession.Stage(stage);
     WriteDiagnosticLocked(DiagnosticEvent::Normal, LOGINFO,
-                          "DV decode startup: stage={} fel={} pending={}", stage, fel, pending);
+                          "DV decode startup: decoder_stream={} stage={} fel={} pending={}",
+                          stream, stage, fel, pending);
   }
   catch (...) {}
 }

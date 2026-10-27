@@ -49,6 +49,7 @@ class SourceOwner
 {
 public:
   void BeginStream() { m_stream = NextRevision(); m_revision = m_stream; m_picture = 0; }
+  uint64_t Stream() const { return m_stream; }
   void Seek() { m_revision = NextRevision(); }
   SourceBinding NextPicture() { return {m_stream,++m_picture,m_revision}; }
 private:
