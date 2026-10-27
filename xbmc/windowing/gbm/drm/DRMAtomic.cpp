@@ -199,7 +199,8 @@ bool CDRMAtomic::PrepareSDRRestore(int& flags)
   if (!AddProperty(m_connector, "HDR_OUTPUT_METADATA", 0)) return false;
   if (m_connector->SupportsProperty("Colorspace"))
   {
-    const auto value = m_connector->GetPropertyEnumValue("Colorspace", "Default");
+    const auto value = m_sdrRestoreColorspace ? m_sdrRestoreColorspace :
+        m_connector->GetPropertyEnumValue("Colorspace", "Default");
     if (!value || !AddProperty(m_connector, "Colorspace", *value)) return false;
   }
   return true;
@@ -385,7 +386,7 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (ret < 0)
   {
     const int error = errno;
-    if (!strict)
+    if (!strict && !m_req->sdrRestore)
       CLog::LogF(LOGERROR, "atomic commit failed: {}", strerror(errno));
     if (!strict && DVBRIDGE::DiagnosticsEnabled() &&
         m_dvFailures.Record(DVNowMs(), "native-atomic-commit", error))
@@ -773,6 +774,9 @@ bool CDRMAtomic::SetActive(bool active)
 
 bool CDRMAtomic::AddProperty(CDRMObject* object, const char* name, uint64_t value)
 {
+  // A successor SDR movie can use different primaries from the GUI.
+  if (m_sdrRestorePending && object && object == m_connector && strcmp(name, "Colorspace") == 0)
+    m_sdrRestoreColorspace = value;
   const bool added = object && m_req && m_req->AddProperty(object, name, value);
   if (added && DVBRIDGE::DiagnosticsEnabled() &&
       (strcmp(name, "MODE_ID") == 0 || strcmp(name, "ACTIVE") == 0 ||
