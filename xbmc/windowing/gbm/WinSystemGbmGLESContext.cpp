@@ -1904,8 +1904,8 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
       source.compatibility == 1 || source.compatibility == 2 || source.compatibility == 4;
   const bool strictMaster=preferences.output==DVBRIDGE::OutputMode::MasterReference &&
       !preferences.allowMasterFallback;
-  if (m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla && capabilities.processingKnown &&
-      (!ordinaryBL || strictMaster) &&
+  if (capabilities.isDV && m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla &&
+      capabilities.processingKnown && (!ordinaryBL || strictMaster) &&
       preferences.output != DVBRIDGE::OutputMode::Disabled &&
       !(source.el && !picture.doviEnhancement))
   {
