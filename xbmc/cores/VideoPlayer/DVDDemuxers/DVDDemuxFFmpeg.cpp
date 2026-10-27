@@ -3254,9 +3254,9 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
           stream->codecpar->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF);
       const auto* dv = sideData && sideData->size >= sizeof(AVDOVIDecoderConfigurationRecord) ?
           reinterpret_cast<const AVDOVIDecoderConfigurationRecord*>(sideData->data) : nullptr;
-      CLog::Log(LOGINFO, "DV input stream: index={} pid={} codec={} type={} "
+      CLog::Log(LOGINFO, "DV input stream: index={} pid={} codec={} codec_tag=0x{:08x} type={} "
           "dv_profile={} dv_bl={} dv_el={} dv_rpu={} extradata={}",
-          stream->index, stream->id, static_cast<int>(stream->codecpar->codec_id),
+          stream->index, stream->id, static_cast<int>(stream->codecpar->codec_id), stream->codecpar->codec_tag,
           static_cast<int>(stream->codecpar->codec_type), dv ? dv->dv_profile : 0,
           dv ? dv->bl_present_flag : 0, dv ? dv->el_present_flag : 0,
           dv ? dv->rpu_present_flag : 0, stream->codecpar->extradata_size);
