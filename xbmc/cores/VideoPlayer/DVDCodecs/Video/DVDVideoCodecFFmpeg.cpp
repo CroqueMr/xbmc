@@ -361,6 +361,8 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
 #ifdef HAVE_DVBRIDGE
   m_dvNativeOutput = DVBRIDGE::RetainsDVSource(hints);
   m_dvSourceOwner.BeginStream();
+  m_dvStartupReported = 0;
+  m_dvDiagnosticGeneration = DVBRIDGE::DiagnosticGeneration();
   m_dvHasStreamDisplayMetadata = false;
   m_dvHasStreamLightMetadata = false;
 #endif
@@ -717,8 +719,13 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   int ret = avcodec_send_packet(m_pCodecContext, avpkt);
 #ifdef HAVE_DVBRIDGE
   // Submit once, only after BL accepted the packet (Kodi retries EAGAIN).
-  if (ret == 0 && m_dvFel && !dvbridge_fel_submit(m_dvFel.get(), avpkt))
-    m_dvFailed = true;
+  if (ret == 0 && m_dvFel)
+  {
+    if (!dvbridge_fel_submit(m_dvFel.get(), avpkt))
+      m_dvFailed = true;
+    else
+      ReportDVStartup(2, "el-submitted");
+  }
 #endif
 
   //! @todo: properly handle avpkt side_data. this works around our improper use of the side_data
@@ -756,6 +763,16 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   return true;
 }
 
+#ifdef HAVE_DVBRIDGE
+void CDVDVideoCodecFFmpeg::ReportDVStartup(unsigned fact, const char* stage) noexcept
+{
+  if (!DVBRIDGE::DiagnosticsEnabled() || (m_dvStartupReported & fact)) return;
+  m_dvStartupReported |= fact;
+  DVBRIDGE::DiagnosticStartup(m_dvDiagnosticGeneration, stage, bool(m_dvFel),
+                             m_dvPending.size());
+}
+#endif
+
 CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPicture)
 {
 #ifdef HAVE_DVBRIDGE
@@ -792,11 +809,13 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
       }
       if (!result)
         return VC_NONE;
+      ReportDVStartup(4, "el-decoded");
       base->doviEnhancement = {enhancement, [](AVFrame* f) { av_frame_free(&f); }};
       // The pairing owner consumed the exact EL from this stream/reset epoch.
       base->doviEnhancementBinding = base->doviMetadata.Binding();
       pVideoPicture->CopyRef(*base);
       m_dvPending.pop_front();
+      ReportDVStartup(8, "fel-paired");
       return VC_PICTURE;
     };
     VCReturn paired = emit();
@@ -814,7 +833,10 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
         return VC_ERROR;
     }
     if (result == VC_PICTURE)
+    {
+      ReportDVStartup(1, "base-decoded");
       m_dvPending.push_back(std::move(base));
+    }
     if (result == VC_EOF || (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
       if (!dvbridge_fel_drain(m_dvFel.get()))
         return VC_ERROR;
@@ -826,7 +848,12 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
     return result == VC_PICTURE ? VC_BUFFER : result;
   }
 #endif
-  return GetBasePicture(pVideoPicture);
+  const auto result = GetBasePicture(pVideoPicture);
+#ifdef HAVE_DVBRIDGE
+  if (result == VC_PICTURE && m_dvNativeOutput)
+    ReportDVStartup(1, "base-decoded");
+#endif
+  return result;
 }
 
 CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVideoPicture)

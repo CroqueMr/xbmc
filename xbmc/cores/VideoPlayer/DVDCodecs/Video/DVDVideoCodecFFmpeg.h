@@ -74,6 +74,9 @@ protected:
   std::shared_ptr<dvbridge_fel> m_dvFel;
   std::deque<std::shared_ptr<VideoPicture>> m_dvPending;
   bool m_dvFailed{false};
+  unsigned m_dvStartupReported{};
+  uint64_t m_dvDiagnosticGeneration{};
+  void ReportDVStartup(unsigned fact, const char* stage) noexcept;
   bool m_dvNativeOutput{false};
   DVBRIDGE::SourceOwner m_dvSourceOwner;
   // Last in-band HDR10 static metadata of this stream (see GetPictureCommon).

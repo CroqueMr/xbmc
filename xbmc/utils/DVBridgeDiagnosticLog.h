@@ -10,11 +10,24 @@ namespace DVBRIDGE
 inline std::mutex diagnosticMutex;
 inline DiagnosticSession diagnosticSession;
 inline bool diagnosticPaused{};
+inline uint64_t diagnosticGeneration{};
 
 inline void DiagnosticOpen() noexcept
 {
-  try { std::lock_guard lock(diagnosticMutex); diagnosticSession.Open(); diagnosticPaused = false; }
+  try
+  {
+    std::lock_guard lock(diagnosticMutex);
+    ++diagnosticGeneration;
+    diagnosticSession.Open();
+    diagnosticPaused = false;
+  }
   catch (...) {}
+}
+
+inline uint64_t DiagnosticGeneration() noexcept
+{
+  try { std::lock_guard lock(diagnosticMutex); return diagnosticGeneration; }
+  catch (...) { return 0; }
 }
 
 inline void DiagnosticCandidate() noexcept
@@ -80,6 +93,21 @@ void DiagnosticFailureLog(const char* stage, bool changed, int level,
   catch (...) {}
 }
 
+inline void DiagnosticStartup(uint64_t generation, const char* stage, bool fel,
+                              size_t pending) noexcept
+{
+  if (!DiagnosticsEnabled()) return;
+  try
+  {
+    std::lock_guard lock(diagnosticMutex);
+    if (!generation || generation != diagnosticGeneration || diagnosticSession.Ended()) return;
+    diagnosticSession.Stage(stage);
+    WriteDiagnosticLocked(DiagnosticEvent::Normal, LOGINFO,
+                          "DV decode startup: stage={} fel={} pending={}", stage, fel, pending);
+  }
+  catch (...) {}
+}
+
 inline void ObserveDiagnostic(uint64_t stream, uint64_t picture, uint64_t revision,
                               uint64_t policy, const char* stage, bool requested, bool paused) noexcept
 {
@@ -103,7 +131,13 @@ inline void ObserveDiagnostic(uint64_t stream, uint64_t picture, uint64_t revisi
 inline void DiagnosticPresented(uint64_t stream) noexcept
 {
   if (!DiagnosticsEnabled()) return;
-  try { std::lock_guard lock(diagnosticMutex); diagnosticSession.Presented(stream); }
+  try
+  {
+    std::lock_guard lock(diagnosticMutex);
+    if (diagnosticSession.Presented(stream))
+      WriteDiagnosticLocked(DiagnosticEvent::Normal, LOGINFO,
+                            "DV decode startup: stage=first-presented");
+  }
   catch (...) {}
 }
 
