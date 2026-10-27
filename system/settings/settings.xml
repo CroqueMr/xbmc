@@ -20,6 +20,7 @@
               <option label="40812">0</option>
               <option label="40913">4</option>
               <option label="40914">5</option>
+              <option label="40924">6</option>
               <option label="40814">2</option>
               <option label="40813">1</option>
             </options>
@@ -41,6 +42,7 @@
           <dependencies><dependency type="visible"><or>
             <condition setting="dvbridge.outputmode" operator="is">3</condition>
             <condition setting="dvbridge.outputmode" operator="is">5</condition>
+            <condition setting="dvbridge.outputmode" operator="is">6</condition>
             <and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and>
             <condition setting="dvbridge.hdr10source" operator="is">2</condition>
           </or></dependency></dependencies>
@@ -60,6 +62,7 @@
           <dependencies><dependency type="visible"><or>
             <condition setting="dvbridge.outputmode" operator="is">3</condition>
             <condition setting="dvbridge.outputmode" operator="is">5</condition>
+            <condition setting="dvbridge.outputmode" operator="is">6</condition>
             <and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and>
             <condition setting="dvbridge.hdr10source" operator="is">2</condition>
           </or></dependency></dependencies>
@@ -77,6 +80,7 @@
           <dependencies><dependency type="visible"><or>
             <condition setting="dvbridge.outputmode" operator="is">3</condition>
             <condition setting="dvbridge.outputmode" operator="is">5</condition>
+            <condition setting="dvbridge.outputmode" operator="is">6</condition>
             <and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and>
             <condition setting="dvbridge.hdr10source" operator="is">2</condition>
           </or></dependency></dependencies>
