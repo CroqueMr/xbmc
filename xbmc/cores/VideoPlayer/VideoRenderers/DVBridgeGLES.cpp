@@ -54,11 +54,11 @@ void BackendLog(void*, pl_log_level level, const char* message)
 pl_chroma_location SourceChroma(AVChromaLocation source, unsigned profile)
 {
   const auto location = dvbridge_map_chroma(source);
-  return location == PL_CHROMA_UNKNOWN ?
-      (profile == 7 ? PL_CHROMA_TOP_LEFT : PL_CHROMA_LEFT) : location;
+  if (source == AVCHROMA_LOC_UNSPECIFIED && profile == 7) return PL_CHROMA_TOP_LEFT;
+  return location == PL_CHROMA_UNKNOWN ? PL_CHROMA_LEFT : location;
 }
 
-bool ImportLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::Layer& layer)
+bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::Layer& layer)
 {
   if (!dvbridge_gl_frame_import(frame,gpu,layer.layout,layer.width,layer.height,layer.planes))
     return false;
@@ -524,6 +524,7 @@ bool CDVBridgeGLES::Context::StopHDR10AI()
 
 namespace
 {
+// HDR10 ingress reconstructs its own coded grid; imported planes remain unshifted.
 void HDR10Color(pl_frame& frame, const CDVBridgeGLES::Layer& layer)
 {
   frame.repr.sys = PL_COLOR_SYSTEM_BT_2020_NC;
@@ -554,7 +555,7 @@ cb1_ai_status CDVBridgeGLES::Context::AnalyseHDR10AI(const Layer& base, double h
   if (!FenceHDR10AIUse()) return HDR10AI().RecordStatus("analysis-fence",CB1_AI_INVALID);
   if (collected != CB1_AI_READY) return collected;
   dvbridge_gl_frame imported{};
-  if (!ImportLayer(&imported,m_state->gl->gpu,base))
+  if (!dvbridge_gl_frame_import(&imported,m_state->gl->gpu,base.layout,base.width,base.height,base.planes))
     return HDR10AI().RecordStatus("analysis-import",CB1_AI_INCOMPATIBLE);
   HDR10Color(imported.frame,base);
   const auto status = HDR10AI().Submit(&imported.frame,base.binding,base.pts,headPts,base.lease);
@@ -785,7 +786,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   if (retired != DVBRIDGE_DV_IDLE)
     return retired == DVBRIDGE_DV_FAILED ? FrameStatus::Failed : FrameStatus::Busy;
   dvbridge_gl_frame imported{};
-  if (!ImportLayer(&imported,m_gl->gpu,base))
+  if (!dvbridge_gl_frame_import(&imported,m_gl->gpu,base.layout,base.width,base.height,base.planes))
     return FrameStatus::Unsupported;
   HDR10Color(imported.frame,base);
   m_spatialMethod = base.scalingMethod;
@@ -1202,12 +1203,12 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
   dvbridge_renderer_set_processing_optimizations(m_renderer,m_requested.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   dvbridge_gl_frame bl{}, el{};
-  if (!ImportLayer(&bl,m_gl->gpu,base))
+  if (!ImportDVLayer(&bl,m_gl->gpu,base))
     return Failure("base-import");
   double elPts = std::numeric_limits<double>::quiet_NaN();
   if (enhancement)
   {
-    if (!ImportLayer(&el,m_gl->gpu,*enhancement))
+    if (!ImportDVLayer(&el,m_gl->gpu,*enhancement))
     {
       dvbridge_gl_frame_release(&bl);
       return Failure("enhancement-import");
@@ -1508,11 +1509,11 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   if (!base.lease || (enhancement && !enhancement->lease))
   { Failure("policy-source-lease"); return FrameStatus::Failed; }
   dvbridge_gl_frame bl{}, el{};
-  if (!ImportLayer(&bl,m_gl->gpu,base))
+  if (!ImportDVLayer(&bl,m_gl->gpu,base))
   { Failure("policy-base-import"); return FrameStatus::Failed; }
   if (enhancement)
   {
-    if (!ImportLayer(&el,m_gl->gpu,*enhancement))
+    if (!ImportDVLayer(&el,m_gl->gpu,*enhancement))
     {
       dvbridge_gl_frame_release(&bl);
       Failure("policy-enhancement-import");
