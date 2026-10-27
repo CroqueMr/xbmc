@@ -824,5 +824,8 @@ CHDRCapabilities CWinSystemGbm::GetDisplayHDRCapabilities() const
   if (m_info->SupportsDolbyVision())
     caps.SetDolbyVision();
 
+  if (m_info->HDR10PlusVersion() >= 0)
+    caps.SetHDR10Plus();
+
   return caps;
 }
