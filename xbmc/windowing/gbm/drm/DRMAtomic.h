@@ -40,6 +40,7 @@ public:
     if (!pending)
     {
       m_sdrRestoreFailed = false;
+      m_sdrRestoreColorspace.reset();
       if (m_req) m_req->sdrRestore = false;
     }
   }
@@ -84,6 +85,7 @@ public:
 private:
   bool PrepareSDRRestore(int& flags);
   bool m_sdrRestorePending{}, m_sdrRestoreFailed{};
+  std::optional<uint64_t> m_sdrRestoreColorspace;
   bool PrepareHDR10Plus(int& flags, bool& frameMetadata);
   bool RemoveRejectedHDR10Plus(int& flags);
   int TestAtomicFrame(int& flags, bool frameMetadata);

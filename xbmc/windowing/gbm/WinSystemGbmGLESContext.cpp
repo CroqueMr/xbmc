@@ -2568,7 +2568,13 @@ bool CWinSystemGbmGLESContext::StopDVBridgePlayback()
   if (HasPendingDVOutputSurface() && !m_dvOrdinaryFrame && !RejectDVOutputSurface())
     return false;
   if (!SetVideoOutput(nullptr)) return false;
-  if (!m_dvOrdinaryFrame) m_dvStopPending = false;
+  if (!m_dvOrdinaryFrame)
+  {
+    SetGuiCompositing(0);
+    SetColorimetry(nullptr);
+    SetHDR(nullptr);
+    m_dvStopPending = false;
+  }
   return true;
 }
 
