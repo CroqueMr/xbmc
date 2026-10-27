@@ -51,14 +51,18 @@ void BackendLog(void*, pl_log_level level, const char* message)
   catch (...) {} // libplacebo invokes this as a C callback.
 }
 
+pl_chroma_location SourceChroma(AVChromaLocation source, unsigned profile)
+{
+  const auto location = dvbridge_map_chroma(source);
+  return location == PL_CHROMA_UNKNOWN ?
+      (profile == 7 ? PL_CHROMA_TOP_LEFT : PL_CHROMA_LEFT) : location;
+}
+
 bool ImportLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::Layer& layer)
 {
   if (!dvbridge_gl_frame_import(frame,gpu,layer.layout,layer.width,layer.height,layer.planes))
     return false;
-  auto location = dvbridge_map_chroma(layer.chromaLocation);
-  if (location == PL_CHROMA_UNKNOWN)
-    location = layer.sourceInfo.profile == 7 ? PL_CHROMA_TOP_LEFT : PL_CHROMA_LEFT;
-  dvbridge_gl_frame_set_chroma(frame,location);
+  dvbridge_gl_frame_set_chroma(frame,SourceChroma(layer.chromaLocation,layer.sourceInfo.profile));
   return true;
 }
 }
@@ -985,7 +989,7 @@ void CDVBridgeGLES::PrefetchHardwareFEL(const FELSuccessor& successor,
   ClearFELPrefetch();
   auto pending = std::make_shared<FELPrefetch>(successor,preferences);
   pending->vpp = m_felVpp;
-  if (dvbridge_fel_vpp_prefetch_chroma(pending->vpp.get(),frame.get(),PL_CHROMA_LEFT,
+  if (dvbridge_fel_vpp_prefetch_chroma(pending->vpp.get(),frame.get(),SourceChroma(frame->chroma_location,7),
       &pending->image) == DVBRIDGE_VPP_PENDING)
     m_felPrefetch = std::move(pending);
 }
@@ -1821,15 +1825,13 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
   std::shared_ptr<Import> imported;
   const auto mode = (selected ? *selected : preferences.Policy()).mode;
   const bool master = mode == DVBRIDGE_MODE_MASTER_REFERENCE;
-  const bool native = mode == DVBRIDGE_MODE_STANDARD || master;
   const bool prefetchEnabled = allowAsync && allowPacked && m_context &&
       m_context->AsyncPreparation(base.binding.stream) &&
       mode == DVBRIDGE_MODE_ENHANCED_DV &&
       preferences.felUpscaling == 0;
   if (!prefetchEnabled) ClearFELPrefetch();
   const int effectiveFilter = master ? 2 : preferences.felUpscaling;
-  const auto sourceChroma = dvbridge_map_chroma(enhancement->chroma_location);
-  const auto chroma = native ? (sourceChroma == PL_CHROMA_UNKNOWN ? PL_CHROMA_TOP_LEFT : sourceChroma) : PL_CHROMA_LEFT;
+  const auto chroma = SourceChroma(enhancement->chroma_location,7);
   if (m_hardwareBinding == enhancementBinding && m_hardwareLease &&
       m_hardwareFELFilter == effectiveFilter && m_hardwareFELChroma == chroma)
     imported = std::static_pointer_cast<Import>(m_hardwareLease);
