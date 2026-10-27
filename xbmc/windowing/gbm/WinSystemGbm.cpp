@@ -614,6 +614,9 @@ void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture)
 
 bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
 {
+  if (!videoPicture)
+    if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
+      drm->SetSDRRestorePending(true);
   m_queuedHdrMetadata = 0;
   m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
   m_hdrBlob.Reset();
@@ -739,6 +742,7 @@ bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
     }
     m_eotf = eotf;
     m_queuedHdrMetadata = m_hdrBlob.Get();
+    drm->SetSDRRestorePending(false);
     drm->SetActive(true);
   }
   else

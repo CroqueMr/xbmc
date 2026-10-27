@@ -185,10 +185,35 @@ int CDRMAtomic::TestAtomicFrame(int& flags, bool frameMetadata)
   return ret;
 }
 
+bool CDRMAtomic::PrepareSDRRestore(int& flags)
+{
+  if (!m_sdrRestorePending) return true;
+  if (!m_connector) return false;
+  if (!m_connector->SupportsProperty("HDR_OUTPUT_METADATA"))
+  {
+    SetSDRRestorePending(false);
+    return true;
+  }
+  m_req->sdrRestore = true;
+  flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
+  if (!AddProperty(m_connector, "HDR_OUTPUT_METADATA", 0)) return false;
+  if (m_connector->SupportsProperty("Colorspace"))
+  {
+    const auto value = m_connector->GetPropertyEnumValue("Colorspace", "Default");
+    if (!value || !AddProperty(m_connector, "Colorspace", *value)) return false;
+  }
+  return true;
+}
+
 bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer, bool strict)
 {
   CDRMCrtc* oldCrtc = m_old_crtc;
   const auto reject = [&](const char* stage, int error) {
+    if (m_sdrRestorePending && !m_sdrRestoreFailed)
+    {
+      CLog::Log(LOGWARNING, "SDR output restoration pending: stage={} error={}", stage, error);
+      m_sdrRestoreFailed = true;
+    }
     if (strict)
     {
       if (m_dvActivating && !m_dvRestoring) m_dvRetry.Failed(error);
@@ -203,6 +228,9 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   // destroying it before the commit returns leaves the atomic request
   // referencing an invalid id and the kernel rejects with EINVAL.
   CDRMPropertyBlob modeBlob;
+
+  if (!PrepareSDRRestore(flags))
+    return reject("sdr-properties", EINVAL);
 
   bool frameMetadata = false;
   if (!PrepareHDR10Plus(flags, frameMetadata))
@@ -319,7 +347,7 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (CServiceBroker::GetLogging().CanLogComponent(LOGWINDOWING))
     m_req->LogAtomicRequest();
 
-  if (strict && m_propertyFailure)
+  if ((strict || m_req->sdrRestore) && m_propertyFailure)
   {
     return reject("properties", EINVAL);
   }
@@ -330,7 +358,7 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (ret < 0)
   {
     const int testError = errno;
-    if (strict || frameMetadata || (m_mode->flags & DRM_MODE_FLAG_3D_MASK))
+    if (strict || m_req->sdrRestore || frameMetadata || (m_mode->flags & DRM_MODE_FLAG_3D_MASK))
     {
       return reject("atomic-test", testError);
     }
@@ -390,6 +418,12 @@ void CDRMAtomic::FinishRequest(bool accepted)
     // after Disable()). Without this, stale cached values cause
     // incorrect plane cleanup on subsequent video playback.
     m_req->CacheProperties();
+    if (m_req->sdrRestore)
+    {
+      if (m_sdrRestoreFailed)
+        CLog::Log(LOGINFO, "SDR output restoration accepted after retry");
+      SetSDRRestorePending(false);
+    }
     if (m_req->hdr10plus) m_hdr10plusActive = *m_req->hdr10plus;
     if (m_req->signalMode)
       m_committedMode = *m_req->signalMode;
@@ -675,6 +709,7 @@ bool CDRMAtomic::InitDrm()
 
 void CDRMAtomic::DestroyDrm()
 {
+  SetSDRRestorePending(false);
   ResetCB1PresentationTime();
   m_hdr10plusPacket.reset();
   m_hdr10plusActive = false;

@@ -390,6 +390,9 @@ void CWinSystemGbmGLESContext::PublishVideoSource(
 
 void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 {
+  if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+      drm && drm->IsSDRRestorePending())
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
 #ifdef HAVE_DVBRIDGE
   // Yield to the pending scanout instead of repeatedly redrawing the GUI.
   if (!CompleteDVBridgePage(8)) return;
@@ -408,6 +411,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
   if (m_dvOrdinaryFrame)
   {
     if (!rendered || !m_eglContext.TrySwapBuffers()) return;
+    if (m_dvStopPending && !StageOrdinaryDVOutput(nullptr)) return;
     auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
     auto& surface = m_GBM->GetDevice().GetSurface();
     auto* bo = surface.LockTransactionalBuffer();
@@ -420,7 +424,8 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     if (!submitted)
     {
       DVBRIDGE::PlaybackNotification::OrdinaryOutputAccepted(false);
-      RejectDVOutputSurface(); return;
+      if (!m_dvStopPending) RejectDVOutputSurface();
+      return;
     }
     if (!CompleteDVOutputSurface(true)) return;
     PublishVideoSource(true, m_videoSourceSideData);
@@ -1957,11 +1962,17 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
 
 bool CWinSystemGbmGLESContext::StageOrdinaryDVOutput(const VideoPicture* picture)
 {
+  if (m_dvStopPending)
+  {
+    m_dvOrdinaryFrame = true;
+    SetGuiCompositing(0);
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  }
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   if (!drm || (m_dvState.Captured() && !m_dvState.Stage(*drm,true)) ||
       (m_hdrDeepColorPrevious && !drm->AddProperty(drm->GetConnector(),
           "DVBRIDGE_HDR10_DEEP_COLOR",*m_hdrDeepColorPrevious)))
-  { RejectDVOutputSurface(); return false; }
+  { if (!m_dvStopPending) RejectDVOutputSurface(); return false; }
   SetColorimetry(picture);
   const bool hdr = SetHDR(picture);
   SetGuiCompositing(hdr && picture ? picture->color_transfer : 0);
