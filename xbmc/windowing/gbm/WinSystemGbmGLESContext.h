@@ -196,6 +196,7 @@ private:
   std::unique_ptr<CDVBridgeGLES> m_dvBridge;
   std::shared_ptr<CDVBridgeGLES::Context> m_dvContext;
   bool RetireDVContext();
+  bool ComposeDVPQGUI();
   bool CB1AsyncAvailable() const;
   bool CreateCB1GPUFence(const CDVBridgeGLES::Submission& submission);
   DVBRIDGE::MasterSafety m_masterSafety;
@@ -262,6 +263,7 @@ private:
   CFrameBufferObject m_dvPQSubtitleFbo;
   int m_dvPQSubtitleWidth{}, m_dvPQSubtitleHeight{}, m_dvPQPreviousFbo{};
   unsigned m_dvPQSubtitleDraws{};
+  bool m_dvPQGuiMergeAttempted{}, m_dvPQGuiComposed{};
   bool m_dvPQSubtitleCleared{}, m_dvPQSubtitleRendering{};
   bool m_dvNativeGui{};
 #endif
