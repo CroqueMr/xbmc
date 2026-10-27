@@ -50,6 +50,17 @@ void BackendLog(void*, pl_log_level level, const char* message)
   }
   catch (...) {} // libplacebo invokes this as a C callback.
 }
+
+bool ImportLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::Layer& layer)
+{
+  if (!dvbridge_gl_frame_import(frame,gpu,layer.layout,layer.width,layer.height,layer.planes))
+    return false;
+  auto location = dvbridge_map_chroma(layer.chromaLocation);
+  if (location == PL_CHROMA_UNKNOWN)
+    location = layer.sourceInfo.profile == 7 ? PL_CHROMA_TOP_LEFT : PL_CHROMA_LEFT;
+  dvbridge_gl_frame_set_chroma(frame,location);
+  return true;
+}
 }
 
 
@@ -66,7 +77,7 @@ public:
     glDeleteVertexArrays(1, &m_vao);
   }
 
-  void SetMethod(ESCALINGMETHOD method) { m_method = method; }
+  void SetMethod(ESCALINGMETHOD method, bool exact = true) { m_method = method; m_exact = exact; }
 
   static bool Fit(void* priv, const pl_frame* image, const pl_frame* target, pl_frame* fitted)
   {
@@ -147,7 +158,7 @@ private:
     }
     const int width = target.planes[0].texture->params.w;
     const int height = target.planes[0].texture->params.h;
-    const auto format = pl_find_fmt(m_gpu, PL_FMT_FLOAT, 4, 32, 32,
+    const auto format = pl_find_fmt(m_gpu, PL_FMT_FLOAT, 4, m_exact ? 32 : 16, m_exact ? 32 : 16,
         static_cast<pl_fmt_caps>(PL_FMT_CAP_RENDERABLE | PL_FMT_CAP_SAMPLEABLE));
     pl_tex_params allocation{};
     allocation.w = width; allocation.h = height; allocation.format = format;
@@ -213,6 +224,7 @@ private:
     return true;
   }
 
+  bool m_exact{true};
   pl_gpu m_gpu{};
   pl_tex m_texture{};
   GLuint m_vao{}, m_vertices{}, m_sampler{};
@@ -423,9 +435,9 @@ bool CDVBridgeGLES::Context::FELHardwareUpscaling(uint64_t stream)
   }
   return stream && m_state->felVppEnabled;
 }
-void CDVBridgeGLES::Context::SetSpatialMethod(ESCALINGMETHOD method)
+void CDVBridgeGLES::Context::SetSpatialMethod(ESCALINGMETHOD method, bool exact)
 {
-  if (m_state->spatial) m_state->spatial->SetMethod(method);
+  if (m_state->spatial) m_state->spatial->SetMethod(method, exact);
 }
 pl_opengl CDVBridgeGLES::Context::GL() const { return m_state->gl; }
 pl_log CDVBridgeGLES::Context::Log() const { return m_state->log; }
@@ -538,7 +550,7 @@ cb1_ai_status CDVBridgeGLES::Context::AnalyseHDR10AI(const Layer& base, double h
   if (!FenceHDR10AIUse()) return HDR10AI().RecordStatus("analysis-fence",CB1_AI_INVALID);
   if (collected != CB1_AI_READY) return collected;
   dvbridge_gl_frame imported{};
-  if (!dvbridge_gl_frame_import(&imported,m_state->gl->gpu,base.layout,base.width,base.height,base.planes))
+  if (!ImportLayer(&imported,m_state->gl->gpu,base))
     return HDR10AI().RecordStatus("analysis-import",CB1_AI_INCOMPATIBLE);
   HDR10Color(imported.frame,base);
   const auto status = HDR10AI().Submit(&imported.frame,base.binding,base.pts,headPts,base.lease);
@@ -769,11 +781,11 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   if (retired != DVBRIDGE_DV_IDLE)
     return retired == DVBRIDGE_DV_FAILED ? FrameStatus::Failed : FrameStatus::Busy;
   dvbridge_gl_frame imported{};
-  if (!dvbridge_gl_frame_import(&imported,m_gl->gpu,base.layout,base.width,base.height,base.planes))
+  if (!ImportLayer(&imported,m_gl->gpu,base))
     return FrameStatus::Unsupported;
   HDR10Color(imported.frame,base);
   m_spatialMethod = base.scalingMethod;
-  m_context->SetSpatialMethod(m_spatialMethod);
+  m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
   m_context->Retain(base.lease);
   policy.revision = prediction.id.revision;
   m_live = m_advanced = m_aiFrame = true;
@@ -1186,30 +1198,18 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
   dvbridge_renderer_set_processing_optimizations(m_renderer,m_requested.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   dvbridge_gl_frame bl{}, el{};
-  if (!dvbridge_gl_frame_import(&bl, m_gl->gpu, base.layout, base.width, base.height, base.planes))
+  if (!ImportLayer(&bl,m_gl->gpu,base))
     return Failure("base-import");
   double elPts = std::numeric_limits<double>::quiet_NaN();
   if (enhancement)
   {
-    if (!dvbridge_gl_frame_import(&el, m_gl->gpu, enhancement->layout,
-                                 enhancement->width, enhancement->height, enhancement->planes))
+    if (!ImportLayer(&el,m_gl->gpu,*enhancement))
     {
       dvbridge_gl_frame_release(&bl);
       return Failure("enhancement-import");
     }
     bl.frame.enhancement_layer = &el.frame;
     elPts = enhancement->pts;
-  }
-  if (!m_hdr10)
-  {
-    const auto location = [](const Layer& layer) {
-      if (layer.chromaLocation == AVCHROMA_LOC_UNSPECIFIED && layer.sourceInfo.profile == 7)
-        return PL_CHROMA_TOP_LEFT;
-      const auto position = dvbridge_map_chroma(layer.chromaLocation);
-      return position == PL_CHROMA_UNKNOWN ? PL_CHROMA_LEFT : position;
-    };
-    dvbridge_gl_frame_set_chroma(&bl,location(base));
-    if (enhancement) dvbridge_gl_frame_set_chroma(&el,location(*enhancement));
   }
   // Subtitle-only frames compose before packing. Other GUI retains 32F composition.
   const bool hdr10plus = m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS;
@@ -1440,7 +1440,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_pendingOverlayVisible = m_overlayVisible;
   m_requested = preferences;
   m_spatialMethod = base.scalingMethod;
-  m_context->SetSpatialMethod(m_spatialMethod);
+  m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
   policy.revision = revision;
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
   dvbridge_renderer_set_fel_nearest(m_renderer,preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416));
@@ -1504,12 +1504,11 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   if (!base.lease || (enhancement && !enhancement->lease))
   { Failure("policy-source-lease"); return FrameStatus::Failed; }
   dvbridge_gl_frame bl{}, el{};
-  if (!dvbridge_gl_frame_import(&bl,m_gl->gpu,base.layout,base.width,base.height,base.planes))
+  if (!ImportLayer(&bl,m_gl->gpu,base))
   { Failure("policy-base-import"); return FrameStatus::Failed; }
   if (enhancement)
   {
-    if (!dvbridge_gl_frame_import(&el,m_gl->gpu,enhancement->layout,
-          enhancement->width,enhancement->height,enhancement->planes))
+    if (!ImportLayer(&el,m_gl->gpu,*enhancement))
     {
       dvbridge_gl_frame_release(&bl);
       Failure("policy-enhancement-import");

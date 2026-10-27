@@ -55,7 +55,7 @@ public:
     bool AsyncPreparation(uint64_t stream);
     bool AsyncPreparationConfigured() const;
     bool FELHardwareUpscaling(uint64_t stream);
-    void SetSpatialMethod(ESCALINGMETHOD method);
+    void SetSpatialMethod(ESCALINGMETHOD method, bool exact);
     pl_opengl GL() const;
     pl_log Log() const;
     void Retain(std::shared_ptr<void> base, std::shared_ptr<void> enhancement = {});
