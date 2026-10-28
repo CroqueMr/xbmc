@@ -116,7 +116,7 @@ bool CDVPlaybackModes::ShowMenu()
     }
     CSettingConditions::DVOutputOptions(choiceSetting,options);
     dialog->Reset();
-    dialog->SetHeading(StringUtils::Format(strings.Get(40876), hdr10Source ? "HDR10" : "Dolby Vision"));
+    dialog->SetHeading("[B]" + StringUtils::Format(strings.Get(40876), hdr10Source ? "HDR10" : "Dolby Vision") + "[/B]");
     dialog->SetUseDetails(true);
     for(const auto& option : options)
     {
