@@ -25855,15 +25855,11 @@ msgid "Basic uses source metadata. Expert requires a TV profile. HDR10+ sends pi
 msgstr ""
 
 msgctxt "#40922"
-msgid "HDR10+ conversion (experimental)"
+msgid "HDR10+ conversion"
 msgstr ""
 
 msgctxt "#40923"
 msgid "HDR10+ output requires a supported HDMI driver and display."
-msgstr ""
-
-msgctxt "#40924"
-msgid "Dolby Vision Adaptive HDR Mapping rev B"
 msgstr ""
 
 msgctxt "#40822"

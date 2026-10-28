@@ -16,7 +16,7 @@
 
 namespace DVBRIDGE
 {
-enum class OutputMode : int { Standard = 0, HDR10 = 1, Disabled = 2, EnhancedDV = 3, MasterReference = 4, AdaptiveB = 5, AdaptiveRevB = 6 };
+enum class OutputMode : int { Standard = 0, HDR10 = 1, Disabled = 2, EnhancedDV = 3, MasterReference = 4, AdaptiveB = 5 };
 enum class HDR10SourceMode : int { Native = 0, ReferenceDV = 1, EnhancedDV = 2 };
 
 // Decoder ingress sees the last complete frame-boundary preference snapshot.
@@ -27,7 +27,6 @@ inline std::atomic<HDR10SourceMode> hdr10PlaybackMode{HDR10SourceMode::Native};
 inline int PolicyCode(const dvbridge_policy& policy)
 {
   if (policy.mode==DVBRIDGE_MODE_HDR10PLUS) return 7;
-  if (policy.adaptive_rev_b) return 8;
   return policy.mode==DVBRIDGE_MODE_ENHANCED_DV && policy.adaptive!=DVBRIDGE_ADAPTIVE_A ? 6 : int(policy.mode);
 }
 #endif
@@ -71,10 +70,8 @@ struct OutputPreferences
       case OutputMode::Standard: result.mode = DVBRIDGE_MODE_STANDARD; break;
       case OutputMode::EnhancedDV:
       case OutputMode::AdaptiveB:
-      case OutputMode::AdaptiveRevB:
         result.mode=DVBRIDGE_MODE_ENHANCED_DV;
         result.adaptive=DVBRIDGE_ADAPTIVE_B_FP16;
-        result.adaptive_rev_b=output==OutputMode::AdaptiveRevB;
         break;
       case OutputMode::MasterReference:
         result.mode = DVBRIDGE_MODE_MASTER_REFERENCE; result.master_ipt = masterIPT; break;
@@ -94,7 +91,6 @@ struct OutputPreferences
   {
     auto result = Policy();
     result.adaptive=DVBRIDGE_ADAPTIVE_A;
-    result.adaptive_rev_b=false;
     result.master_ipt=false;
     result.mode = hdr10Source == HDR10SourceMode::ReferenceDV ? DVBRIDGE_MODE_STANDARD :
         hdr10Source == HDR10SourceMode::EnhancedDV ? DVBRIDGE_MODE_ENHANCED_DV : DVBRIDGE_MODE_DISABLED;
@@ -128,7 +124,7 @@ inline OutputPreferences FrameOutputSettings()
   const int mode = settings ? settings->GetInt("dvbridge.outputmode") : 0;
   OutputPreferences next;
   next.output = mode == 3 ? OutputMode::AdaptiveB :
-      mode >= 0 && mode <= 6 ? static_cast<OutputMode>(mode) : OutputMode::Standard;
+      mode >= 0 && mode <= 5 ? static_cast<OutputMode>(mode) : OutputMode::Standard;
   if (settings)
   {
     const int hdr10 = settings->GetInt("dvbridge.hdr10source");

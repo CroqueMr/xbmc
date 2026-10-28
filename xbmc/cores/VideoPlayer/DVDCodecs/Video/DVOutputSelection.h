@@ -82,7 +82,6 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
   policy.mode = DVBRIDGE_MODE_HDR10_BASIC;
   policy.master_ipt = false;
   policy.adaptive = DVBRIDGE_ADAPTIVE_A;
-  policy.adaptive_rev_b = false;
   policy.tv = {};
   return {OutputRoute::HDR10, policy, result.reason};
 }

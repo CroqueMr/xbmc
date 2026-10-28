@@ -1360,7 +1360,6 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
         DVBRIDGE_MODE_HDR10_BASIC : DVBRIDGE_MODE_STANDARD;
     policy.tv = {};
     policy.adaptive = DVBRIDGE_ADAPTIVE_A;
-    policy.adaptive_rev_b = false;
   }
   // Capture the proven observation key before geometry or refresh rekeys work.
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
@@ -2199,9 +2198,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
 #ifdef CB1_HAS_HDR10_AI
       !output.hdr10AI &&
 #endif
-      (m_requested.output==DVBRIDGE::OutputMode::AdaptiveB ||
-       m_requested.output==DVBRIDGE::OutputMode::AdaptiveRevB))
-    output.effective=DVBRIDGE::PolicyCode(m_requested.Policy());
+      m_requested.output==DVBRIDGE::OutputMode::AdaptiveB)output.effective=6;
   output.method = m_requested.method;
   output.panel = m_requested.panel; output.gamut = m_requested.gamut;
   output.manualPeak = m_requested.peak; output.revision = m_pendingIdentity.revision;

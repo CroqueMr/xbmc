@@ -225,7 +225,8 @@ bool CSettings::Load(const TiXmlElement* root, bool& updated)
     const char* id = setting->Attribute("id");
     const char* value = setting->GetText();
     if (!id || !value) continue;
-    const auto legacy = std::string_view(id) == "dvbridge.outputmode" && std::string_view(value) == "3" ?
+    const auto legacy = std::string_view(id) == "dvbridge.outputmode" &&
+            (std::string_view(value) == "3" || std::string_view(value) == "6") ?
             std::optional<int>{5} : std::nullopt;
     if (!legacy) continue;
     if (!migrated) migrated.reset(root->Clone()->ToElement());
