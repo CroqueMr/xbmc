@@ -46,7 +46,7 @@ bool CDVBridgeState::Read(CDRMAtomic& drm, std::vector<Change>& changes,
   return true;
 }
 
-bool CDVBridgeState::Capture(CDRMAtomic& drm, uint64_t ownVsif)
+bool CDVBridgeState::Capture(CDRMAtomic& drm, uint64_t ownVsif, bool legacyVsif)
 {
   m_failure = "none";
   if (Captured())
@@ -90,8 +90,11 @@ bool CDVBridgeState::Capture(CDRMAtomic& drm, uint64_t ownVsif)
   else
   {
     // Vendor VSIF payload and S31.32 neutral factors from the output contract.
-    const uint8_t payload[27] = {0x46,0xd0,0,2};
-    CDRMPropertyBlob transport(drm.GetFileDescriptor(),payload,sizeof(payload));
+    const uint8_t modern[27] = {0x46,0xd0,0,2};
+    const uint8_t legacy[24] = {3,12,0};
+    // The driver fills legacy timing fields from its validated active mode.
+    CDRMPropertyBlob transport(drm.GetFileDescriptor(),
+        legacyVsif ? legacy : modern, legacyVsif ? sizeof(legacy) : sizeof(modern));
     if (!transport.IsValid())
       return Reject("NV_HDMI_VSIF_METADATA");
     if (!Read(drm,changes,connector,"NV_HDMI_VSIF_METADATA",transport.Get(),true,true,nullptr))

@@ -14,7 +14,7 @@ class CDVBridgeState
 public:
   enum class Backend { NONE, KERNEL, NVIDIA };
   static Backend GetBackend(CDRMConnector&);
-  bool Capture(CDRMAtomic&, uint64_t ownVsif = 0);
+  bool Capture(CDRMAtomic&, uint64_t ownVsif = 0, bool legacyVsif = false);
   bool Stage(CDRMAtomic&, bool restore);
   void Restored() { m_changes.clear(); m_owner = nullptr; m_backend = Backend::NONE; }
   bool Captured() const { return !m_changes.empty(); }

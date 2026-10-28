@@ -1685,8 +1685,9 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PollHDR10Plus()
   const auto status = cb1_hdr10plus_analysis_poll(m_hdr10plusAnalysis, m_pendingIdentity, &statistics);
   if (status == CB1_HDR10PLUS_ANALYSIS_PENDING) return FrameStatus::Pending;
   AVDynamicHDRPlus metadata{};
-  if (status != CB1_HDR10PLUS_ANALYSIS_READY || !cb1_dv_hdr10plus_metadata(&metadata,
-      &m_hdr10plusReport, m_pendingMetadata.Data(), m_pendingMetadata.Size(), &statistics))
+  if (status != CB1_HDR10PLUS_ANALYSIS_READY || !cb1_dv_hdr10plus_metadata_for_version(&metadata,
+      &m_hdr10plusReport, m_pendingMetadata.Data(), m_pendingMetadata.Size(), &statistics,
+      m_hdr10plusVersion))
   {
     m_failedIdentity = m_pendingIdentity;
     Failure("hdr10plus-analysis");
