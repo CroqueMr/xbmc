@@ -674,6 +674,8 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus(bool overlay)
     const auto* display = GetDisplayInfo();
     if (GetEotf() != KODI::UTILS::Eotf::PQ)
       reason = "output-not-pq";
+    else if (GetOutputBitDepth() < 10)
+      reason = "output-buffer-below-10-bit";
     else if (!drm->GetConnector() || !drm->GetConnector()->SupportsProperty("HDR10PLUS_METADATA"))
       reason = "driver-unsupported";
     else if (!display || display->HDR10PlusVersion() < metadata->application_version)
