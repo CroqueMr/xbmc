@@ -17,7 +17,12 @@
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "utils/StringUtils.h"
+#ifdef HAVE_DVBRIDGE
+#include "guilib/GUIFontManager.h"
+#include "windowing/GraphicContext.h"
+#endif
 
+#include <algorithm>
 #include <memory>
 
 #define CONTROL_HEADING         1
@@ -96,6 +101,25 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
 
   case GUI_MSG_WINDOW_INIT:
     {
+#ifdef HAVE_DVBRIDGE
+      const bool playback = GetProperty("CB1.PlaybackModes").asBoolean();
+      const std::string file = playback ?
+          "special://xbmc/media/cb1/DialogPlaybackModes.xml" : "DialogSelect.xml";
+      if (GetProperty("xmlfile").asString() != file)
+      {
+        FreeResources(true);
+        SetProperty("xmlfile", file);
+      }
+      if (playback)
+      {
+        const RESOLUTION_INFO resolution(1920, 1080);
+        SetCoordsRes(resolution);
+        g_fontManager.LoadTTF("CB1.MenuBody", "special://xbmc/media/Fonts/arial.ttf",
+                             0xfff4f6f6, 0, 25, 0, false, 1.0f, 1.0f, &resolution);
+        g_fontManager.LoadTTF("CB1.MenuHelp", "special://xbmc/media/Fonts/arial.ttf",
+                             0xffbfc8cc, 0, 20, 0, false, 1.0f, 1.0f, &resolution);
+      }
+#endif
       m_bButtonPressed = false;
       m_bButton2Pressed = false;
       m_bConfirmed = false;
@@ -362,6 +386,23 @@ void CGUIDialogSelect::OnWindowLoaded()
 
 void CGUIDialogSelect::OnInitWindow()
 {
+#ifdef HAVE_DVBRIDGE
+  if (GetProperty("CB1.PlaybackModes").asBoolean())
+  {
+    const float rowsHeight = 50.0f * std::clamp(m_vecList->Size(), 1, 6);
+    const float height = 156.0f + rowsHeight;
+    if (auto* group = GetControl(9100))
+    {
+      group->SetPosition(group->GetXPosition(), GetCoordsRes().iHeight - 40.0f - height);
+      group->SetHeight(height);
+    }
+    if (auto* background = GetControl(9101)) background->SetHeight(height);
+    for (int id : {CONTROL_SIMPLE_LIST, CONTROL_DETAILED_LIST})
+      if (auto* list = GetControl(id)) list->SetHeight(rowsHeight);
+    if (auto* help = GetControl(9102))
+      help->SetPosition(help->GetXPosition(), 84.0f + rowsHeight);
+  }
+#endif
   m_viewControl.SetItems(*m_vecList);
   m_selectedItems.clear();
   for(int i = 0 ; i < m_vecList->Size(); i++)
