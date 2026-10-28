@@ -33,6 +33,10 @@ extern "C"
 #include <thread>
 #include <vector>
 
+#if !defined(DVBRIDGE_L2_TRIMS_API) || DVBRIDGE_L2_TRIMS_API < 1
+#error "Matching CB1 L2 output-trim API required"
+#endif
+
 namespace
 {
 void BackendLog(void*, pl_log_level level, const char* message)
@@ -726,6 +730,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
       !base.lease || prediction.id.stream != base.binding.stream ||
       prediction.id.picture != base.binding.picture || !std::isfinite(base.pts))
   { m_asyncEligible = false; return FrameStatus::Failed; }
+  dvbridge_renderer_set_l2_trims_disabled(m_renderer, false);
   // Quarantined policy work cannot be bypassed by historical frame reuse.
   if (m_dvPolicyActive && dvbridge_render_dv_policy_poll(m_renderer) == DVBRIDGE_DV_FAILED)
     return FrameStatus::Failed;
@@ -1362,6 +1367,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     policy.adaptive = DVBRIDGE_ADAPTIVE_A;
   }
   // Capture the proven observation key before geometry or refresh rekeys work.
+  dvbridge_renderer_set_l2_trims_disabled(m_renderer, preferences.L2TrimsDisabled(policy.mode));
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
       policy.mode);
   const bool sameGeometry = geometry.source_width == m_sourceGeometry.source_width &&
@@ -1482,9 +1488,9 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       m_auditRequested.Record(DVBRIDGE::DiagnosticNowMs(),"requested",m_auditSerial))
   {
     m_auditRequestedSerial=m_auditSerial;
-    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={}",
+    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={} l2_trims_disabled={}",
         base.binding.stream,base.binding.picture,base.binding.revision,revision,
-        int(preferences.Policy().mode),int(policy.mode),!m_fallback,m_fallback);
+        int(preferences.Policy().mode),int(policy.mode),!m_fallback,m_fallback,preferences.L2TrimsDisabled(policy.mode));
     const auto admission=DVBRIDGE::StreamTelemetry::Read().transaction;
     DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge output admission: generation={} source_known={} gpu_known={} native_dv={} hdr10={} requested={} effective={} reason={}",
         admission.capabilities.generation,admission.capabilities.sourceKnown,admission.capabilities.processingKnown,
@@ -2200,6 +2206,11 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
 #endif
       m_requested.output==DVBRIDGE::OutputMode::AdaptiveB)output.effective=6;
   output.method = m_requested.method;
+  output.l2TrimsDisabled = m_requested.L2TrimsDisabled(m_effectiveMode
+#ifdef CB1_HAS_HDR10_AI
+      , m_aiFrame
+#endif
+  );
   output.panel = m_requested.panel; output.gamut = m_requested.gamut;
   output.manualPeak = m_requested.peak; output.revision = m_pendingIdentity.revision;
   output.fallback = m_fallback;
