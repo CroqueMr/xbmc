@@ -1955,6 +1955,8 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
   if (m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10 && m_hdr10Session &&
       m_hdr10SessionStream != picture.doviMetadata.Binding().stream)
     return ConfigureHDR10Conversion(picture);
+  if (m_dvSelection.reason == DVBRIDGE::OutputReason::TVProfileRequired)
+    DVBRIDGE::DiagnosticStage("output-tv-profile-required");
   if (m_dvConfiguredOutput == m_dvSelection.policy.mode && !m_dvOutputRetiring &&
       (m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla || m_dvState.Captured() || m_hdrConversion))
     return true;
