@@ -380,7 +380,8 @@ void CGUIDialogSelect::OnInitWindow()
 #ifdef HAVE_DVBRIDGE
   if (GetProperty("CB1.PlaybackModes").asBoolean())
   {
-    const float rowsHeight = 50.0f * std::clamp(m_vecList->Size(), 1, 6);
+    const int maxRows = std::max(1, (GetCoordsRes().iHeight - 80 - 112) / 50);
+    const float rowsHeight = 50.0f * std::clamp(m_vecList->Size(), 1, maxRows);
     const float height = 112.0f + rowsHeight;
     if (auto* group = GetControl(9100))
     {
