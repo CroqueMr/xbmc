@@ -1848,6 +1848,10 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
 
 bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
 {
+  const auto deferred = [](const char* stage) {
+    DVBRIDGE::DiagnosticStage(stage);
+    return false;
+  };
   if (DVBRIDGE::DiagnosticsEnabled())
   {
     const auto binding = picture.doviSourceBinding.Valid() ? picture.doviSourceBinding : picture.doviMetadata.Binding();
@@ -1856,9 +1860,9 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
       DVBRIDGE::ObserveDiagnostic(binding.stream,binding.picture,binding.revision,
           preferences.revision,"output-preparation",preferences.output != DVBRIDGE::OutputMode::Disabled,false);
   }
-  if (m_dvStopPending) return false;
+  if (m_dvStopPending) return deferred("output-stop-pending");
   if (!SupportsDVOutputMode() && DVBridgeRequested(&picture))
-    return false; // A future-mode admission is not permission to activate at 1080p.
+    return deferred("output-mode-unavailable");
   if (m_dvRollbackFailed || !RecoverDVActivation())
   {
     if (m_dvRollbackFailed)
@@ -1873,20 +1877,23 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
       std::lock_guard lock(m_dvCapabilityMutex);
       if (!m_dvFatalConsumed) m_dvFatalReason = DVBRIDGE::OutputReason::RestoreFailed;
     }
-    return false;
+    return deferred(m_dvRollbackFailed ? "output-restore-failed" : "output-restore-pending");
   }
   // A stopped file's GUI transaction must be presented before new video setup.
-  if (m_dvOrdinaryFrame && HasPendingDVOutputSurface()) return false;
+  if (m_dvOrdinaryFrame && HasPendingDVOutputSurface())
+    return deferred("output-await-previous-scanout");
   ResetDVActivation(&picture);
   const auto preferences = DVBRIDGE::FrameOutputSettings();
   const auto capabilities = GetDVOutputCapabilities(&picture, preferences);
 #ifdef CB1_HAS_HDR10_AI
   if ((!capabilities.isHDR10 || preferences.hdr10Source==DVBRIDGE::HDR10SourceMode::Native) &&
-      m_dvContext && !m_dvContext->StopHDR10AI()) return false;
+      m_dvContext && !m_dvContext->StopHDR10AI()) return deferred("output-await-ai-retirement");
 #endif
-  if (capabilities.isDV && preferences.output != DVBRIDGE::OutputMode::Disabled &&
-      (!capabilities.processingKnown || (picture.strDVELType == "FEL" && !picture.doviEnhancement)))
-    return false;
+  if (capabilities.isDV && preferences.output != DVBRIDGE::OutputMode::Disabled)
+  {
+    if (!capabilities.processingKnown) return deferred("output-await-source-import");
+    if (picture.strDVELType == "FEL" && !picture.doviEnhancement) return deferred("output-await-fel");
+  }
   auto selectionCapabilities = capabilities;
   {
     const auto masterBinding=picture.doviSourceBinding.Valid() ?
@@ -1943,7 +1950,7 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
           DVBRIDGE::OutputReason::SourceIneligible : m_dvSelection.reason;
     return false;
   }
-  if (!PollRejectedDVSurface()) return false;
+  if (!PollRejectedDVSurface()) return deferred("output-await-rejected-scanout");
   // A format match cannot carry a fixed target across original source streams.
   if (m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10 && m_hdr10Session &&
       m_hdr10SessionStream != picture.doviMetadata.Binding().stream)
