@@ -18,7 +18,6 @@
 #include "resources/ResourcesComponent.h"
 #include "utils/StringUtils.h"
 #ifdef HAVE_DVBRIDGE
-#include "guilib/GUIFontManager.h"
 #include "windowing/GraphicContext.h"
 #endif
 
@@ -110,15 +109,7 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
         FreeResources(true);
         SetProperty("xmlfile", file);
       }
-      if (playback)
-      {
-        const RESOLUTION_INFO resolution(1920, 1080);
-        SetCoordsRes(resolution);
-        g_fontManager.LoadTTF("CB1.MenuBody", "special://xbmc/media/Fonts/arial.ttf",
-                             0xfff4f6f6, 0, 25, 0, false, 1.0f, 1.0f, &resolution);
-        g_fontManager.LoadTTF("CB1.MenuHelp", "special://xbmc/media/Fonts/arial.ttf",
-                             0xffbfc8cc, 0, 20, 0, false, 1.0f, 1.0f, &resolution);
-      }
+      if (playback) SetCoordsRes(RESOLUTION_INFO(1920, 1080));
 #endif
       m_bButtonPressed = false;
       m_bButton2Pressed = false;
@@ -390,7 +381,7 @@ void CGUIDialogSelect::OnInitWindow()
   if (GetProperty("CB1.PlaybackModes").asBoolean())
   {
     const float rowsHeight = 50.0f * std::clamp(m_vecList->Size(), 1, 6);
-    const float height = 156.0f + rowsHeight;
+    const float height = 112.0f + rowsHeight;
     if (auto* group = GetControl(9100))
     {
       group->SetPosition(group->GetXPosition(), GetCoordsRes().iHeight - 40.0f - height);
@@ -400,7 +391,7 @@ void CGUIDialogSelect::OnInitWindow()
     for (int id : {CONTROL_SIMPLE_LIST, CONTROL_DETAILED_LIST})
       if (auto* list = GetControl(id)) list->SetHeight(rowsHeight);
     if (auto* help = GetControl(9102))
-      help->SetPosition(help->GetXPosition(), 84.0f + rowsHeight);
+      help->SetPosition(help->GetXPosition(), 70.0f + rowsHeight);
   }
 #endif
   m_viewControl.SetItems(*m_vecList);
