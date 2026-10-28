@@ -64,6 +64,7 @@ struct StreamSnapshot
     uint32_t creativeApplied{}, creativeEdited{};
     int creativeStatus{}, creativeReason{};
     bool iptTransport{};
+    bool l2TrimsDisabled{};
     int felUpscaling{-1};
 #ifdef CB1_HAS_HDR10_AI
     bool hdr10AI{};
@@ -127,6 +128,7 @@ struct StreamSnapshot
     if (!(output.flags & CDVPlaybackInfo::HDMI) || !metadata) return result;
     if (output.authoredLegacy) { result[1]=result[5]=true; return result; }
     result=blocks;
+    if (output.l2TrimsDisabled) result[2]=false;
     result[6]=false; // L6 is static HDR metadata, not dynamic DV wire data.
     result[5]=true; // Native serializer always supplies final-raster margins.
     return result;

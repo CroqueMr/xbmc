@@ -101,6 +101,14 @@
           <dependencies><dependency type="visible" setting="dvbridge.outputmode" operator="is">4</dependency></dependencies>
           <control type="toggle" />
         </setting>
+        <setting id="dvbridge.disablel2" type="boolean" label="40925" help="40926">
+          <requirement>HAVE_DVBRIDGE</requirement><level>3</level><default>false</default>
+          <dependencies><dependency type="visible"><or>
+            <condition setting="dvbridge.outputmode" operator="is">0</condition>
+            <condition setting="dvbridge.outputmode" operator="is">4</condition>
+          </or></dependency></dependencies>
+          <control type="toggle" />
+        </setting>
         <setting id="dvbridge.felupscaling" type="integer" label="40907" help="40908">
           <requirement>HAVE_DVBRIDGE</requirement><level>3</level><default>0</default>
           <constraints><options><option label="40910">0</option><option label="40909">1</option></options></constraints>
