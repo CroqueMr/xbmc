@@ -92,6 +92,8 @@ private:
   std::optional<std::array<uint8_t, 31>> m_hdr10plusPacket;
   uint64_t m_hdr10plusGeneration{}, m_hdr10plusRejectedGeneration{}, m_hdr10plusRejectedEdid{};
   bool m_hdr10plusActive{};
+  bool m_hdr10plusClearRequired{};
+  void AcceptHDR10Plus(bool enabled);
   bool DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer,
                        bool strict = false);
   void FinishRequest(bool accepted);
