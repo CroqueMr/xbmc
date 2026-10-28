@@ -89,7 +89,6 @@ bool CDVPlaybackModes::ShowMenu()
   struct Choice { int output,method,label; };
   constexpr Choice dvChoices[]={{0,0,40812},{4,0,40913},
       {5,0,40914},
-      {6,0,40924},
       {2,0,40814},{1,0,40822},{1,1,40823},{1,2,40922}};
   const auto source=DVBRIDGE::StreamTelemetry::Read().transaction.capabilities;
   if (source.stereoSource || !source.sourceKnown || (!source.isDV && !source.isHDR10)) return false;
@@ -121,7 +120,7 @@ bool CDVPlaybackModes::ShowMenu()
     dialog->SetUseDetails(true);
     for(const auto& option : options)
     {
-      CFileItem item(strings.Get(choices[option.value].label));
+      CFileItem item(option.label);
       item.SetLabel2(option.label2);
       for(const auto& [name,value] : option.properties) item.SetProperty(name,value);
       dialog->Add(item);
