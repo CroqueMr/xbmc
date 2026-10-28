@@ -1126,7 +1126,7 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
   auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
   const auto* display = GetDisplayInfo();
   caps.hdr10plus = connector && connector->SupportsProperty("HDR10PLUS_METADATA") &&
-      display && display->HDR10PlusVersion() >= 1;
+      display && display->HDR10PlusVersion() >= 0;
   if (m_renderableType != EGL_OPENGL_ES3_BIT)
   {
     caps.processingKnown = true;
@@ -1702,6 +1702,9 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
     return false;
   };
   const bool hdr10 = m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10;
+  const auto* hdr10plusDisplay = GetDisplayInfo();
+  const int hdr10plusVersion = hdr10plusDisplay ? hdr10plusDisplay->HDR10PlusVersion() : -1;
+  if (m_dvBridge) m_dvBridge->SetHDR10PlusVersion(hdr10plusVersion);
   if (!SupportsDVOutputMode()) return failure("output-format", "unsupported-current-mode");
   const auto selected = m_DRM->GetSelectedMode();
   if (!selected || m_nWidth != selected->hdisplay || m_nHeight != selected->vdisplay)
@@ -1728,11 +1731,21 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
     m_dvBridge = std::make_unique<CDVBridgeGLES>();
     if (!m_dvBridge->Initialize(false, hdr10,m_dvContext))
       return failure("renderer-init");
+    m_dvBridge->SetHDR10PlusVersion(hdr10plusVersion);
   }
   m_GBM->GetDevice().UseDVOutputLifetime();
   if (!hdr10 && !m_dvState.Captured())
   {
-    if (!m_dvState.Capture(*drm))
+    const auto* display = GetDisplayInfo();
+    if (!display) return failure("drm-state-capture", "edid-unavailable");
+    const auto sink = display->GetDolbyVisionCaps();
+    const auto* mode = drm->GetSelectedMode();
+    const double rate = mode && mode->htotal && mode->vtotal ?
+        mode->clock * 1000.0 / mode->htotal / mode->vtotal : 0.0;
+    if (!sink.supports_2160p60 &&
+        mode && mode->vdisplay >= 2160 && rate > 30.01)
+      return failure("output-format", "sink-dv-rate");
+    if (!m_dvState.Capture(*drm, 0, sink.legacy_vsif))
       return failure("drm-state-capture", m_dvState.CaptureFailure());
     m_presentStall.Reset();
     if (DVBRIDGE::DiagnosticsEnabled())

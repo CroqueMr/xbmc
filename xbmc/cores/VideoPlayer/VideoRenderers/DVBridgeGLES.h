@@ -162,6 +162,13 @@ public:
     }
     return submission;
   }
+  void SetHDR10PlusVersion(int version)
+  {
+    const int supported = version < 0 ? -1 : version == 0 ? 0 : 1;
+    if (supported == m_hdr10plusVersion) return;
+    if (m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS) Cancel();
+    m_hdr10plusVersion = supported;
+  }
   bool AsyncPreparationActive() const { return m_live && m_hasCommitted && m_asyncEligible; }
   bool Presented(bool success, const Submission& submission);
   bool PollReady();
@@ -208,6 +215,7 @@ public:
 private:
   FrameStatus BeginHDR10Plus();
   FrameStatus PollHDR10Plus();
+  int m_hdr10plusVersion{-1};
   cb1_hdr10plus_analysis* m_hdr10plusAnalysis{};
   std::optional<AVDynamicHDRPlus> m_hdr10plusMetadata;
   cb1_dv_hdr10plus_report m_hdr10plusReport{};
