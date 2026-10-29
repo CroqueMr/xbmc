@@ -1315,10 +1315,15 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
     {
       m_firstFrame = false;
       m_lastSummary = DVBRIDGE::DiagnosticNowMs();
-      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge first frame: source={}x{} output={}x{} offset={},{} enhancement={} fel={} cm4={} direct={}",
+      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge first frame: source={}x{} output={}x{} offset={},{} enhancement={} fel={} cm4={} direct={} bl_layout={} bl_texture={}x{} el={}x{} el_layout={} el_texture={}x{} bl_chroma={} el_chroma={}",
           base.width, base.height, geometry.width, geometry.height, geometry.x, geometry.y,
           enhancement != nullptr, bool(m_pendingInfo & CDVPlaybackInfo::FEL),
-          bool(m_pendingInfo & CDVPlaybackInfo::CM4), m_direct);
+          bool(m_pendingInfo & CDVPlaybackInfo::CM4), m_direct,
+          int(base.layout), base.planes[0].width, base.planes[0].height,
+          enhancement ? enhancement->width : 0, enhancement ? enhancement->height : 0,
+          enhancement ? int(enhancement->layout) : -1,
+          enhancement ? enhancement->planes[0].width : 0, enhancement ? enhancement->planes[0].height : 0,
+          int(base.chromaLocation), enhancement ? int(enhancement->chromaLocation) : -1);
     }
   }
   return m_prepared;
@@ -1488,9 +1493,10 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       m_auditRequested.Record(DVBRIDGE::DiagnosticNowMs(),"requested",m_auditSerial))
   {
     m_auditRequestedSerial=m_auditSerial;
-    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={} l2_trims_disabled={}",
+    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={} l2_trims_disabled={} method={} tv_peak={} tv_panel={} tv_gamut={} tv_profile_valid={}",
         base.binding.stream,base.binding.picture,base.binding.revision,revision,
-        int(preferences.Policy().mode),int(policy.mode),!m_fallback,m_fallback,preferences.L2TrimsDisabled(policy.mode));
+        int(preferences.Policy().mode),int(policy.mode),!m_fallback,m_fallback,preferences.L2TrimsDisabled(policy.mode),
+        preferences.method,preferences.peak,preferences.panel,preferences.gamut,preferences.ProfileValid());
     const auto admission=DVBRIDGE::StreamTelemetry::Read().transaction;
     DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge output admission: generation={} source_known={} gpu_known={} native_dv={} hdr10={} requested={} effective={} reason={}",
         admission.capabilities.generation,admission.capabilities.sourceKnown,admission.capabilities.processingKnown,
