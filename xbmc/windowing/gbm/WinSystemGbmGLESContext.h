@@ -176,6 +176,7 @@ private:
 #ifdef HAVE_DVBRIDGE
   void StageNativeHDR10Plus(bool overlay);
   std::string m_hdr10plusReason;
+  uint64_t m_dvProfileLoggedRevision{},m_dvProfileLoggedStream{};
 #endif
   void PresentFrame(bool rendered, bool videoLayer);
   bool m_guiCompositing{false};
