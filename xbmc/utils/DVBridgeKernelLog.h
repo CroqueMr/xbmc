@@ -48,7 +48,8 @@ public:
          message.find("PCON") != message.npos ||
          message.find("DP-to-HDMI") != message.npos ||
          message.find("DP-HDMI") != message.npos);
-    if (timestamp > nowUs || (!route && nowUs - timestamp > 60000000))
+    const bool capability = message.find("DVBridge: AMD capability ") != message.npos;
+    if (timestamp > nowUs || (!route && !capability && nowUs - timestamp > 60000000))
       return {};
     const bool incident = priority <= 4 && intel &&
         (message.find("GPU HANG") != message.npos ||

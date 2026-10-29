@@ -219,6 +219,9 @@ private:
   cb1_hdr10plus_analysis* m_hdr10plusAnalysis{};
   std::optional<AVDynamicHDRPlus> m_hdr10plusMetadata;
   cb1_dv_hdr10plus_report m_hdr10plusReport{};
+  void BeginDiagnosticStream(uint64_t stream);
+  uint64_t m_diagnosticStream{};
+  DVBRIDGE::DiagnosticInterval m_hdr10plusDiagnostics;
   struct FELPrefetch;
   std::shared_ptr<FELPrefetch> m_felPrefetch;
   FrameStatus TakeFELPrefetch(const std::shared_ptr<AVFrame>& frame,

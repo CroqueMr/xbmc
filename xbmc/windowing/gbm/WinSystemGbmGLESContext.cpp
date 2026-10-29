@@ -692,8 +692,16 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus(bool overlay)
   drm->StageHDR10Plus(std::move(packet), generation);
   if (m_hdr10plusReason != reason)
   {
-    if (metadata) CLog::Log(LOGINFO, "HDR10+ output: {}", reason);
-    m_hdr10plusReason = reason;
+    if (!metadata || DVBRIDGE::DiagnosticLog(LOGINFO,
+        "HDR10+ output: {} app_version={} country={:#x} windows={} target={}/{} actual_peak={} mastering_peak={} saturation={} tone_mapping={} anchors={} percentiles={} slot5={}/{} slot10={}/{} generation={}",
+        reason,metadata->application_version,metadata->itu_t_t35_country_code,metadata->num_windows,
+        metadata->targeted_system_display_maximum_luminance.num,metadata->targeted_system_display_maximum_luminance.den,
+        metadata->targeted_system_display_actual_peak_luminance_flag,metadata->mastering_display_actual_peak_luminance_flag,
+        metadata->params[0].color_saturation_mapping_flag,metadata->params[0].tone_mapping_flag,
+        metadata->params[0].num_bezier_curve_anchors,metadata->params[0].num_distribution_maxrgb_percentiles,
+        metadata->params[0].distribution_maxrgb[1].percentile.num,metadata->params[0].distribution_maxrgb[1].percentile.den,
+        metadata->params[0].distribution_maxrgb[2].percentile.num,metadata->params[0].distribution_maxrgb[2].percentile.den,generation))
+      m_hdr10plusReason = reason;
   }
 }
 #endif
@@ -1956,7 +1964,17 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
       m_hdr10SessionStream != picture.doviMetadata.Binding().stream)
     return ConfigureHDR10Conversion(picture);
   if (m_dvSelection.reason == DVBRIDGE::OutputReason::TVProfileRequired)
+  {
     DVBRIDGE::DiagnosticStage("output-tv-profile-required");
+    if ((m_dvProfileLoggedRevision != preferences.revision || m_dvProfileLoggedStream != binding.stream) &&
+        DVBRIDGE::DiagnosticLog(LOGWARNING,
+            "DVBridge profile incomplete: peak={} panel={} gamut={} requirement=peak_and_gamut_required",
+            preferences.peak,preferences.panel,preferences.gamut))
+    {
+      m_dvProfileLoggedRevision = preferences.revision;
+      m_dvProfileLoggedStream = binding.stream;
+    }
+  }
   if (m_dvConfiguredOutput == m_dvSelection.policy.mode && !m_dvOutputRetiring &&
       (m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla || m_dvState.Captured() || m_hdrConversion))
     return true;
