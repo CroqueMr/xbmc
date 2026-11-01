@@ -809,7 +809,10 @@ void CDVDInputStreamBluray::OverlayClose()
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
   for(SPlane& plane : m_planes)
+  {
     plane.o.clear();
+    plane.committed.clear();
+  }
   auto group = std::make_shared<CDVDOverlayGroup>();
   group->bForced = true;
   group->SetSource(DVDOverlaySource::MENU);
@@ -823,6 +826,7 @@ void CDVDInputStreamBluray::OverlayInit(SPlane& plane, int w, int h)
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
   plane.o.clear();
+  plane.committed.clear();
   plane.w = w;
   plane.h = h;
 #endif
@@ -867,9 +871,10 @@ void CDVDInputStreamBluray::OverlayClear(SPlane& plane, int x, int y, int w, int
 #endif
 }
 
-void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
+void CDVDInputStreamBluray::OverlayFlush(SPlane& updated, int64_t pts)
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
+  updated.committed = updated.o;
   auto group = std::make_shared<CDVDOverlayGroup>();
   group->bForced       = true;
   group->iPTSStartTime = static_cast<double>(pts);
@@ -883,19 +888,19 @@ void CDVDInputStreamBluray::OverlayFlush(int64_t pts)
 
   for(SPlane& plane : m_planes)
   {
-    for(SOverlays::iterator it = plane.o.begin(); it != plane.o.end(); ++it)
+    for(SOverlays::iterator it = plane.committed.begin(); it != plane.committed.end(); ++it)
       group->m_overlays.push_back(*it);
   }
 
   m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
-  m_hasOverlay = true;
+  m_hasOverlay = !group->m_overlays.empty();
 #endif
 }
 
 void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
-  if(ov == nullptr || ov->cmd == BD_OVERLAY_CLOSE)
+  if (ov == nullptr)
   {
     OverlayClose();
     return;
@@ -908,6 +913,13 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   }
 
   SPlane& plane(m_planes[ov->plane]);
+
+  if (ov->cmd == BD_OVERLAY_CLOSE)
+  {
+    plane.o.clear();
+    OverlayFlush(plane, 0);
+    return;
+  }
 
   if (ov->cmd == BD_OVERLAY_CLEAR)
   {
@@ -928,6 +940,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   if (ov->img && ov->cmd == BD_OVERLAY_DRAW)
   {
     SOverlay overlay = std::make_shared<CDVDOverlayImage>();
+    overlay->SetSource(DVDOverlaySource::MENU);
 
     if (ov->palette)
     {
@@ -957,14 +970,14 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   }
 
   if (ov->cmd == BD_OVERLAY_FLUSH)
-    OverlayFlush(ov->pts);
+    OverlayFlush(plane, ov->pts);
 #endif
 }
 
 #ifdef HAVE_LIBBLURAY_BDJ
 void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s * const ov)
 {
-  if(ov == nullptr || ov->cmd == BD_ARGB_OVERLAY_CLOSE)
+  if (ov == nullptr)
   {
     OverlayClose();
     return;
@@ -977,6 +990,13 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
   }
 
   SPlane& plane(m_planes[ov->plane]);
+
+  if (ov->cmd == BD_ARGB_OVERLAY_CLOSE)
+  {
+    plane.o.clear();
+    OverlayFlush(plane, 0);
+    return;
+  }
 
   if (ov->cmd == BD_ARGB_OVERLAY_INIT)
   {
@@ -991,6 +1011,7 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
   if (ov->argb && ov->cmd == BD_ARGB_OVERLAY_DRAW)
   {
     SOverlay overlay = std::make_shared<CDVDOverlayImage>();
+    overlay->SetSource(DVDOverlaySource::MENU);
 
     overlay->palette.clear();
     size_t bytes = static_cast<size_t>(ov->stride * ov->h * 4);
@@ -1008,7 +1029,7 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
   }
 
   if(ov->cmd == BD_ARGB_OVERLAY_FLUSH)
-    OverlayFlush(ov->pts);
+    OverlayFlush(plane, ov->pts);
 }
 #endif
 
@@ -1576,8 +1597,9 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
 
 bool CDVDInputStreamBluray::OpenStream(CFileItem &item)
 {
+  // libbluray requests complete sectors; native CFile::Read joins network fragments.
   m_pstream = std::make_unique<CDVDInputStreamFile>(
-      item, XFILE::READ_TRUNCATED | XFILE::READ_BITRATE | XFILE::READ_NO_CACHE);
+      item, XFILE::READ_BITRATE | XFILE::READ_NO_CACHE);
 
   if (!m_pstream->Open())
   {

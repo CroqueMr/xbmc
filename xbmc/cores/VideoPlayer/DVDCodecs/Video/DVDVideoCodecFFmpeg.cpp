@@ -10,6 +10,7 @@
 #include "cores/VideoSourceSideData.h"
 #ifdef CB1_HAS_HDR10_AI
 #include "HDR10AIBuffers.h"
+#include "HDR10SourceType.h"
 #endif
 
 #include "DVDCodecs/DVDCodecs.h"
@@ -1531,7 +1532,11 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
     if (sd)
     {
       if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_HDR10)
+      {
         pVideoPicture->hdrType = StreamHdrType::HDR_TYPE_HDR10PLUS;
+        // Retain decoded source identity across pool reopen and missing SEI frames.
+        m_hints.hdrType = StreamHdrType::HDR_TYPE_HDR10PLUS;
+      }
       else
         pVideoPicture->hdrTypeAlt = StreamHdrType::HDR_TYPE_HDR10PLUS;
     }
@@ -1824,7 +1829,7 @@ unsigned CDVDVideoCodecFFmpeg::GetConvergeCount()
 #ifdef CB1_HAS_HDR10_AI
 void CDVDVideoCodecFFmpeg::BindHDR10AISource(VideoPicture& picture)
 {
-  if (picture.hdrType == StreamHdrType::HDR_TYPE_HDR10 && !picture.doviSourceInfo.profile &&
+  if (DVBRIDGE::IsHDR10Family(picture.hdrType) && !picture.doviSourceInfo.profile &&
       picture.doviSourcePts != AV_NOPTS_VALUE)
     picture.doviSourceBinding = m_dvSourceOwner.NextPicture();
 }
@@ -1839,10 +1844,12 @@ void CDVDVideoCodecFFmpeg::PrepareHDR10AIReopen()
 
 unsigned CDVDVideoCodecFFmpeg::GetHDR10AIBufferCount() const
 {
-  const bool hdr10 = m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10 &&
+  const auto mode = DVBRIDGE::hdr10PlaybackMode.load();
+  const bool hdr10 = DVBRIDGE::IsHDR10AIInput(
+      m_hints.hdrType, mode == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
       !m_hints.dovi.rpu_present_flag;
   const double fps = m_hints.fpsscale > 0 ? double(m_hints.fpsrate) / m_hints.fpsscale : 0;
-  return DVBRIDGE::HDR10AIBuffers::Count(hdr10,DVBRIDGE::hdr10PlaybackMode.load(),fps,m_interlaced);
+  return DVBRIDGE::HDR10AIBuffers::Count(hdr10,mode,fps,m_interlaced);
 }
 #endif
 

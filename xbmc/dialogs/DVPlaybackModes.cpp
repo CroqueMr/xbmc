@@ -3,6 +3,9 @@
 #ifdef HAVE_DVBRIDGE
 #include "FileItem.h"
 #include "ServiceBroker.h"
+#include "application/ApplicationComponents.h"
+#include "application/ApplicationPlayer.h"
+#include "cores/VideoPlayer/Interface/StreamInfo.h"
 #include "GUIDialogNumeric.h"
 #include "GUIDialogKaiToast.h"
 #include "GUIDialogSelect.h"
@@ -22,6 +25,7 @@
 #include "utils/StringUtils.h"
 #include "utils/JSONVariantParser.h"
 #include "utils/Variant.h"
+#include "utils/DVBridgeDiagnosticLog.h"
 #include "utils/log.h"
 #include "threads/IRunnable.h"
 #include <cstdio>
@@ -36,6 +40,16 @@ CDVPlaybackModes& CDVPlaybackModes::GetInstance()
 bool CDVPlaybackModes::MenuEnabled()
 {
   return DVBRIDGE::PlaybackMenuEnabled();
+}
+
+StreamHdrType CDVPlaybackModes::SourceType()
+{
+  const auto player=CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+  VideoStreamInfo source;
+  if (player->IsPlayingVideo()) player->GetVideoStreamInfo(CURRENT_STREAM,source);
+  if (!source.valid || (!source.stereoMode.empty() && source.stereoMode!="mono"))
+    return StreamHdrType::HDR_TYPE_NONE;
+  return source.hdrType;
 }
 
 bool CDVPlaybackModes::ConfigureProfile()
@@ -90,11 +104,13 @@ bool CDVPlaybackModes::ShowMenu()
   constexpr Choice dvChoices[]={{0,0,40812},{4,0,40913},
       {5,0,40914},
       {2,0,40814},{1,0,40822},{1,1,40823},{1,2,40922}};
+  const auto nativeSource=SourceType();
+  const bool hdr10Source=nativeSource==StreamHdrType::HDR_TYPE_HDR10 ||
+                         nativeSource==StreamHdrType::HDR_TYPE_HDR10PLUS;
+  if (!hdr10Source && nativeSource!=StreamHdrType::HDR_TYPE_DOLBYVISION) return false;
   const auto source=DVBRIDGE::StreamTelemetry::Read().transaction.capabilities;
-  if (source.stereoSource || !source.sourceKnown || (!source.isDV && !source.isHDR10)) return false;
-  const bool hdr10Source=source.isHDR10 && !source.isDV;
 #ifdef CB1_HAS_HDR10_AI
-  constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,40866}};
+  constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,40866},{3,0,40970}};
 #else
   constexpr Choice hdr10Choices[]={{0,0,40866}};
 #endif
@@ -115,14 +131,22 @@ bool CDVPlaybackModes::ShowMenu()
           (choice.output!=1 || preferences.method==choice.method))) current=i;
     }
     CSettingConditions::DVOutputOptions(choiceSetting,options);
+    DVBRIDGE::DiagnosticLog(LOGINFO,
+        "Playback mode menu: native_source={} source_known={} dv={} hdr10={} hdr10plus={} processing_known={} requested={} hdr10source={}",
+        int(nativeSource), source.sourceKnown, source.isDV, source.isHDR10, source.isHDR10Plus, source.processingKnown,
+        int(preferences.output), int(preferences.hdr10Source));
     dialog->Reset();
     dialog->SetHeading(StringUtils::Format(strings.Get(40876), hdr10Source ? "HDR10" : "Dolby Vision"));
     dialog->SetUseDetails(true);
     for(const auto& option : options)
     {
+      DVBRIDGE::DiagnosticLog(LOGINFO, "Playback mode option: value={} label={} reason={}",
+          option.value, option.label, option.label2);
       CFileItem item(option.label);
       item.SetLabel2(option.label2);
       for(const auto& [name,value] : option.properties) item.SetProperty(name,value);
+      item.SetProperty("CB1.TextColor", item.GetProperty("disabled").asBoolean() ?
+                                      "FFA0A0A0" : "FFF0F0F0");
       dialog->Add(item);
     }
     dialog->SetSelected(current);
@@ -133,6 +157,7 @@ bool CDVPlaybackModes::ShowMenu()
     const int selected=dialog->GetSelectedItem();
     if (selected<0 || selected>=count) return true;
     // Admission may change during the dialog's nested event loop.
+    if (SourceType()!=nativeSource) return true;
     CSettingConditions::DVOutputOptions(choiceSetting,options);
     for(const auto& [name,value] : options[selected].properties)
       if (name=="disabled" && value.asBoolean()) return true;

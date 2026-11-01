@@ -28,6 +28,7 @@
 #include "windowing/WinSystem.h"
 #ifdef HAVE_DVBRIDGE
 #include "dialogs/DVPlaybackModes.h"
+#include "cores/VideoPlayer/Interface/StreamInfo.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSelection.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVStreamTelemetry.h"
 #include "resources/LocalizeStrings.h"
@@ -528,26 +529,34 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   const bool menu=setting->GetId()=="dvbridge.playbackchoice";
   const bool hdr10Menu=setting->GetId()=="dvbridge.hdr10playbackchoice";
   const bool hdr10Source=hdr10Menu || setting->GetId()=="dvbridge.hdr10source";
+  const bool nativeHDR10Plus=CDVPlaybackModes::SourceType()==StreamHdrType::HDR_TYPE_HDR10PLUS;
+  // A preference can be deferred while paused; only the renderer admits a frame.
+  const bool pendingHDR10Plus=nativeHDR10Plus && !caps.sourceKnown && !data.transaction.identity.Valid();
   const auto& processing=hdr10Source && !caps.sourceKnown ? caps.hdr10Processing : caps.processing;
   constexpr int menuModes[]{1,5,
       4,0,2,3,6};
 #ifdef CB1_HAS_HDR10_AI
-  constexpr int hdr10MenuModes[]{1,4,0};
+  constexpr int hdr10MenuModes[]{1,4,0,1};
 #else
   constexpr int hdr10MenuModes[]{0};
 #endif
   for(auto& option : list)
   {
     const int mode=hdr10Menu ? (option.value>=0 && option.value<int(std::size(hdr10MenuModes)) ? hdr10MenuModes[option.value] : 0) :
-        hdr10Source ? (option.value==1 ? 1 : option.value==2 ? 4 : 0) :
+        hdr10Source ? (option.value==1 || option.value==3 ? 1 : option.value==2 ? 4 : 0) :
         menu ? (option.value>=0 && option.value<int(std::size(menuModes)) ? menuModes[option.value] : 0) :
         method ? (option.value==0 ? 2 : option.value==1 ? 3 : option.value==2 ? 6 : 0) :
         (option.value==0 ? 1 : option.value==1 ? 2 : option.value==3 || option.value==5 ? 4 : option.value==4 ? 5 : 0);
     auto reason=DVBRIDGE::OutputReason::None;
+    const bool guided = hdr10Source && option.value==3;
     if (mode)
     {
       const bool dv=mode==1 || mode==4 || mode==5;
-      if (!(dv ? caps.nativeDV : caps.hdr10))
+      if (guided && !(pendingHDR10Plus || (caps.sourceKnown && caps.isHDR10Plus)))
+        reason=DVBRIDGE::OutputReason::SourceIneligible;
+      else if (hdr10Source && (nativeHDR10Plus || caps.hdr10PlusSource) && !guided)
+        reason=DVBRIDGE::OutputReason::SourceIneligible;
+      else if (!(dv ? caps.nativeDV : caps.hdr10))
         reason=dv ? DVBRIDGE::OutputReason::NoDVTransport : DVBRIDGE::OutputReason::NoHDR10Transport;
       else if (mode==6 && !caps.hdr10plus) reason=DVBRIDGE::OutputReason::NoHDR10PlusTransport;
       else if (!caps.processingKnown) reason=DVBRIDGE::OutputReason::NoGPUProcessing;
@@ -566,7 +575,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
     if (reasonId && reason!=DVBRIDGE::OutputReason::TVProfileRequired)
       option.label+=" / "+localizer.Get(40851);
     option.label2=reasonId ? localizer.Get(reasonId) :
-        mode==3 ? localizer.Get(40864) : "";
+        guided ? localizer.Get(40971) : mode==3 ? localizer.Get(40864) : "";
     // Settings must allow selection before the required profile controls appear.
     const bool configure=reason==DVBRIDGE::OutputReason::TVProfileRequired && !menu && !hdr10Menu;
     option.properties.emplace_back("disabled",reasonId!=0 && !configure);

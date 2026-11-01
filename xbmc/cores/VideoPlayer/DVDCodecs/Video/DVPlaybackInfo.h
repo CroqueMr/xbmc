@@ -20,6 +20,8 @@ struct OutputCapabilities
   uint64_t generation{};
   std::array<ModeAdmission, 7> processing{};
   bool isHDR10{};
+  bool hdr10PlusSource{}; // Native source classification, independent of metadata admission.
+  bool isHDR10Plus{}; // Selected decoded picture, not receiver HDR10+ transport.
   std::array<ModeAdmission, 7> hdr10Processing{};
   bool hdr10plus{};
 };
@@ -32,6 +34,11 @@ struct CDVPlaybackInfo
   template<class Output> static bool IsHDR10AI(const Output& output)
   {
     if constexpr (requires { output.hdr10AI; }) return output.hdr10AI;
+    return false;
+  }
+  template<class Output> static bool IsHDR10PlusDV(const Output& output)
+  {
+    if constexpr (requires { output.hdr10PlusDV; }) return output.hdr10PlusDV;
     return false;
   }
   enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4, HDR10 = 8, HDR10PLUS = 16 };
@@ -68,6 +75,7 @@ struct CDVPlaybackInfo
 
   template<class Output> static const char* Policy(const Output& output)
   {
+    if (IsHDR10PlusDV(output)) return "HDR10+ to Dolby Vision (metadata-guided)";
     switch (output.effective)
     {
       case 2: return "HDR10 Reference Basic";
@@ -76,17 +84,18 @@ struct CDVPlaybackInfo
       case 5: return "Dolby Vision Master Reference";
       case 6: return "Dolby Vision Adaptive HDR Mapping";
       case 7: return output.flags & HDR10PLUS ? "HDR10+ conversion" : "HDR10 conversion";
-      default: return output.flags & HDR10 ? "HDR10 Reference Basic" : "Dolby Vision Standard";
+      default: return output.flags & HDR10 ? "HDR10 Reference Basic" : "Dolby Vision Reference";
     }
   }
-  static const char* RequestedPolicy(int mode, bool hdr10AI = false)
+  static const char* RequestedPolicy(int mode, bool hdr10AI = false, bool hdr10PlusDV = false)
   {
+    if (hdr10PlusDV && mode == 1) return "HDR10+ to Dolby Vision (metadata-guided)";
     if (hdr10AI && mode == 1) return "Dolby Vision Reference (AI)";
     if (hdr10AI && mode == 4) return "Dolby Vision Adaptive HDR Mapping (AI)";
     switch(mode)
     {
       case 0:return "Dolby Vision Disabled (native Kodi)";
-      case 1:return "Dolby Vision Standard";
+      case 1:return "Dolby Vision Reference";
       case 2:return "HDR10 Reference Basic";
       case 3:return "HDR10 Reference Expert";
       case 4:return "Dolby Vision Adaptive HDR Mapping";
@@ -100,10 +109,11 @@ struct CDVPlaybackInfo
   template<class Output> static std::string Mode(const Output& output)
   {
     if (!output.flags) return "Kodi default";
+    if (IsHDR10PlusDV(output)) return Policy(output);
     std::string mode = output.flags & HDR10 ? Policy(output) :
         output.effective == 6 ? "Dolby Vision Adaptive HDR Mapping" :
         output.effective == 5 ? "Dolby Vision Master Reference" :
-        output.effective == 4 ? "Dolby Vision Adaptive HDR Mapping" : "Dolby Vision Standard";
+        output.effective == 4 ? "Dolby Vision Adaptive HDR Mapping" : "Dolby Vision Reference";
     if (output.fallback)
       mode += " / compatibility fallback";
     return mode;

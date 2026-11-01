@@ -58,7 +58,7 @@ bool CGUIDialogPlayerProcessInfo::OnMessage(CGUIMessage& message)
       const RESOLUTION_INFO resolution(1920, 1080);
       SetCoordsRes(resolution);
       g_fontManager.LoadTTF("CB1.InfoBody", "special://xbmc/media/Fonts/arial.ttf",
-                            0xfff4f6f6, 0, 23, 0, false, 1.0f, 1.0f, &resolution);
+                            0xfff4f6f6, 0, 22, 0, false, 1.0f, 1.0f, &resolution);
       g_fontManager.LoadTTF("CB1.InfoSection", "special://xbmc/media/Fonts/arial.ttf",
                             0xfff4f6f6, 0, 25, 0, false, 1.0f, 1.0f, &resolution);
       g_fontManager.LoadTTF("CB1.InfoTitle", "special://xbmc/media/Fonts/arial.ttf",
@@ -155,10 +155,15 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     if (active && data.output.hdr10AI)
     {
       const auto& localizer=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
-      const int label=data.output.effective==1 ? 40867 : 40868;
+      const int label=data.output.hdr10PlusDV ? 40970 : data.output.effective==1 ? 40867 : 40868;
       SetProperty("DV.Mode", localizer.Get(label));
       SetProperty("DV.ActivePolicy", localizer.Get(label));
       SetProperty("DV.Reconstruction", "AI-estimated L1/L3");
+      if (data.output.hdr10PlusDV)
+        SetProperty("DV.Reconstruction", std::string(data.output.guidedSourceFields & 2u ?
+            "Max: HDR10+; min/avg: AI estimates" : "Min/max/avg: AI estimates") +
+            (data.output.untranslatedCurve ? "; authored curve not translated" : "") +
+            (data.output.untranslatedSaturation ? "; authored saturation not translated" : ""));
       SetProperty("DV.Profile", "");
       SetProperty("DV.Level", "");
       SetProperty("DV.Version", "");

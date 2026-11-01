@@ -721,6 +721,7 @@ JSONRPC_STATUS CPlayerOperations::Zoom(const std::string &method, ITransportLaye
 std::map<std::string, ViewMode> viewModes =
 {
   {"normal", ViewModeNormal},
+  {"auto", ViewModeAuto},
   {"zoom", ViewModeZoom},
   {"stretch4x3", ViewModeStretch4x3},
   {"widezoom", ViewModeWideZoom, },

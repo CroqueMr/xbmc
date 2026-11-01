@@ -40,7 +40,10 @@ CSubtitlesSettings::CSubtitlesSettings(const std::shared_ptr<CSettings>& setting
        CSettings::SETTING_SUBTITLES_LANGUAGES,      CSettings::SETTING_SUBTITLES_STORAGEMODE,
        CSettings::SETTING_SUBTITLES_CUSTOMPATH,     CSettings::SETTING_SUBTITLES_PAUSEONSEARCH,
        CSettings::SETTING_SUBTITLES_DOWNLOADFIRST,  CSettings::SETTING_SUBTITLES_TV,
-       CSettings::SETTING_SUBTITLES_MOVIE,          CSettings::SETTING_SUBTITLES_LINE_SPACING});
+       CSettings::SETTING_SUBTITLES_MOVIE,          CSettings::SETTING_SUBTITLES_LINE_SPACING,
+       "subtitles.bitmapauthoring", "subtitles.bitmapplacement", "subtitles.bitmapoffset",
+       "subtitles.bitmapzoom", "subtitles.bitmapsdrbrightness", "subtitles.bitmapsdrsaturation",
+       "subtitles.bitmaphdrbrightness", "subtitles.bitmaphdrsaturation"});
 }
 
 CSubtitlesSettings::~CSubtitlesSettings()
@@ -65,6 +68,22 @@ void CSubtitlesSettings::OnSettingChanged(const std::shared_ptr<const CSetting>&
 Align CSubtitlesSettings::GetAlignment() const
 {
   return static_cast<Align>(m_settings->GetInt(CSettings::SETTING_SUBTITLES_ALIGN));
+}
+
+BitmapOptions CSubtitlesSettings::GetBitmapOptions() const
+{
+  BitmapOptions options;
+#ifdef HAVE_DVBRIDGE
+  options.authoring = m_settings->GetInt("subtitles.bitmapauthoring");
+  options.placement = m_settings->GetInt("subtitles.bitmapplacement");
+  options.offset = m_settings->GetInt("subtitles.bitmapoffset");
+  options.zoom = m_settings->GetInt("subtitles.bitmapzoom");
+  options.sdrBrightness = m_settings->GetInt("subtitles.bitmapsdrbrightness");
+  options.sdrSaturation = m_settings->GetInt("subtitles.bitmapsdrsaturation");
+  options.hdrBrightness = m_settings->GetInt("subtitles.bitmaphdrbrightness");
+  options.hdrSaturation = m_settings->GetInt("subtitles.bitmaphdrsaturation");
+#endif
+  return options;
 }
 
 void CSubtitlesSettings::SetAlignment(Align align) const

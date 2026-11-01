@@ -12,6 +12,7 @@ void HDR10AISource::ReleaseRetired()
   m_job = m_active = m_fallback = m_resetPending = false;
   m_lease.reset();
   m_prepared.reset();m_committed.reset();
+  m_preparedHDR10Plus.reset();m_committedHDR10Plus.reset();m_metadataOnly=false;
   m_activation.Stop();
 }
 
@@ -41,7 +42,7 @@ cb1_ai_status HDR10AISource::Collect()
 
 cb1_ai_status HDR10AISource::Begin(pl_gpu gpu, const char* bundle,
     const DVBRIDGE::OutputPreferences& preferences, DVBRIDGE::SourceBinding binding,
-    double pts, uint64_t now, bool buffered)
+    double pts, uint64_t now, bool buffered, bool metadataOnly)
 {
   if (!binding.Valid() || !std::isfinite(pts) || !gpu)
     return RecordStatus("analysis-begin",CB1_AI_INVALID);
@@ -57,6 +58,8 @@ cb1_ai_status HDR10AISource::Begin(pl_gpu gpu, const char* bundle,
     m_origin = pts;
     m_revision = DVBRIDGE::NextRevisionAfter(std::max(preferences.revision,binding.revision));
     m_prepared.reset();m_committed.reset();m_preparedBinding = {};
+    m_preparedHDR10Plus.reset();m_committedHDR10Plus.reset();
+    m_metadataOnly=metadataOnly;
     m_fallback = false;
     m_active = preferences.hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
     m_resetPending = true;
@@ -92,6 +95,13 @@ cb1_ai_status HDR10AISource::Begin(pl_gpu gpu, const char* bundle,
     cb1_hdr10_ai_destroy(&m_context);
     m_gpu = nullptr;
     m_activation.Stop();
+    return CB1_AI_READY;
+  }
+  if(m_metadataOnly)
+  {
+    // The context owner retired prior GPU use before selecting this strategy.
+    cb1_hdr10_ai_destroy(&m_context);
+    m_gpu=nullptr;
     return CB1_AI_READY;
   }
   auto status = CB1_AI_READY;
@@ -199,7 +209,44 @@ bool HDR10AISource::Presented(DVBRIDGE::SourceBinding binding, bool success)
     return false;
   }
   m_committed = m_prepared;
+  m_committedHDR10Plus=m_preparedHDR10Plus;
   return true;
+}
+
+HDR10AISource::Decision HDR10AISource::DescribeHDR10Plus(DVBRIDGE::SourceBinding binding,
+    std::shared_ptr<const AVDynamicHDRPlus> source,double pts,uint64_t now,cb1_ai_result* result)
+{
+  if(!result || !Current(binding,m_preferences) || !std::isfinite(pts))return Decision::Ignore;
+  if(m_fallback)return Decision::Native;
+  if(source && m_prepared && (m_prepared->source_flags&CB1_SOURCE_HDR10PLUS) &&
+      binding==m_preparedBinding && m_preparedHDR10Plus==source)
+  { *result=*m_prepared;return m_activation.Observe(CB1_AI_READY,Identity(binding),now); }
+  cb1_ai_result described=m_metadataOnly ? cb1_ai_result{} : *result;
+  if(!m_metadataOnly && !Describes(binding,described))return Decision::Ignore;
+  const bool same=m_committed && source && m_committedHDR10Plus &&
+      cb1_hdr10plus_dovi_same_scene(source.get(),m_committedHDR10Plus.get());
+  const bool reusable=same && (m_committed->source_flags&CB1_SOURCE_STATISTICS);
+  cb1_hdr10plus_dovi_result metadata{};
+  if(!source || (!reusable && cb1_hdr10plus_dovi_describe(&metadata,source.get(),
+      m_metadataOnly ? nullptr : &described.raw)!=CB1_HDR10PLUS_DOVI_OK))
+  {
+    RecordStatus("hdr10plus-description",CB1_AI_INCOMPATIBLE);
+    m_activation.Observe(CB1_AI_INCOMPATIBLE,Identity(binding),now);
+    m_fallback=true;
+    return Decision::Native;
+  }
+  described.id=Identity(binding);described.pts=pts-m_origin;
+  described.raw=reusable ? m_committed->raw : metadata.metadata;
+  described.source_flags=CB1_SOURCE_HDR10PLUS | (same ? 0 : CB1_SOURCE_SCENE_REFRESH) |
+      (reusable ? CB1_SOURCE_STATISTICS :
+       (metadata.source_fields&CB1_HDR10PLUS_DOVI_AVG ? CB1_SOURCE_STATISTICS : 0));
+  const auto decision=m_activation.Observe(CB1_AI_READY,described.id,now);
+  if(decision==Decision::Prepare)
+  {
+    m_prepared=described;m_preparedBinding=binding;m_preparedHDR10Plus=std::move(source);
+    *result=described;
+  }
+  return decision;
 }
 
 void HDR10AISource::DiscardBefore(DVBRIDGE::SourceBinding binding, uint64_t now)

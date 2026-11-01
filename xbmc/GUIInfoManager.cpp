@@ -1233,7 +1233,7 @@ constexpr std::array<InfoMap, 11> player_times = {{
 ///
 /// -----------------------------------------------------------------------------
 // clang-format off
-constexpr std::array<InfoMap, 38> player_process = {{
+constexpr std::array<InfoMap, 51> player_process = {{
     {"videodecoder",        PLAYER_PROCESS_VIDEODECODER},
     {"deintmethod",         PLAYER_PROCESS_DEINTMETHOD},
     {"pixformat",           PLAYER_PROCESS_PIXELFORMAT},
@@ -1271,6 +1271,19 @@ constexpr std::array<InfoMap, 38> player_process = {{
     {"videooutputformat", PLAYER_PROCESS_VIDEOOUTPUTFORMAT},
     {"videooutputbits", PLAYER_PROCESS_VIDEOOUTPUTBITS},
     {"video.sidedata", PLAYER_PROCESS_VIDEOSIDEDATA},
+    {"audiosourcetitle", PLAYER_PROCESS_AUDIOSOURCETITLE},
+    {"audiosourceformat", PLAYER_PROCESS_AUDIOSOURCEFORMAT},
+    {"audiosourcechannels", PLAYER_PROCESS_AUDIOSOURCECHANNELS},
+    {"audiobedobjectslabel", PLAYER_PROCESS_AUDIOBEDOBJECTSLABEL},
+    {"audiobedobjects", PLAYER_PROCESS_AUDIOBEDOBJECTS},
+    {"audiopresentation", PLAYER_PROCESS_AUDIOPRESENTATION},
+    {"audiodialnorm", PLAYER_PROCESS_AUDIODIALNORM},
+    {"audiosourcelanguage", PLAYER_PROCESS_AUDIOSOURCELANGUAGE},
+    {"audiosourcebitrate", PLAYER_PROCESS_AUDIOSOURCEBITRATE},
+    {"audiooutputtransport", PLAYER_PROCESS_AUDIOOUTPUTTRANSPORT},
+    {"audiooutputcodec", PLAYER_PROCESS_AUDIOOUTPUTCODEC},
+    {"audiooutputdata", PLAYER_PROCESS_AUDIOOUTPUTDATA},
+    {"audiooutputchannels", PLAYER_PROCESS_AUDIOOUTPUTCHANNELS},
 }};
 // clang-format on
 

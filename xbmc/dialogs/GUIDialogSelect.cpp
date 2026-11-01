@@ -18,6 +18,8 @@
 #include "resources/ResourcesComponent.h"
 #include "utils/StringUtils.h"
 #ifdef HAVE_DVBRIDGE
+#include "guilib/GUIFontManager.h"
+#include "guilib/GUIIncludes.h"
 #include "windowing/GraphicContext.h"
 #endif
 
@@ -49,6 +51,24 @@ CGUIDialogSelect::CGUIDialogSelect(int windowId)
 }
 
 CGUIDialogSelect::~CGUIDialogSelect(void) = default;
+
+#ifdef HAVE_DVBRIDGE
+std::unique_ptr<TiXmlElement> CGUIDialogSelect::Prepare(
+    const std::unique_ptr<TiXmlElement>& rootElement)
+{
+  if (!GetProperty("CB1.PlaybackModes").asBoolean())
+    return CGUIDialogBoxBase::Prepare(rootElement);
+  if (!rootElement)
+    return nullptr;
+
+  // This closed app include graph has no conditional includes or skin defaults.
+  auto preparedRoot = std::make_unique<TiXmlElement>(*rootElement);
+  CGUIIncludes includes;
+  includes.Load("special://xbmc/media/cb1/IncludesDVProcessInfo.xml");
+  includes.Resolve(preparedRoot.get());
+  return preparedRoot;
+}
+#endif
 
 bool CGUIDialogSelect::OnAction(const CAction& action)
 {
@@ -109,7 +129,15 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
         FreeResources(true);
         SetProperty("xmlfile", file);
       }
-      if (playback) SetCoordsRes(RESOLUTION_INFO(1920, 1080));
+      if (playback)
+      {
+        const RESOLUTION_INFO resolution(1920, 1080);
+        SetCoordsRes(resolution);
+        g_fontManager.LoadTTF("CB1.SwitchBody", "special://xbmc/media/Fonts/arial.ttf",
+                            0xfff0f0f0, 0, 25, 0, false, 1.0f, 1.0f, &resolution);
+        g_fontManager.LoadTTF("CB1.SwitchHelp", "special://xbmc/media/Fonts/arial.ttf",
+                            0xffa0a0a0, 0, 23, 0, false, 1.0f, 1.0f, &resolution);
+      }
 #endif
       m_bButtonPressed = false;
       m_bButton2Pressed = false;

@@ -30,6 +30,7 @@ CDataCacheCore& CDataCacheCore::GetInstance()
 
 void CDataCacheCore::Reset()
 {
+  SetAudioSourceInfo({});
   {
     std::unique_lock lock(m_stateSection);
     m_stateInfo = {};
@@ -77,6 +78,14 @@ uint64_t CDataCacheCore::GetVideoProcessingGeneration()
 {
   std::unique_lock lock(m_videoPlayerSection);
   return m_videoProcessingGeneration;
+}
+
+bool CDataCacheCore::HasVideoHDR10PlusSource()
+{
+  std::unique_lock lock(m_videoPlayerSection);
+  return m_videoSourceSideData &&
+         m_videoSourceSideData->Generation()==m_videoProcessingGeneration &&
+         m_videoSourceSideData->HDR10Plus();
 }
 
 bool CDataCacheCore::SetVideoProcessingInfo(uint64_t generation, const VideoProcessingInfo& info)
@@ -319,6 +328,22 @@ bool CDataCacheCore::IsVideoInterlaced()
 }
 
 // player audio info
+void CDataCacheCore::SetAudioSourceInfo(const AE::AudioSourceInfo& source)
+{
+  std::unique_lock lock(m_audioPlayerSection);
+  if (m_playerAudioInfo.source != source)
+  {
+    m_playerAudioInfo.source = source;
+    m_hasAVInfoChanges = true;
+  }
+}
+
+AE::AudioSourceInfo CDataCacheCore::GetAudioSourceInfo()
+{
+  std::unique_lock lock(m_audioPlayerSection);
+  return m_playerAudioInfo.source;
+}
+
 void CDataCacheCore::SetAudioDecoderName(std::string name)
 {
   std::unique_lock lock(m_audioPlayerSection);

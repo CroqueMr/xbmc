@@ -178,9 +178,11 @@ public:
     ResyncPreroll();
     if (m_base.empty() || m_enhancement.empty())
       return AVERROR(EAGAIN);
-    if (m_resync && m_base.front()->dts != AV_NOPTS_VALUE &&
+    if (m_resync && ((m_base.front()->pts != m_enhancement.front()->pts &&
+                     IsIrap(*m_base.front(), false)) ||
+        (m_base.front()->dts != AV_NOPTS_VALUE &&
         m_enhancement.front()->dts != AV_NOPTS_VALUE &&
-        m_enhancement.front()->dts < m_base.front()->dts)
+        m_enhancement.front()->dts < m_base.front()->dts)))
     {
       // An earlier EL decode prefix is not the layer for the first BL picture.
       // Retire it only at a proven common IRAP; preserve non-IRAP references.
@@ -189,11 +191,11 @@ public:
         return AVERROR(EAGAIN);
       const auto anchor = std::find_if(m_enhancement.begin(), m_enhancement.end(),
           [&first](const Packet& el) {
-            return el->pts == first->pts && el->dts == first->dts && IsIrap(*el, true);
+            return el->pts == first->pts && IsIrap(*el, true);
           });
       if (anchor == m_enhancement.end() ||
-          !std::all_of(m_enhancement.begin(), anchor, [this, &first](const Packet& el) {
-            return el->dts != AV_NOPTS_VALUE && el->dts < first->dts &&
+          !std::all_of(m_enhancement.begin(), anchor, [this, &first, &anchor](const Packet& el) {
+            return el->dts != AV_NOPTS_VALUE && el->dts < (*anchor)->dts &&
                 el->pts < first->pts && std::none_of(m_base.begin(), m_base.end(),
                     [&el](const Packet& bl) { return bl->pts == el->pts; });
           }))
@@ -262,10 +264,12 @@ private:
       // A common decode anchor proves which BL units precede the first EL unit.
       const auto& first = m_enhancement.front();
       const auto anchor = std::find_if(m_base.begin(), m_base.end(), [&first](const Packet& base) {
-        return base->pts == first->pts && base->dts == first->dts;
+        return base->pts == first->pts && (base->dts == first->dts ||
+            (IsIrap(*base, false) && IsIrap(*first, true)));
       });
-      if (anchor == m_base.end() || !std::all_of(m_base.begin(), anchor, [&first](const Packet& base) {
-            return base->dts != AV_NOPTS_VALUE && base->dts < first->dts;
+      if (anchor == m_base.end() || !std::all_of(m_base.begin(), anchor, [&first, &anchor](const Packet& base) {
+            return base->dts != AV_NOPTS_VALUE && base->dts < (*anchor)->dts &&
+                ((*anchor)->dts == first->dts || base->pts < (*anchor)->pts);
           }))
         return;
       const auto count = static_cast<size_t>(std::distance(m_base.begin(), anchor));

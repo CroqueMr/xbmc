@@ -20,6 +20,7 @@
 #include "rendering/GLExtensions.h"
 #include "rendering/MatrixGL.h"
 #include "rendering/gles/RenderSystemGLES.h"
+#include "settings/SettingsComponent.h"
 #include "utils/GLUtils.h"
 #include "utils/MathUtils.h"
 #include "utils/log.h"
@@ -158,6 +159,7 @@ std::shared_ptr<COverlay> COverlay::Create(const CDVDOverlayImage& o, CRect& rSo
 COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSource)
 {
   m_isHDROverlay = o.m_isHDROverlay;
+  m_paletteOutputState = m_isHDROverlay ? BitmapPaletteOutputState() : 0;
 
   glGenTextures(1, &m_texture);
   glBindTexture(GL_TEXTURE_2D, m_texture);
@@ -177,9 +179,18 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
   {
     std::vector<uint32_t> convertedPalette;
     const std::vector<uint32_t>* paletteOverride = nullptr;
-    if (OVERLAY::ShouldConvertPQPaletteToSRGB(o.m_isHDROverlay))
+    const auto options = CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetBitmapOptions();
+    if (o.GetSource() == DVDOverlaySource::SUBTITLE &&
+        (o.m_isHDROverlay ? options.hdrBrightness != 100 || options.hdrSaturation != 100
+                           : options.sdrBrightness != 100 || options.sdrSaturation != 100))
     {
       convertedPalette = o.palette;
+      KODI::SUBTITLES::AdjustBitmapPalette(convertedPalette, o.m_isHDROverlay, options, o.GetSource());
+      paletteOverride = &convertedPalette;
+    }
+    if (m_isHDROverlay && (m_paletteOutputState & 1u))
+    {
+      if (!paletteOverride) convertedPalette = o.palette;
       OVERLAY::ConvertPQPaletteToSRGB(convertedPalette);
       paletteOverride = &convertedPalette;
     }
@@ -193,14 +204,7 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
     //! @todo Move this into the overlay shader once limited-range and
     //! full-range GUI shader variants are kept compiled in parallel and
     //! selectable per draw; then this draw selects the limited variant.
-    bool cb1PQ = false;
-#ifdef HAVE_DVBRIDGE
-    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
-            CServiceBroker::GetWinSystem()))
-      cb1PQ = window->HasDVBridgeScreenshot();
-#endif
-    if (m_isHDROverlay && !cb1PQ && CServiceBroker::GetWinSystem()->IsHdrComposite() &&
-        CServiceBroker::GetWinSystem()->UseLimitedColor())
+    if (m_isHDROverlay && (m_paletteOutputState & 2u))
     {
       for (uint32_t& px : rgba)
       {

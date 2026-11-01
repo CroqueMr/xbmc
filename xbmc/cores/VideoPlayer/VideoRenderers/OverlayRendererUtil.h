@@ -40,6 +40,9 @@ struct SQuads
 //! for the surface it will be drawn into.
 bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay);
 
+//! Texture-upload conversions baked into a PQ bitmap: bit 0 sRGB, bit 1 limited range.
+unsigned BitmapPaletteOutputState();
+
 //! Converts a PGS palette (CDVDOverlayImage::palette - PIXEL_A/R/G/BSHIFT-
 //! packed, see PlatformDefs.h) in place from BT.2020 ST.2084 (PQ) to
 //! BT.709/sRGB, with reference white (203 nits, ITU-R BT.2408) mapped to

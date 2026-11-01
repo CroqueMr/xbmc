@@ -604,11 +604,13 @@ void CSelectionStreams::Update(const std::shared_ptr<CDVDInputStream>& input,
         s.codecDesc = aStream->GetStreamType();
         s.channels = aStream->iChannels;
         s.bitrate = aStream->iBitRate;
+        s.audioSource = CDVDStreamInfo(*aStream).GetAudioSourceInfo();
       }
       else
       {
         s.codecDesc = info.codecDesc;
         s.channels = info.channels;
+        s.audioSource = info.source;
       }
       s.language = info.language;
       s.flags = info.flags;
@@ -704,6 +706,7 @@ void CSelectionStreams::Update(const std::shared_ptr<CDVDInputStream>& input,
         s.codecDesc = static_cast<CDemuxStreamAudio*>(stream)->GetStreamType();
         s.channels = static_cast<CDemuxStreamAudio*>(stream)->iChannels;
         s.bitrate = static_cast<CDemuxStreamAudio*>(stream)->iBitRate;
+        s.audioSource = CDVDStreamInfo(*stream).GetAudioSourceInfo();
       }
       if (stream->type == StreamType::SUBTITLE)
       {
@@ -6409,6 +6412,9 @@ void CVideoPlayer::GetVideoStreamInfo(int streamId, VideoStreamInfo& info) const
   info.stereoMode = s.stereo_mode;
   info.flags = s.flags;
   info.hdrType = s.hdrType;
+  if (streamId==m_content.m_videoIndex && info.hdrType==StreamHdrType::HDR_TYPE_HDR10 &&
+      CServiceBroker::GetDataCacheCore().HasVideoHDR10PlusSource())
+    info.hdrType=StreamHdrType::HDR_TYPE_HDR10PLUS;
   if (info.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
     if (info.hdrDetail.length() == 0)
@@ -6478,6 +6484,16 @@ void CVideoPlayer::GetAudioStreamInfo(int index, AudioStreamInfo& info) const
   info.codecName = s.codec;
   info.codecDesc = s.codecDesc;
   info.flags = s.flags;
+  info.source = s.audioSource;
+  if (index == m_content.m_audioIndex && info.source.valid)
+  {
+    const auto observed = CServiceBroker::GetDataCacheCore().GetAudioSourceInfo();
+    if (observed.valid && observed.uniqueId == info.source.uniqueId &&
+        observed.demuxerId == info.source.demuxerId && observed.codec == info.source.codec)
+      info.source = observed;
+  }
+  info.samplerate = info.source.sampleRate;
+  info.bitspersample = info.source.bitsPerSample;
 }
 
 int CVideoPlayer::GetAudioStreamCount() const

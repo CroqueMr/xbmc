@@ -87,6 +87,8 @@ protected:
 
   // holds stream information for current playing stream
   CDVDStreamInfo m_streaminfo;
+  AE::AudioSourceObserver m_audioSource;
+  bool m_audioSourceLogged{false};
 
   double m_audioClock;
 

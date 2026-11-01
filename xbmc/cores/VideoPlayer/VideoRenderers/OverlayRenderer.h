@@ -92,6 +92,9 @@ namespace OVERLAY {
 
     // pixels are already HDR, matching video's colorimetry
     bool m_isHDROverlay{false};
+    DVDOverlaySource m_source{DVDOverlaySource::SUBTITLE};
+    bool m_isBitmap{false};
+    unsigned m_paletteOutputState{0};
 
   protected:
     /*!
@@ -202,6 +205,8 @@ namespace OVERLAY {
     };
 
     void Render(COverlay* o);
+    SRenderState ComputeBaseState(const COverlay* o) const;
+    void PrepareBitmapBounds(int idx);
 
     /*!
      * \brief The horizontal shift the current eye's subtitles carry, in screen pixels.
@@ -267,5 +272,8 @@ namespace OVERLAY {
     // to detect arrival/disappearance transitions (image/SPU have no
     // per-frame change signal of their own, unlike libass detect_change).
     bool m_prevHadImageSpu{false};
+    KODI::SUBTITLES::BitmapOptions m_bitmapOptions;
+    std::atomic<bool> m_bitmapSettingsChanged{true};
+    CRect m_bitmapBounds;
   };
 }

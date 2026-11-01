@@ -12,6 +12,7 @@ struct VideoProcessingInfoGUI
   static std::string Mode(const VideoProcessingInfo& info)
   {
     if (!info.output.flags) return "";
+    if (CDVPlaybackInfo::IsHDR10PlusDV(info.output)) return CDVPlaybackInfo::Mode(info.output);
     if (info.output.hdr10AI)
       return CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(
           info.output.effective==1 ? 40867 : 40868);

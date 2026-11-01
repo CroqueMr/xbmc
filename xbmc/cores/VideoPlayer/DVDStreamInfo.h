@@ -9,6 +9,7 @@
 #pragma once
 
 #include "DVDDemuxers/DVDDemux.h"
+#include "cores/AudioEngine/Utils/AEAudioSourceInfo.h"
 
 extern "C"
 {
@@ -32,6 +33,7 @@ public:
   ~CDVDStreamInfo();
 
   void Clear(); // clears current information
+  AE::AudioSourceInfo GetAudioSourceInfo() const;
   bool Equal(const CDVDStreamInfo& right, int compare);
   bool Equal(const CDemuxStream &right, bool withextradata);
 

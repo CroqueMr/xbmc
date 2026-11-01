@@ -11,6 +11,7 @@
 #include "utils/DVBridgeDiagnosticLog.h"
 #include "cores/DataCacheCore.h"
 #include "cores/VideoSourceSideData.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/HDR10SourceType.h"
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackNotification.h"
 #endif
@@ -205,6 +206,13 @@ bool CWinSystemGbmGLESContext::InitWindowSystem()
 bool CWinSystemGbmGLESContext::PrepareNvidiaModeRestore(const RESOLUTION_INFO& res)
 {
   if (m_dvState.CapturedBackend() != CDVBridgeState::Backend::NVIDIA) return true;
+  // Retire GPU work before changing timing; Kodi rolls back a refused request.
+  if (!RetireDVContext())
+  {
+    if (!m_dvContext || m_dvContext->Quarantined()) return false;
+    glFinish();
+    if (!RetireDVContext()) return false;
+  }
   const auto previous = m_DRM->GetCurrentMode();
   if (m_DRM->SetMode(res) && m_DRM->SetVideoMode(res,nullptr) && EndDVBridge())
     return true;
@@ -322,13 +330,15 @@ void CWinSystemGbmGLESContext::AnnounceCB1Mode(bool transport)
   if (!m_modeAnnouncement.Before(transport)) return;
   glFinish();
   OnLostDevice();
-  m_dispResetTimer.Set(std::chrono::milliseconds(
-      std::max(0,CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt("videoscreen.delayrefreshchange"))*100));
 }
 
 void CWinSystemGbmGLESContext::CompleteCB1Mode(bool accepted, bool transport)
 {
+  const bool announced = m_modeAnnouncement.Pending() == CHeldModeAnnouncement::Step::TOLD;
   m_modeAnnouncement.After(accepted,transport);
+  if (accepted && announced)
+    m_dispResetTimer.Set(std::chrono::milliseconds(
+        std::max(0,CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt("videoscreen.delayrefreshchange"))*100));
   if (accepted && m_modeHold.Holding() == CModeChangeHold::Kind::START)
     m_modeHold.Configured();
 }
@@ -369,7 +379,12 @@ void CWinSystemGbmGLESContext::PresentRender(bool rendered, bool videoLayer)
     return;
 
   PresentFrame(rendered, videoLayer);
-  if (m_dispReset && m_dispResetTimer.IsTimePast())
+  if (m_dispReset && m_dispResetTimer.IsTimePast()
+#ifdef HAVE_DVBRIDGE
+      && m_modeAnnouncement.Pending() == CHeldModeAnnouncement::Step::NONE
+      && !HasPendingDVOutputSurface()
+#endif
+      )
   {
     CLog::Log(LOGDEBUG, "CWinSystemGbmGLESContext::{} - Sending display reset to all clients",
               __FUNCTION__);
@@ -417,7 +432,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     auto* bo = surface.LockTransactionalBuffer();
     AnnounceCB1Mode(false);
     const bool nvidiaRestore = m_dvState.CapturedBackend() == CDVBridgeState::Backend::NVIDIA;
-    const bool submitted = drm && (nvidiaRestore ? FlipDVBridgePage(m_dvState,true,false,true) :
+    const bool submitted = drm && (nvidiaRestore ? FlipDVBridgePage(m_dvState,true,false,true,bo) :
                                   drm->FlipPageTransactional(bo,true));
     CompleteCB1Mode(submitted,false);
     surface.CompleteTransactionalBuffer(submitted);
@@ -463,7 +478,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         if (drm) drm->StageHDR10Plus(submitted.hdr10plus, submitted.informationGeneration);
         AnnounceCB1Mode(true);
         const bool nvidiaRestore = m_dvState.CapturedBackend() == CDVBridgeState::Backend::NVIDIA;
-        presented = drm && (nvidiaRestore ? (valid && FlipDVBridgePage(m_dvState,true,false,true)) :
+        presented = drm && (nvidiaRestore ? (valid && FlipDVBridgePage(m_dvState,true,false,true,bo)) :
                             drm->FlipPageTransactional(valid ? bo : nullptr, false, asynchronous));
         CompleteCB1Mode(presented,true);
         submitted.hdr10plusAccepted = presented && drm && drm->HDR10PlusActive();
@@ -640,7 +655,9 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         {
           auto info=DVBRIDGE::NativeProcessingInfo(DVBRIDGE::StreamTelemetry::Read());
           info.output={}; info.outputType.reset();
-          if (drm->HDR10PlusActive()) info.outputType=VideoOutputType::HDR10Plus;
+          info.outputType = drm->HDR10PlusActive() ? VideoOutputType::HDR10Plus :
+              GetEotf() == KODI::UTILS::Eotf::PQ ? VideoOutputType::HDR10 :
+              GetEotf() == KODI::UTILS::Eotf::HLG ? VideoOutputType::HLG : VideoOutputType::SDR;
           if (cache.SetVideoProcessingInfo(info.informationGeneration,info))
           {
             previousGeneration=generation;
@@ -701,7 +718,31 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus(bool overlay)
         metadata->params[0].num_bezier_curve_anchors,metadata->params[0].num_distribution_maxrgb_percentiles,
         metadata->params[0].distribution_maxrgb[1].percentile.num,metadata->params[0].distribution_maxrgb[1].percentile.den,
         metadata->params[0].distribution_maxrgb[2].percentile.num,metadata->params[0].distribution_maxrgb[2].percentile.den,generation))
+    {
       m_hdr10plusReason = reason;
+      if (metadata && (m_hdr10plusReason == "invalid-metadata" ||
+                       m_hdr10plusReason == "unrepresentable-metadata"))
+      {
+        const auto& p = metadata->params[0];
+        const auto rational = [](AVRational v) {
+          return std::to_string(v.num) + "/" + std::to_string(v.den);
+        };
+        std::string distribution, anchors;
+        for (size_t i = 0; i < std::min<size_t>(p.num_distribution_maxrgb_percentiles,
+                                               std::size(p.distribution_maxrgb)); ++i)
+          distribution += (i ? "," : "") + std::to_string(p.distribution_maxrgb[i].percentage) +
+              ":" + rational(p.distribution_maxrgb[i].percentile);
+        for (size_t i = 0; i < std::min<size_t>(p.num_bezier_curve_anchors,
+                                               std::size(p.bezier_curve_anchors)); ++i)
+          anchors += (i ? "," : "") + rational(p.bezier_curve_anchors[i]);
+        DVBRIDGE::DiagnosticLog(LOGINFO,
+            "HDR10+ statistics: distribution=[{}] maxscl=[{},{},{}] average={} bright={}",
+            distribution, rational(p.maxscl[0]), rational(p.maxscl[1]), rational(p.maxscl[2]),
+            rational(p.average_maxrgb), rational(p.fraction_bright_pixels));
+        DVBRIDGE::DiagnosticLog(LOGINFO, "HDR10+ curve: knee={},{} anchors=[{}]",
+            rational(p.knee_point_x), rational(p.knee_point_y), anchors);
+      }
+    }
   }
 }
 #endif
@@ -832,9 +873,32 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
 #ifdef HAVE_DVBRIDGE
   if (m_dvState.Captured() || m_hdrConversion)
   {
-    // CB1 can leave the video crop in GL; restore Kodi's GUI clip before clearing.
+    // Restore Kodi's GUI viewport and clip after offscreen video or AI passes.
+    CRect viewport;
+    CRenderSystemGLES::GetViewPort(viewport);
+    GLint before[4]{}, framebuffer{};
+    const auto now = DVBRIDGE::DiagnosticNowMs();
+    const bool report = DVBRIDGE::DiagnosticsEnabled() && m_dvGuiDiagnostic.Due(now);
+    if (report)
+    {
+      // Bound GL queries even when the common diagnostic budget is exhausted.
+      m_dvGuiDiagnostic.Emitted(now);
+      glGetIntegerv(GL_VIEWPORT, before);
+      glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
+    }
+    CRenderSystemGLES::SetViewPort(viewport);
     const auto& context = GetGfxContext();
     CRenderSystemGLES::SetScissors(context.StereoCorrection(context.GetScissors()));
+    if (report)
+    {
+      GLint after[4]{};
+      glGetIntegerv(GL_VIEWPORT, after);
+      DVBRIDGE::DiagnosticLog(LOGINFO,
+          "CB1 GUI viewport: before={},{},{},{} after={},{},{},{} framebuffer={} fbo={}x{} window={}x{} dv={} hdr_conversion={}",
+          before[0], before[1], before[2], before[3], after[0], after[1], after[2], after[3],
+          framebuffer, m_guiFboWidth, m_guiFboHeight, m_nWidth, m_nHeight,
+          m_dvState.Captured(), m_hdrConversion);
+    }
   }
 #endif
 
@@ -1272,7 +1336,11 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
   caps.sourceKnown = true;
   caps.stereoSource = !picture->stereoMode.empty();
   caps.isDV = picture->doviSourceInfo.profile || picture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION;
-  caps.isHDR10 = !caps.isDV && picture->hdrType == StreamHdrType::HDR_TYPE_HDR10;
+  caps.isHDR10 = !caps.isDV && DVBRIDGE::IsHDR10Family(picture->hdrType);
+  caps.hdr10PlusSource = !caps.isDV && picture->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS;
+  caps.isHDR10Plus = caps.hdr10PlusSource && picture->sourceSideData &&
+      picture->sourceSideData->Generation() == picture->doviSourceInfo.informationGeneration &&
+      picture->sourceSideData->Serial() && picture->sourceSideData->HDR10Plus();
   if (caps.stereoSource) return caps;
   if (caps.isHDR10)
   {
@@ -1283,6 +1351,8 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
         m_dvImportGeneration == caps.generation &&
         picture->doviSourcePts != AV_NOPTS_VALUE &&
         !(picture->iFlags & DVP_FLAG_INTERLACED) && picture->stereoMode.empty();
+    caps.isHDR10Plus = caps.isHDR10Plus && valid && DVBRIDGE::HDR10PlusDVWholeSource(
+        m_dvImportGeometry.crop, m_dvImportGeometry.source_width, m_dvImportGeometry.source_height);
     for (auto& mode : caps.processing)
       if (!valid) mode = {false,DVBRIDGE::OutputReason::SourceIneligible};
 #endif
@@ -1390,7 +1460,9 @@ DVBRIDGE::OutputSelection CWinSystemGbmGLESContext::SelectedDVOutput(const Video
     std::lock_guard lock(m_dvCapabilityMutex);
     if (!m_aiReady || m_aiFallback || binding.stream != m_aiActivation.stream ||
         binding.revision != m_aiActivation.revision || preferences.revision != m_aiPolicy)
-      result = {};
+      result = {DVBRIDGE::OutputRoute::Vanilla, {},
+          preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV ?
+              result.reason : DVBRIDGE::OutputReason::None};
   }
 #endif
   if (reason != DVBRIDGE::OutputReason::None) result.reason = reason;
@@ -1413,24 +1485,39 @@ bool CWinSystemGbmGLESContext::PrepareHDR10AIQueue(const VideoPicture& picture,
 {
   const auto preferences = DVBRIDGE::FrameOutputSettings();
   const auto caps = GetDVOutputCapabilities(&picture, preferences);
+  const auto binding = picture.doviSourceBinding;
   if (!caps.isHDR10 ||
       DVBRIDGE::SelectOutput(preferences, caps).route == DVBRIDGE::OutputRoute::Vanilla)
   {
+    bool latched = false;
     {
       std::lock_guard lock(m_dvCapabilityMutex);
+      latched = caps.isHDR10 &&
+          preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV &&
+          binding.stream == m_aiActivation.stream && binding.revision == m_aiActivation.revision &&
+          preferences.revision == m_aiPolicy && (m_aiActive || m_aiReady || m_aiFallback);
       m_aiActive=false;
+      m_aiReady=false;
+      m_aiFallback=latched;
+      if (!latched)
+      {
+        m_aiActivation={};
+        m_aiPolicy=0;
+      }
     }
     const bool ready = !m_dvContext || m_dvContext->StopHDR10AI();
     if (ready)
     {
       std::lock_guard lock(m_dvCapabilityMutex);
-      m_aiSelectionPolicy=preferences.revision;
+      // Retry before activation; an active source keeps its latched native fallback.
+      m_aiSelectionPolicy=!latched && caps.hdr10PlusSource && caps.nativeDV &&
+          preferences.hdr10Source==DVBRIDGE::HDR10SourceMode::HDR10PlusDV ?
+          0 : preferences.revision;
     }
     return ready;
   }
   // The ordinary commit retires the prior renderer before AI can prime it again.
   if (m_dvOrdinaryFrame || m_dvEndPending || m_dvStopPending) return false;
-  const auto binding = picture.doviSourceBinding;
   if (queue.empty() || !(queue.front().binding == binding)) return false;
   {
     std::lock_guard lock(m_dvCapabilityMutex);
@@ -1652,7 +1739,8 @@ bool CWinSystemGbmGLESContext::ConfigureHDR10Conversion(const VideoPicture& pict
       DVBRIDGE::DiagnosticLog(LOGINFO, "CB1 HDR10+ configured: pixel_mapping=none dynamic=pending-analysis framebuffer_bits={} range={}",
           GetOutputBitDepth(), UseLimitedColor() ? "limited" : "full");
     else
-      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge HDR10 configured: policy=Basic target={} nits origin={} curve=libplacebo-spline dynamic=L1-or-static inverse=false creative_trims=not-applied maxcll=unknown maxfall=unknown framebuffer_bits={} range={}",
+      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge HDR10 configured: policy={} signal_target={} nits origin={} framebuffer_bits={} range={}",
+          m_dvSelection.policy.mode == DVBRIDGE_MODE_HDR10_EXPERT ? "Expert" : "Basic",
         session.target.hdr.max_luma, session.output.level6 ? "RPU-L6" : "RPU-source-PQ",
         GetOutputBitDepth(), UseLimitedColor() ? "limited" : "full");
     if (m_hdrDeepColorPrevious)
@@ -1829,6 +1917,11 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
     if (!m_dvContext) m_dvContext = std::make_shared<CDVBridgeGLES::Context>();
     if (!m_dvContext->Initialize(false)) return false;
     m_dvOutputRetiring = false;
+    const bool linkChange =
+        (m_dvSelection.route == DVBRIDGE::OutputRoute::NativeDV) != m_dvState.Captured() ||
+        (m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10) != m_hdrConversion;
+    if (linkChange && m_modeAnnouncement.Pending() == CHeldModeAnnouncement::Step::NONE)
+      m_modeAnnouncement.Held();
     m_GBM->GetDevice().UseDVOutputLifetime();
     UseDVOutputSurfaceTransaction(true);
     const bool staged = CWinSystemGbmEGLContext::SetVideoOutput(picture);
@@ -2178,7 +2271,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
     if(switched)
     {
       CLog::Log(LOGWARNING,
-          "CB1 Master safety: sustained headroom below 2.5ms; next accepted mode is Standard");
+          "CB1 Master safety: sustained headroom below 2.5ms; next accepted mode is Reference");
       DVBRIDGE::PlaybackNotification::ArmMasterRecovery();
     }
     drm->SetCB1TimingPeriod(m_masterFramePeriodNs);
