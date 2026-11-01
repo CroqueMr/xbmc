@@ -74,14 +74,18 @@ BitmapOptions CSubtitlesSettings::GetBitmapOptions() const
 {
   BitmapOptions options;
 #ifdef HAVE_DVBRIDGE
-  options.authoring = m_settings->GetInt("subtitles.bitmapauthoring");
-  options.placement = m_settings->GetInt("subtitles.bitmapplacement");
-  options.offset = m_settings->GetInt("subtitles.bitmapoffset");
-  options.zoom = m_settings->GetInt("subtitles.bitmapzoom");
-  options.sdrBrightness = m_settings->GetInt("subtitles.bitmapsdrbrightness");
-  options.sdrSaturation = m_settings->GetInt("subtitles.bitmapsdrsaturation");
-  options.hdrBrightness = m_settings->GetInt("subtitles.bitmaphdrbrightness");
-  options.hdrSaturation = m_settings->GetInt("subtitles.bitmaphdrsaturation");
+  const auto read = [this](const char* id, int fallback)
+  {
+    return m_settings->GetSetting(id) ? m_settings->GetInt(id) : fallback;
+  };
+  options.authoring = read("subtitles.bitmapauthoring", options.authoring);
+  options.placement = read("subtitles.bitmapplacement", options.placement);
+  options.offset = read("subtitles.bitmapoffset", options.offset);
+  options.zoom = read("subtitles.bitmapzoom", options.zoom);
+  options.sdrBrightness = read("subtitles.bitmapsdrbrightness", options.sdrBrightness);
+  options.sdrSaturation = read("subtitles.bitmapsdrsaturation", options.sdrSaturation);
+  options.hdrBrightness = read("subtitles.bitmaphdrbrightness", options.hdrBrightness);
+  options.hdrSaturation = read("subtitles.bitmaphdrsaturation", options.hdrSaturation);
 #endif
   return options;
 }
