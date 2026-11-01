@@ -10,6 +10,7 @@
 
 #include "EdlEdit.h"
 #include "VideoProcessingInfo.h"
+#include "cores/AudioEngine/Utils/AEAudioSourceInfo.h"
 #include "threads/CriticalSection.h"
 
 #include <atomic>
@@ -38,6 +39,7 @@ public:
   VideoProcessingInfo GetVideoProcessingInfo();
   bool SetVideoSourceSideData(uint64_t generation, std::shared_ptr<const VideoSourceSideData> source);
   std::string GetVideoSourceSideData();
+  bool HasVideoHDR10PlusSource();
 
   // player video info
   void SetVideoDecoderName(std::string name, bool isHw);
@@ -76,6 +78,8 @@ public:
   bool IsVideoInterlaced();
 
   // player audio info
+  void SetAudioSourceInfo(const AE::AudioSourceInfo& source);
+  AE::AudioSourceInfo GetAudioSourceInfo();
   void SetAudioDecoderName(std::string name);
   std::string GetAudioDecoderName();
   void SetAudioChannels(std::string channels);
@@ -261,6 +265,7 @@ protected:
   CCriticalSection m_audioPlayerSection;
   struct SPlayerAudioInfo
   {
+    AE::AudioSourceInfo source;
     std::string decoderName;
     std::string channels;
     int sampleRate;

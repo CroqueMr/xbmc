@@ -29,6 +29,11 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   accepted.felUpscaling=output.felUpscaling;
 #ifdef CB1_HAS_HDR10_AI
   accepted.hdr10AI=output.hdr10AI; accepted.aiL1L3=output.aiL1L3;
+  accepted.hdr10PlusDV=output.hdr10PlusDV;
+  accepted.guidedSourceFields=output.guidedSourceFields;
+  accepted.guidedEstimatedFields=output.guidedEstimatedFields;
+  accepted.untranslatedCurve=output.untranslatedCurve;
+  accepted.untranslatedSaturation=output.untranslatedSaturation;
   accepted.emittedL1Known=output.emittedL1Known; accepted.emittedL1=output.emittedL1;
   if (output.flags) { accepted.engine=cb1_engine_version(); accepted.circuit=output.Circuit(); }
 #endif

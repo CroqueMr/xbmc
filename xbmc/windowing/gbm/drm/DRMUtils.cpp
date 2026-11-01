@@ -1017,7 +1017,10 @@ RESOLUTION_INFO CDRMUtils::GetCurrentMode()
 
 const drmModeModeInfo* CDRMUtils::GetDVTransportMode() const
 {
-  if (!m_mode || !m_connector || m_connector->GetType() != "HDMI-A" || IsCTATiming(*m_mode))
+  if (!m_mode || !m_connector || IsCTATiming(*m_mode) ||
+      (m_connector->GetType() != "HDMI-A" &&
+       (m_connector->GetType() != "DP" || !m_connector->SupportsProperty("CB1_NATIVE_TMDS") ||
+        m_connector->ReadPropertyValue("CB1_NATIVE_TMDS") != 1)))
     return m_mode;
   // Only the DV transaction needs a CTA AVI VIC; native selection is untouched.
   for (int i = 0; i < m_connector->GetModesCount(); ++i)

@@ -372,14 +372,14 @@ bool CWinSystemGbm::CompleteDVBridgePage(int timeoutMs)
 }
 
 bool CWinSystemGbm::FlipDVBridgePage(CDVBridgeState& state, bool restore, bool async,
-                                    bool retainSignal)
+                                    bool retainSignal, struct gbm_bo* bo)
 {
   if (!CompleteDVBridgePage()) return false;
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   if (!drm || !m_GBM || !state.Captured())
     return false;
   auto& surface = m_GBM->GetDevice().GetSurface();
-  auto* bo = surface.LockTransactionalBuffer();
+  if (!bo) bo = surface.LockTransactionalBuffer();
   bool valid = bo != nullptr;
   if (valid && !restore)
   {

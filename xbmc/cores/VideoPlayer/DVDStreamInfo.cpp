@@ -13,6 +13,21 @@
 
 #include <cstring>
 
+AE::AudioSourceInfo CDVDStreamInfo::GetAudioSourceInfo() const
+{
+  AE::AudioSourceInfo source;
+  source.valid = type == StreamType::AUDIO && codec != AV_CODEC_ID_NONE;
+  source.uniqueId = uniqueId;
+  source.demuxerId = demuxerId;
+  source.codec = codec;
+  source.profile = profile;
+  source.channels = channels;
+  source.sampleRate = samplerate;
+  source.bitsPerSample = bitspersample;
+  source.channelMask = channellayout;
+  return source;
+}
+
 CDVDStreamInfo::CDVDStreamInfo() : extradata{}
 {
   Clear();

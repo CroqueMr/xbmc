@@ -28,6 +28,7 @@
 #include <optional>
 #ifdef HAVE_DVBRIDGE
 #include "DVDVideoCodecFFmpeg.h"
+#include "utils/DVBridgeDiagnosticLog.h"
 #endif
 #ifdef CB1_HAS_HDR10_AI
 #include "HDR10AIBuffers.h"
@@ -1064,6 +1065,23 @@ CDVDVideoCodec::VCReturn CDecoder::Decode(AVCodecContext* avctx, AVFrame* pFrame
             "VAAPI::{} - timed out waiting for output message - decoded: {}, proc: {}, has free "
             "surface: {}",
             __FUNCTION__, decoded, processed, m_videoSurfaces.HasFree() ? "yes" : "no");
+#ifdef HAVE_DVBRIDGE
+  if (DVBRIDGE::DiagnosticsEnabled())
+  {
+    uint16_t stalledDecoded{}, stalledProcessed{}, stalledRender{};
+    bool stalledVpp{};
+    m_bufferStats.Get(stalledDecoded, stalledProcessed, stalledRender, stalledVpp);
+    unsigned aiBuffers{};
+#ifdef CB1_HAS_HDR10_AI
+    aiBuffers = m_hdr10AIBuffers;
+#endif
+    DVBRIDGE::DiagnosticFailureLog("vaapi-output-timeout", true, LOGERROR,
+        "CB1 VAAPI output timeout: decoded={} processed={} render={} decode_free={} vpp={} decode_limit={} render_limit={} ai_buffers={} present={} drain={} control={}",
+        stalledDecoded, stalledProcessed, stalledRender, m_videoSurfaces.HasFree(), stalledVpp,
+        m_vaapiConfig.maxReferences, m_vaapiConfig.renderPictures, aiBuffers,
+        m_presentPicture != nullptr, drain, m_codecControl);
+  }
+#endif
   m_DisplayState = VAAPI_ERROR;
 
   return CDVDVideoCodec::VC_ERROR;
@@ -2068,6 +2086,14 @@ bool COutput::Init()
 
 bool COutput::Uninit()
 {
+#ifdef HAVE_DVBRIDGE
+  if (DVBRIDGE::DiagnosticsEnabled() && m_bufferPool)
+    DVBRIDGE::DiagnosticLog(LOGINFO,
+        "CB1 VAAPI output teardown: decoded={} processed={} held={} render_free={} postproc={} discarded={}",
+        m_bufferPool->decodedPics.size(), m_bufferPool->processedPics.size(),
+        m_bufferPool->processedPicsAway.size(), m_bufferPool->HasFree(),
+        m_pp != nullptr, m_discardedPostprocs.size());
+#endif
   ProcessSyncPicture();
   ReleaseBufferPool();
   if (m_pp)

@@ -698,7 +698,44 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
 
     CLog::Log(LOGDEBUG, "[WHITELIST] No match for a resolution with a 3:2 pulldown refresh rate");
   }
+  // Fit cropped/arbitrary-sized 2D sources before falling back to the desktop.
+  if (!is3D && width > 0 && height > 0)
+  {
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    for (float multiplier : {1.0f, 2.0f, 2.5f})
+    {
+      if (!noWhiteList &&
+          ((multiplier == 2.0f &&
+            !settings->GetBool(SETTING_VIDEOSCREEN_WHITELIST_DOUBLEREFRESHRATE)) ||
+           (multiplier == 2.5f && !settings->GetBool(SETTING_VIDEOSCREEN_WHITELIST_PULLDOWN))))
+        continue;
 
+      penalty = std::numeric_limits<unsigned int>::max();
+      for (const auto& mode : indexList)
+      {
+        const auto i = CDisplaySettings::GetInstance().GetResFromString(mode.asString());
+        const RESOLUTION_INFO info = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo(i);
+        if (info.iScreenWidth >= width && info.iScreenHeight >= height &&
+            (info.dwFlags & modeMask) == (curr.dwFlags & modeMask) &&
+            MathUtils::FloatEquals(info.fRefreshRate, fps * multiplier, 0.01f))
+        {
+          const unsigned int pen = (info.iScreenWidth - width) + (info.iScreenHeight - height);
+          if (pen < penalty)
+          {
+            resolution = i;
+            found = true;
+            penalty = pen;
+          }
+        }
+      }
+      if (found)
+      {
+        CLog::Log(LOGDEBUG, "[WHITELIST] Matched a containing resolution {} at refresh multiplier {}",
+                  resolution, multiplier);
+        return;
+      }
+    }
+  }
 
   CLog::Log(LOGDEBUG, "[WHITELIST] Searching for a desktop resolution with an exact refresh rate");
 

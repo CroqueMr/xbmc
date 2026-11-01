@@ -208,6 +208,7 @@ struct SelectionStream
   std::string codec;
   std::string codecDesc;
   AVCodecID codecId = AV_CODEC_ID_NONE;
+  AE::AudioSourceInfo audioSource;
   int profile = AV_PROFILE_UNKNOWN;
   int channels = 0;
   int bitrate = 0;

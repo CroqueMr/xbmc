@@ -9,6 +9,7 @@
 #pragma once
 
 #include "utils/Geometry.h"
+#include "cores/AudioEngine/Utils/AEAudioSourceInfo.h"
 #include "utils/LanguageTag.h"
 
 #include <cstdint>
@@ -62,6 +63,7 @@ protected:
 
 struct AudioStreamInfo : StreamInfo
 {
+  AE::AudioSourceInfo source;
   int channels = 0;
   int samplerate = 0;
   int bitspersample = 0;

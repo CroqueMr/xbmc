@@ -78,6 +78,25 @@ bool DiagnosticLog(int level, fmt::format_string<Args...> format, Args&&... args
   catch (...) { return false; } // Diagnostics cannot escape into a C callback or playback.
 }
 
+inline void DiagnosticReserveProgress() noexcept
+{
+  if (!DiagnosticsEnabled()) return;
+  try { std::lock_guard lock(diagnosticMutex); diagnosticSession.ReserveProgress(); }
+  catch (...) {}
+}
+
+template<class... Args>
+bool DiagnosticProgressLog(int level, fmt::format_string<Args...> format, Args&&... args) noexcept
+{
+  if (!DiagnosticsEnabled()) return false;
+  try
+  {
+    std::lock_guard lock(diagnosticMutex);
+    return WriteDiagnosticLocked(DiagnosticEvent::Progress, level, format, std::forward<Args>(args)...);
+  }
+  catch (...) { return false; }
+}
+
 template<class... Args>
 void DiagnosticFailureLog(const char* stage, bool changed, int level,
                           fmt::format_string<Args...> format, Args&&... args) noexcept

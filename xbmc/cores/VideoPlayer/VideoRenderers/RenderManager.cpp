@@ -1563,7 +1563,8 @@ void CRenderManager::PrepareNextRender()
 #ifdef CB1_HAS_HDR10_AI
   if (physicalPhase && completionAge && m_fps > 0 &&
       frametime * m_fps < DVD_TIME_BASE * 0.75 && m_pRenderer->HDR10AILookahead() &&
-      DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::ReferenceDV)
+      (DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::ReferenceDV ||
+       DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV))
   {
     // Select on the physical refresh phase, not an interpolated mid-refresh clock.
     renderPts -= std::fmod(std::max(0.0, *completionAge), frametime);

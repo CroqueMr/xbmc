@@ -17,6 +17,9 @@
 #include "utils/DisplayInfo.h"
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
+#ifdef HAVE_DVBRIDGE
+#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -292,6 +295,19 @@ bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay)
   const bool destinationIsPQ =
       winSystem->IsHdrComposite() || winSystem->GetEotf() != KODI::UTILS::Eotf::TRADITIONAL_SDR;
   return !destinationIsPQ;
+}
+
+unsigned BitmapPaletteOutputState()
+{
+  bool cb1PQ = false;
+#ifdef HAVE_DVBRIDGE
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+          CServiceBroker::GetWinSystem()))
+    cb1PQ = window->HasDVBridgeScreenshot();
+#endif
+  auto* window = CServiceBroker::GetWinSystem();
+  return (ShouldConvertPQPaletteToSRGB(true) ? 1u : 0u) |
+         (window->IsHdrComposite() && window->UseLimitedColor() && !cb1PQ ? 2u : 0u);
 }
 
 namespace

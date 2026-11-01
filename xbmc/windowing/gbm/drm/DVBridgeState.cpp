@@ -10,7 +10,10 @@ CDVBridgeState::Backend CDVBridgeState::GetBackend(CDRMConnector& connector)
 {
   if (connector.SupportsProperty("DVBRIDGE_DV_STANDARD_LAB"))
     return Backend::KERNEL;
-  const bool vendor = connector.GetType() == "HDMI-A" &&
+  const bool hdmi = connector.GetType() == "HDMI-A" ||
+    (connector.GetType() == "DP" && connector.SupportsProperty("CB1_NATIVE_TMDS") &&
+     connector.ReadPropertyValue("CB1_NATIVE_TMDS") == 1);
+  const bool vendor = hdmi &&
     connector.SupportsProperty("NV_HDMI_VSIF_METADATA") &&
     connector.SupportsProperty("max bpc") && connector.SupportsProperty("dithering mode");
   return vendor ? Backend::NVIDIA : Backend::NONE;

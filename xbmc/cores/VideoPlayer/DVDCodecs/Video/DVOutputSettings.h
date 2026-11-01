@@ -12,12 +12,13 @@
 #include <mutex>
 #ifdef HAVE_DVBRIDGE
 #include "dvbridge_policy.h"
+#include "cb1_cmv40.h"
 #endif
 
 namespace DVBRIDGE
 {
 enum class OutputMode : int { Standard = 0, HDR10 = 1, Disabled = 2, EnhancedDV = 3, MasterReference = 4, AdaptiveB = 5 };
-enum class HDR10SourceMode : int { Native = 0, ReferenceDV = 1, EnhancedDV = 2 };
+enum class HDR10SourceMode : int { Native = 0, ReferenceDV = 1, EnhancedDV = 2, HDR10PlusDV = 3 };
 
 // Decoder ingress sees the last complete frame-boundary preference snapshot.
 inline std::atomic<OutputMode> playbackMode{OutputMode::Standard};
@@ -40,6 +41,7 @@ struct OutputPreferences
   bool optimizedDV{true};
   bool masterIPT{false}, allowMasterFallback{false};
   bool disableL2Trims{false};
+  int cmv40Mode{}, cmv40Trigger{}, cmv40Headroom{20};
   int felUpscaling{0};
   bool processingOptimizations{false};
   uint64_t revision{1};
@@ -56,6 +58,8 @@ struct OutputPreferences
         panel == other.panel && gamut == other.gamut && optimizedDV == other.optimizedDV &&
         masterIPT == other.masterIPT && allowMasterFallback == other.allowMasterFallback &&
         disableL2Trims == other.disableL2Trims &&
+        cmv40Mode == other.cmv40Mode && cmv40Trigger == other.cmv40Trigger &&
+        cmv40Headroom == other.cmv40Headroom &&
         felUpscaling == other.felUpscaling &&
         processingOptimizations == other.processingOptimizations &&
         std::bit_cast<uint64_t>(peak) == std::bit_cast<uint64_t>(other.peak);
@@ -66,6 +70,12 @@ struct OutputPreferences
   {
     return disableL2Trims && !hdr10AI &&
         (mode == DVBRIDGE_MODE_STANDARD || mode == DVBRIDGE_MODE_MASTER_REFERENCE);
+  }
+  cb1_cmv40_options CMv40Options(dvbridge_mode mode, bool hdr10AI = false) const
+  {
+    if (hdr10AI || (mode != DVBRIDGE_MODE_STANDARD && mode != DVBRIDGE_MODE_MASTER_REFERENCE)) return {};
+    return {static_cast<cb1_cmv40_mode>(cmv40Mode), static_cast<unsigned>(cmv40Trigger),
+        static_cast<unsigned>(cmv40Headroom), peak};
   }
   dvbridge_policy Policy() const
   {
@@ -99,7 +109,8 @@ struct OutputPreferences
     auto result = Policy();
     result.adaptive=DVBRIDGE_ADAPTIVE_A;
     result.master_ipt=false;
-    result.mode = hdr10Source == HDR10SourceMode::ReferenceDV ? DVBRIDGE_MODE_STANDARD :
+    result.mode = hdr10Source == HDR10SourceMode::ReferenceDV ||
+        hdr10Source == HDR10SourceMode::HDR10PlusDV ? DVBRIDGE_MODE_STANDARD :
         hdr10Source == HDR10SourceMode::EnhancedDV ? DVBRIDGE_MODE_ENHANCED_DV : DVBRIDGE_MODE_DISABLED;
     result.tv = result.mode == DVBRIDGE_MODE_ENHANCED_DV ?
         dvbridge_tv_profile{peak,static_cast<dvbridge_panel>(panel),static_cast<dvbridge_gamut>(gamut)} : dvbridge_tv_profile{};
@@ -135,7 +146,7 @@ inline OutputPreferences FrameOutputSettings()
   if (settings)
   {
     const int hdr10 = settings->GetInt("dvbridge.hdr10source");
-    next.hdr10Source = hdr10 >= 0 && hdr10 <= 2 ?
+    next.hdr10Source = hdr10 >= 0 && hdr10 <= 3 ?
         static_cast<HDR10SourceMode>(hdr10) : HDR10SourceMode::Native;
     next.method = settings->GetInt("dvbridge.hdr10method");
     next.peak = settings->GetNumber("dvbridge.tvpeak");
@@ -145,7 +156,14 @@ inline OutputPreferences FrameOutputSettings()
     next.masterIPT = settings->GetInt("dvbridge.masteroutput")==1;
     next.allowMasterFallback = settings->GetBool("dvbridge.masterfallback");
     next.disableL2Trims = settings->GetBool("dvbridge.disablel2");
+    next.cmv40Mode = settings->GetInt("dvbridge.cmv40");
+    next.cmv40Trigger = settings->GetInt("dvbridge.cmv40trigger");
+    next.cmv40Headroom = settings->GetInt("dvbridge.cmv40headroom");
   }
+  if (next.cmv40Mode < 0 || next.cmv40Mode > 4) next.cmv40Mode = 0;
+  if (next.cmv40Trigger != 1000 && next.cmv40Trigger != 2000 &&
+      next.cmv40Trigger != 4000 && next.cmv40Trigger != 10000) next.cmv40Trigger = 0;
+  if (next.cmv40Headroom < 0 || next.cmv40Headroom > 50) next.cmv40Headroom = 20;
   if (next.method < 0 || next.method > 2) next.method = 0;
   if (next.felUpscaling < 0 || next.felUpscaling > 1) next.felUpscaling = 0;
   next.revision = previous.revision;

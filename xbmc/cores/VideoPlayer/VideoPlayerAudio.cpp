@@ -116,6 +116,14 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
 
   /* store our stream hints */
   m_streaminfo = hints;
+  m_audioStats = BitstreamStats{};
+  m_audioStats.Start();
+  m_audioSource.Reset(hints.GetAudioSourceInfo());
+  m_audioSourceLogged = false;
+  m_processInfo.SetAudioSourceInfo(m_audioSource.Get());
+  CLog::Log(LOGINFO, "Audio source: codec={} profile={} rate={} bits={} channels={} layout={:#x}",
+            hints.codec, hints.profile, hints.samplerate, hints.bitspersample,
+            hints.channels, hints.channellayout);
 
   /* update codec information from what codec gave out, if any */
   int channelsFromCodec   = m_pAudioCodec->GetFormat().m_channelLayout.Count();
@@ -167,6 +175,8 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
 
   // shut down the adio_decode thread and wait for it
   StopThread(); // will set this->m_bStop to true
+  m_audioSource.Reset({});
+  m_processInfo.SetAudioSourceInfo({});
 
   // destroy audio device
   CLog::Log(LOGINFO, "Closing audio device");
@@ -236,7 +246,6 @@ void CVideoPlayerAudio::Process()
   DVDAudioFrame audioframe;
   audioframe.nb_frames = 0;
   audioframe.framesOut = 0;
-  m_audioStats.Start();
   m_disconAdjustCounter = 0;
 
   bool onlyPrioMsgs = false;
@@ -438,6 +447,23 @@ void CVideoPlayerAudio::Process()
       }
 
       m_audioStats.AddSampleBytes(pPacket->iSize);
+      bool sourceChanged = false;
+      if (pPacket->pData && pPacket->iSize > 0)
+        sourceChanged = m_audioSource.Observe({pPacket->pData, size_t(pPacket->iSize)});
+      if (!m_pAudioCodec->NeedPassthrough())
+        sourceChanged = m_audioSource.UpdateProfile(m_pAudioCodec->GetProfile()) || sourceChanged;
+      if (sourceChanged)
+      {
+        const auto& source = m_audioSource.Get();
+        m_processInfo.SetAudioSourceInfo(source);
+        if (!m_audioSourceLogged && (source.presentation > 0 || source.dialnorm))
+        {
+          CLog::Log(LOGINFO, "Audio metadata: source={} presentation={} bed={} objects={} dialnorm={}",
+                    AE::SourceTitle(source), source.presentation, source.bedChannels, source.objects,
+                    AE::Dialnorm(source));
+          m_audioSourceLogged = true;
+        }
+      }
       UpdatePlayerInfo();
 
       if (ProcessDecoderOutput(audioframe))

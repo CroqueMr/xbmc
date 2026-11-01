@@ -11,7 +11,7 @@ struct HDR10AIBuffers
   static unsigned Count(bool hdr10, HDR10SourceMode mode, double fps, bool interlaced)
   {
     if (!hdr10 || mode < HDR10SourceMode::ReferenceDV ||
-        mode > HDR10SourceMode::EnhancedDV || interlaced) return Native;
+        mode > HDR10SourceMode::HDR10PlusDV || interlaced) return Native;
     const auto count = HDR10AIActivation::BufferCount(fps);
     return count ? count : Native;
   }

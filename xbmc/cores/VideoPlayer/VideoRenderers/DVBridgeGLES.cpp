@@ -19,6 +19,7 @@ extern "C"
 #include <libavutil/hwcontext.h>
 #include "dvbridge_placebo.h"
 #include "dvbridge_cache.h"
+#include "cb1_hdr10plus_dovi.h"
 }
 
 #include <EGL/egl.h>
@@ -660,16 +661,28 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
   const auto started = std::chrono::steady_clock::now();
   const auto& head = queue.front();
   const bool buffered = end || queue.back().pts >= head.pts + 1.0 - 1e-9;
-  auto& source = HDR10AI();
-  source.SetPaused(paused,now);
-  if (!source.Current(head.binding,preferences) || source.ResetPending())
+  const bool guided=preferences.hdr10Source==DVBRIDGE::HDR10SourceMode::HDR10PlusDV;
+  const bool snapshot=guided && DVBRIDGE::HDR10PlusDVSnapshotMatches(head.sourceSideData,
+      head.binding,head.binding,head.sourceInfo.informationGeneration,head.sourceSerial,true);
+  const std::shared_ptr<const AVDynamicHDRPlus> metadata=snapshot ?
+      std::shared_ptr<const AVDynamicHDRPlus>(head.sourceSideData,head.sourceSideData->HDR10Plus()) : nullptr;
+  HDR10AI().SetPaused(paused,now);
+  if (!HDR10AI().Current(head.binding,preferences) || HDR10AI().ResetPending())
   {
-    // Analyse available pictures while the decoder fills the existing queue.
-    const auto status = BeginHDR10AI(bundle,preferences,head.binding,head.pts,now,buffered);
+    cb1_hdr10plus_dovi_result description{};
+    const bool direct=metadata && cb1_hdr10plus_dovi_describe(&description,metadata.get(),nullptr)==CB1_HDR10PLUS_DOVI_OK;
+    // The existing stop fence retires prior analysis/leases before changing strategy.
+    if(direct && !StopHDR10AI())return Decision::Wait;
+    const auto status = direct ? (m_state->gl && !Quarantined() ?
+        HDR10AI().Begin(m_state->gl->gpu,bundle,preferences,head.binding,head.pts,now,true,true) :
+        HDR10AI().RecordStatus("metadata-context",CB1_AI_INCOMPATIBLE)) :
+        BeginHDR10AI(bundle,preferences,head.binding,head.pts,now,buffered);
     if (status == CB1_AI_PENDING) { FenceLastUse(); return Decision::Wait; }
     if (status == CB1_AI_INVALID) { StopHDR10AI(); return Decision::Wait; }
     if (status == CB1_AI_INCOMPATIBLE) { FenceLastUse(); return Decision::Native; }
   }
+  auto& source=HDR10AI();
+  source.SetPaused(paused,now);
   // A fatal future sample belongs to the current activation only. A new
   // binding/policy/reset must first enter Begin's existing GPU retirement path.
   if (m_state->aiNextFailed) return Decision::Native;
@@ -677,6 +690,8 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
   // Only drain a complete snapshot; partial queues must let the decoder enqueue.
   source.DiscardBefore(head.binding, now);
   source.SetPresentationDeadline(presentationDeadline);
+  if(source.MetadataOnly())
+    return source.DescribeHDR10Plus(head.binding,metadata,head.pts,now,result);
   const bool drain = !paused && !source.AwaitingPresentation() && buffered;
   for (;;)
   {
@@ -716,7 +731,9 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
       return Decision::Native;
     }
     // Let the current image present while speculative analysis is pending.
-    if (decision != Decision::Wait || !required) return decision;
+    if (decision != Decision::Wait || !required)
+      return decision==Decision::Prepare && guided ?
+          source.DescribeHDR10Plus(head.binding,metadata,head.pts,now+elapsed,result) : decision;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
@@ -730,6 +747,37 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
       !base.lease || prediction.id.stream != base.binding.stream ||
       prediction.id.picture != base.binding.picture || !std::isfinite(base.pts))
   { m_asyncEligible = false; return FrameStatus::Failed; }
+  cb1_ai_result rendition = prediction;
+  std::optional<cb1_hdr10plus_dovi_result> guidance;
+  if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV)
+  {
+    cb1_hdr10plus_dovi_result described{};
+    const auto& analysis = m_context->HDR10AI();
+    const bool wholeSource = DVBRIDGE::HDR10PlusDVWholeSource(
+        geometry.crop, geometry.source_width, geometry.source_height);
+    if (policy.mode != DVBRIDGE_MODE_STANDARD || !(prediction.source_flags&CB1_SOURCE_HDR10PLUS) ||
+        !analysis.Current(base.binding, preferences) || !analysis.Describes(base.binding, prediction) ||
+        !DVBRIDGE::HDR10PlusDVSnapshotMatches(base.sourceSideData,
+            {prediction.id.stream, prediction.id.picture, base.binding.revision}, base.binding,
+            base.sourceInfo.informationGeneration, base.sourceSerial, wholeSource))
+    {
+      Cancel();
+      auto& current = m_context->HDR10AI();
+      current.RecordStatus("hdr10plus-source", CB1_AI_INCOMPATIBLE);
+      current.Preparation(base.binding, CB1_AI_INCOMPATIBLE, DVBRIDGE::DiagnosticNowMs());
+      return FrameStatus::Unsupported;
+    }
+    described.metadata=prediction.raw;
+    const auto* source=base.sourceSideData->HDR10Plus();
+    const bool peak=source->params[0].maxscl[0].num || source->params[0].maxscl[1].num || source->params[0].maxscl[2].num;
+    const bool distribution=prediction.source_flags&CB1_SOURCE_STATISTICS;
+    described.source_fields=(peak ? CB1_HDR10PLUS_DOVI_MAX : 0) | (distribution ? CB1_HDR10PLUS_DOVI_AVG : 0);
+    described.estimated_fields=CB1_HDR10PLUS_DOVI_MIN | (distribution ? 0 : CB1_HDR10PLUS_DOVI_AVG) |
+        (peak ? 0 : CB1_HDR10PLUS_DOVI_MAX);
+    described.untranslated_curve=source->params[0].tone_mapping_flag;
+    described.untranslated_saturation=source->params[0].color_saturation_mapping_flag;
+    guidance = described;
+  }
   BeginDiagnosticStream(base.binding.stream);
   dvbridge_renderer_set_l2_trims_disabled(m_renderer, false);
   // Quarantined policy work cannot be bypassed by historical frame reuse.
@@ -814,6 +862,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   m_pendingOverlayVisible = m_overlayVisible;
   m_sourceGeometry = geometry;m_geometryKnown = true;
   m_pendingBinding = base.binding;m_pendingSourceInfo = base.sourceInfo;
+  m_aiGuidance = guidance;
   m_pendingMetadata = {};
   m_pendingIdentity = {prediction.id.stream,prediction.id.picture,prediction.id.revision};
   m_pendingInfo = CDVPlaybackInfo::HDMI;
@@ -830,7 +879,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
         geometry.width == geometry.target_width && geometry.height == geometry.target_height) ||
        (preferences.optimizedDV && geometry.width == geometry.source_width && geometry.height == geometry.source_height)))
   {
-    rendered = dvbridge_render_hdr10_ai_packed_overlay(m_renderer,&policy,&prediction,&imported.frame,
+    rendered = dvbridge_render_hdr10_ai_packed_overlay(m_renderer,&policy,&rendition,&imported.frame,
         &geometry,m_scanout,m_scanoutFramebuffer,true,m_nativeOverlayEnabled ? &m_nativeOverlay : nullptr);
     m_direct = rendered;
     if (m_direct && m_nativeOverlayEnabled) m_nativeOverlayPrimed = true;
@@ -858,7 +907,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
     }
   }
   if (!rendered)
-    rendered = dvbridge_render_hdr10_ai_rgb(m_renderer,&policy,&prediction,&imported.frame,&geometry);
+    rendered = dvbridge_render_hdr10_ai_rgb(m_renderer,&policy,&rendition,&imported.frame,&geometry);
   // Kodi composes RGB GUI into the intermediate; do not present an older prepack.
   if (rendered && !m_direct && m_overlayVisible && policy.mode == DVBRIDGE_MODE_ENHANCED_DV)
     rendered = dvbridge_render_dv_policy_update_overlay(m_renderer,nullptr,true);
@@ -883,6 +932,9 @@ void CDVBridgeGLES::BeginDiagnosticStream(uint64_t stream)
   m_prepares = m_directFrames = m_presentations = m_failedPresentations = 0;
   m_lastSummary = m_lastReported = m_rawELImports = m_rawELHits = 0;
   m_hdr10plusDiagnostics = {};
+  m_hdr10plusAnalyzed = m_hdr10plusGenerated = m_hdr10plusAccepted = {};
+  m_hdr10plusSubmits = 0;
+  m_hdr10plusLight = {};
   m_firstFrame = true;
 }
 
@@ -1166,6 +1218,7 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10)
   m_scanoutFramebuffer = output.framebuffer;
 #ifdef CB1_HAS_HDR10_AI
   m_aiOutputAccepted = false;
+  m_aiGuidance.reset();
 #endif
   m_hdr10 = hdr10;
   m_outputBits = std::min(red, std::min(green, blue));
@@ -1330,7 +1383,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
     {
       m_firstFrame = false;
       m_lastSummary = DVBRIDGE::DiagnosticNowMs();
-      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge first frame: source={}x{} output={}x{} offset={},{} enhancement={} fel={} cm4={} direct={} bl_layout={} bl_texture={}x{} el={}x{} el_layout={} el_texture={}x{} bl_chroma={} el_chroma={} bl_uv_texture={}x{} el_uv_texture={}x{}",
+      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge first frame: source={}x{} output={}x{} offset={},{} enhancement={} fel={} cm4={} direct={} bl_layout={} bl_texture={}x{} el={}x{} el_layout={} el_texture={}x{} bl_chroma={} el_chroma={} bl_uv_texture={}x{} el_uv_texture={}x{} bl_texture_ids={},{} el_texture_ids={},{}",
           base.width, base.height, geometry.width, geometry.height, geometry.x, geometry.y,
           enhancement != nullptr, bool(m_pendingInfo & CDVPlaybackInfo::FEL),
           bool(m_pendingInfo & CDVPlaybackInfo::CM4), m_direct,
@@ -1340,7 +1393,9 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
           enhancement ? enhancement->planes[0].width : 0, enhancement ? enhancement->planes[0].height : 0,
           int(base.chromaLocation), enhancement ? int(enhancement->chromaLocation) : -1,
           base.planes[1].width,base.planes[1].height,
-          enhancement ? enhancement->planes[1].width : 0,enhancement ? enhancement->planes[1].height : 0);
+          enhancement ? enhancement->planes[1].width : 0,enhancement ? enhancement->planes[1].height : 0,
+          base.planes[0].texture,base.planes[1].texture,
+          enhancement ? enhancement->planes[0].texture : 0,enhancement ? enhancement->planes[1].texture : 0);
     }
   }
   return m_prepared;
@@ -1379,6 +1434,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   { Failure("renderer-unavailable"); m_asyncEligible = false; return FrameStatus::Failed; }
   const bool asyncSetting = m_context->AsyncPreparation(base.binding.stream);
   auto policy = selected ? *selected : preferences.Policy();
+  if (policy.mode == DVBRIDGE_MODE_HDR10PLUS && !m_hdr10plusSubmits)
+    DVBRIDGE::DiagnosticReserveProgress();
   if (policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && !allowPacked)
   {
     // The next GUI pass can create its composition target. No render was attempted.
@@ -1397,6 +1454,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   }
   // Capture the proven observation key before geometry or refresh rekeys work.
   dvbridge_renderer_set_l2_trims_disabled(m_renderer, preferences.L2TrimsDisabled(policy.mode));
+  const auto cmv40 = preferences.CMv40Options(fallback ? DVBRIDGE_MODE_DISABLED : policy.mode);
+  dvbridge_renderer_set_cmv40(m_renderer, &cmv40);
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
       policy.mode);
   const bool sameGeometry = geometry.source_width == m_sourceGeometry.source_width &&
@@ -1647,6 +1706,7 @@ void CDVBridgeGLES::Cancel()
 #ifdef CB1_HAS_HDR10_AI
   if (m_context) m_context->ClearNextHDR10AI();
   m_aiOutputAccepted = false;
+  m_aiGuidance.reset();
 #endif
   if (m_dvPolicyActive) dvbridge_render_dv_policy_cancel(m_renderer);
   else dvbridge_render_policy_cancel(m_renderer);
@@ -1700,7 +1760,11 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::BeginHDR10Plus()
     const pl_rect2d area{static_cast<int>(margins[0]), static_cast<int>(margins[2]),
         rgb->params.w - static_cast<int>(margins[1]), rgb->params.h - static_cast<int>(margins[3])};
     const auto status = cb1_hdr10plus_analysis_submit(m_hdr10plusAnalysis, rgb, area, m_pendingIdentity);
-    if (status == CB1_HDR10PLUS_ANALYSIS_PENDING) return FrameStatus::Pending;
+    if (status == CB1_HDR10PLUS_ANALYSIS_PENDING)
+    {
+      if (DVBRIDGE::DiagnosticsEnabled()) ++m_hdr10plusSubmits;
+      return FrameStatus::Pending;
+    }
     if (status == CB1_HDR10PLUS_ANALYSIS_BUSY) return FrameStatus::Busy;
   }
   m_failedIdentity = m_pendingIdentity;
@@ -1713,7 +1777,20 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PollHDR10Plus()
 {
   cb1_hdr10plus_statistics statistics{};
   const auto status = cb1_hdr10plus_analysis_poll(m_hdr10plusAnalysis, m_pendingIdentity, &statistics);
-  if (status == CB1_HDR10PLUS_ANALYSIS_PENDING) return FrameStatus::Pending;
+  if (status == CB1_HDR10PLUS_ANALYSIS_PENDING)
+  {
+    ReportHDR10Plus();
+    return FrameStatus::Pending;
+  }
+  if (status == CB1_HDR10PLUS_ANALYSIS_READY && DVBRIDGE::DiagnosticsEnabled())
+  {
+    Crc32 fingerprint;
+    fingerprint.Compute(reinterpret_cast<const char*>(statistics.histogram),sizeof(statistics.histogram));
+    fingerprint.Compute(reinterpret_cast<const char*>(&statistics.average_maxrgb),sizeof(statistics.average_maxrgb));
+    fingerprint.Compute(reinterpret_cast<const char*>(statistics.maxscl),sizeof(statistics.maxscl));
+    m_hdr10plusAnalyzed.Observe({m_pendingIdentity.stream,m_pendingIdentity.picture,m_pendingIdentity.revision},fingerprint);
+    m_hdr10plusLight={statistics.average_maxrgb,statistics.maxscl[0],statistics.maxscl[1],statistics.maxscl[2]};
+  }
   AVDynamicHDRPlus metadata{};
   if (status != CB1_HDR10PLUS_ANALYSIS_READY || !cb1_dv_hdr10plus_metadata_for_version(&metadata,
       &m_hdr10plusReport, m_pendingMetadata.Data(), m_pendingMetadata.Size(), &statistics,
@@ -1725,19 +1802,35 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PollHDR10Plus()
     return FrameStatus::Failed;
   }
   m_hdr10plusMetadata = metadata;
-  if (DVBRIDGE::DiagnosticsEnabled() && m_hdr10plusDiagnostics.Due(DVBRIDGE::DiagnosticNowMs()))
-  {
-    Crc32 histogram;
-    histogram.Compute(reinterpret_cast<const char*>(statistics.histogram),sizeof(statistics.histogram));
-    DVBRIDGE::DiagnosticLog(LOGINFO,
-        "CB1 HDR10+ analysis: source={}/{}/{} pixels={} avg_maxrgb={} maxscl={},{},{} histogram={:#x} version={} coverage={} reason={}",
-        m_pendingIdentity.stream,m_pendingIdentity.picture,m_pendingIdentity.revision,
-        statistics.count,statistics.average_maxrgb,statistics.maxscl[0],statistics.maxscl[1],statistics.maxscl[2],
-        uint32_t(histogram),m_hdr10plusVersion,int(m_hdr10plusReport.coverage),int(m_hdr10plusReport.reason));
-  }
+  ReportHDR10Plus();
   m_prepared = true;
   PreparedAudit();
   return FrameStatus::Ready;
+}
+
+void CDVBridgeGLES::ObserveHDR10PlusSubmission(const Submission& submission) const
+{
+  if (!DVBRIDGE::DiagnosticsEnabled() || !submission.hdr10plus) return;
+  Crc32 fingerprint;
+  fingerprint.Compute(reinterpret_cast<const char*>(submission.hdr10plus->data()),submission.hdr10plus->size());
+  m_hdr10plusGenerated.Observe({submission.identity.stream,submission.identity.picture,submission.identity.revision},fingerprint);
+}
+
+void CDVBridgeGLES::ReportHDR10Plus()
+{
+  const auto now=DVBRIDGE::DiagnosticNowMs();
+  if (!DVBRIDGE::DiagnosticsEnabled() || !m_hdr10plusDiagnostics.Due(now)) return;
+  const auto& a=m_hdr10plusAnalyzed;
+  const auto& g=m_hdr10plusGenerated;
+  const auto& p=m_hdr10plusAccepted;
+  if (DVBRIDGE::DiagnosticProgressLog(LOGINFO,
+      "CB1 HDR10+ progress: submitted={} analyzed={} stats_changes={} generated={} packet_changes={} accepted={} accepted_changes={} analysis={}/{}/{} packet={}/{}/{} accepted_source={}/{}/{} stats_crc={:#x} packet_crc={:#x} accepted_crc={:#x} avg_maxrgb={} maxscl={},{},{} version={} coverage={} reason={}",
+      m_hdr10plusSubmits,a.count,a.changes,g.count,g.changes,p.count,p.changes,
+      a.identity[0],a.identity[1],a.identity[2],g.identity[0],g.identity[1],g.identity[2],
+      p.identity[0],p.identity[1],p.identity[2],a.crc,g.crc,p.crc,
+      m_hdr10plusLight[0],m_hdr10plusLight[1],m_hdr10plusLight[2],m_hdr10plusLight[3],
+      m_hdr10plusVersion,int(m_hdr10plusReport.coverage),int(m_hdr10plusReport.reason)))
+    m_hdr10plusDiagnostics.Emitted(now);
 }
 
 const dvbridge_hdr10_policy_output* CDVBridgeGLES::HDR10Output() const
@@ -2241,6 +2334,14 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
       output.hdr10AI=true;
       const auto& raw=prediction->raw;
       output.aiL1L3={raw.l1_min,raw.l1_max,raw.l1_avg,raw.l3_min,raw.l3_max,raw.l3_avg};
+      if (m_aiGuidance)
+      {
+        output.hdr10PlusDV = true;
+        output.guidedSourceFields = m_aiGuidance->source_fields;
+        output.guidedEstimatedFields = m_aiGuidance->estimated_fields;
+        output.untranslatedCurve = m_aiGuidance->untranslated_curve;
+        output.untranslatedSaturation = m_aiGuidance->untranslated_saturation;
+      }
     }
   }
 #endif
@@ -2254,6 +2355,20 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
 #endif
       m_requested.output==DVBRIDGE::OutputMode::AdaptiveB)output.effective=6;
   output.method = m_requested.method;
+  output.cmv40Appended = submission.cmv40Status == CB1_CMV40_APPEND;
+  if (output.cmv40Appended) output.flags |= CDVPlaybackInfo::CM4;
+  if (m_cmv40LogStream != submission.identity.stream)
+  {
+    m_auditCMv40 = {};
+    m_cmv40LogStream = submission.identity.stream;
+  }
+  if (m_auditCMv40.Record(DVBRIDGE::DiagnosticNowMs(), "cmv40", int(submission.cmv40Status)))
+    DVBRIDGE::DiagnosticLog(LOGINFO,
+        "CB1 CM4 output: mode={} result={} source_cm4={} appended={} l2_removed={} tv_peak={} trigger={} headroom={} source={}/{}",
+        m_requested.cmv40Mode, int(submission.cmv40Status), bool(m_pendingInfo & CDVPlaybackInfo::CM4),
+        output.cmv40Appended, m_requested.L2TrimsDisabled(m_effectiveMode),
+        m_requested.peak, m_requested.cmv40Trigger, m_requested.cmv40Headroom,
+        submission.identity.stream, submission.identity.picture);
   output.l2TrimsDisabled = m_requested.L2TrimsDisabled(m_effectiveMode
 #ifdef CB1_HAS_HDR10_AI
       , m_aiFrame
@@ -2266,6 +2381,12 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   {
     if (submission.hdr10plusAccepted)
     {
+      if (DVBRIDGE::DiagnosticsEnabled() && submission.hdr10plus)
+      {
+        Crc32 fingerprint;
+        fingerprint.Compute(reinterpret_cast<const char*>(submission.hdr10plus->data()),submission.hdr10plus->size());
+        m_hdr10plusAccepted.Observe({submission.identity.stream,submission.identity.picture,submission.identity.revision},fingerprint);
+      }
       output.flags |= CDVPlaybackInfo::HDR10PLUS;
       if (m_hdr10plusReport.coverage >= CB1_DV_HDR10PLUS_L1) output.creativeEdited |= 1u<<1;
       if (m_hdr10plusReport.coverage == CB1_DV_HDR10PLUS_L2) output.creativeEdited |= 1u<<2;
@@ -2290,6 +2411,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
           m_hdr10plusReport.maximum_color_pq_error,bool(submission.hdr10plus),uint32_t(packet),
           submission.identity.stream,submission.identity.picture,submission.identity.revision);
     }
+    ReportHDR10Plus();
   }
   output.stream=m_pendingIdentity.stream; output.picture=m_pendingIdentity.picture;
   const char* pixelAlgorithm=nullptr;
@@ -2352,6 +2474,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
 #ifdef CB1_HAS_HDR10_AI
   if (m_aiFrame && DVBRIDGE::DiagnosticsEnabled() && m_aiSummary.Due(DVBRIDGE::DiagnosticNowMs()))
   {
+    m_aiSummary.Emitted(DVBRIDGE::DiagnosticNowMs());
     const auto metrics=m_context->HDR10AI().Metrics();
     DVBRIDGE::DiagnosticLog(LOGINFO,
         "CB1 AI summary: engine={} circuit={} bundle={} source={}/{}/{} pictures={} readback_bytes={} inferences={} analysis_submit_us={} readback_latency_us={} inference_us={} render_submit_us={}",
@@ -2360,6 +2483,12 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
         metrics.pictures,metrics.readback_bytes,metrics.inferences,
         metrics.analysis_submit_ns/1000,metrics.readback_latency_ns/1000,metrics.inference_ns/1000,
         m_aiRenderSubmitNs/1000);
+    if (acceptedOutput.hdr10PlusDV)
+      DVBRIDGE::DiagnosticLog(LOGINFO,
+          "CB1 HDR10+ guidance: source_fields={} estimated_fields={} untranslated_curve={} untranslated_saturation={} source={}/{}/{}",
+          acceptedOutput.guidedSourceFields, acceptedOutput.guidedEstimatedFields,
+          acceptedOutput.untranslatedCurve, acceptedOutput.untranslatedSaturation,
+          m_committedBinding.stream, m_committedBinding.picture, m_committedBinding.revision);
   }
 #endif
   if (DVBRIDGE::DiagnosticsEnabled())
@@ -2383,10 +2512,13 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
           m_committedRevision,acceptedOutput.effective,acceptedOutput.bits,acceptedOutput.authoredLegacy,acceptedOutput.sampleCount,
           acceptedOutput.creativeStatus,acceptedOutput.creativeReason,acceptedOutput.creativeApplied,acceptedOutput.creativeEdited);
       DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge output selection: requested={} effective={} reason={} minimum_link_bits={} profile={} bl={} el={} rpu={} hdr_origin={}",
-          CDVPlaybackInfo::RequestedPolicy(acceptedOutput.requested,CDVPlaybackInfo::IsHDR10AI(acceptedOutput)),
-          CDVPlaybackInfo::RequestedPolicy(acceptedOutput.effective,CDVPlaybackInfo::IsHDR10AI(acceptedOutput)),
+          CDVPlaybackInfo::RequestedPolicy(acceptedOutput.requested,CDVPlaybackInfo::IsHDR10AI(acceptedOutput),CDVPlaybackInfo::IsHDR10PlusDV(acceptedOutput)),
+          CDVPlaybackInfo::RequestedPolicy(acceptedOutput.effective,CDVPlaybackInfo::IsHDR10AI(acceptedOutput),CDVPlaybackInfo::IsHDR10PlusDV(acceptedOutput)),
           CDVPlaybackInfo::Reason(acceptedOutput.reason),acceptedOutput.minimumLinkBits,
           m_pendingSourceInfo.profile,m_pendingSourceInfo.bl,m_pendingSourceInfo.el,m_pendingSourceInfo.rpu,
+          CDVPlaybackInfo::IsHDR10PlusDV(acceptedOutput) ?
+              (acceptedOutput.guidedSourceFields & CB1_HDR10PLUS_DOVI_AVG ?
+                  "source-HDR10+-statistics" : "source-HDR10+-and-AI-estimates") :
           acceptedOutput.effective == 7 ? "reconstructed-picture-statistics" :
           acceptedOutput.flags & CDVPlaybackInfo::HDR10 ? (acceptedOutput.effective>=3 ? "manual-tv-profile" :
               acceptedOutput.level6 ? "source-L6" : "reference-default") : "source-RPU");

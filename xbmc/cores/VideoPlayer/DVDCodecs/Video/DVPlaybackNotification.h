@@ -89,6 +89,11 @@ public:
     if constexpr (requires { output.hdr10AI; })
       if (output.hdr10AI)
       {
+        if (CDVPlaybackInfo::IsHDR10PlusDV(output))
+        {
+          Emit(CDVPlaybackInfo::Mode(output));
+          return;
+        }
         EmitAI(output.effective);
         return;
       }
