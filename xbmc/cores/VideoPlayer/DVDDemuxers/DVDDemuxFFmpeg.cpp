@@ -2502,6 +2502,11 @@ void CDVDDemuxFFmpeg::AddStream(int streamIdx, CDemuxStream* stream)
   {
     /* was new stream */
     stream->uniqueId = streamIdx;
+#ifdef HAVE_DVBRIDGE
+    // The joined BL can be admitted after Kodi's initial stream inventory.
+    if (m_blurayDovi && streamIdx == m_blurayBase)
+      stream->source = STREAM_SOURCE_NONE;
+#endif
   }
   else
   {
@@ -3468,9 +3473,15 @@ int CDVDDemuxFFmpeg::ReadBlurayDovi(AVPacket* packet)
     if (m_blurayDovi->TakeDiscontinuity())
       CLog::Log(LOGINFO, "DV Blu-ray: reset layer pairing after transport DTS discontinuity");
     if (!accepted)
-      CLog::Log(LOGERROR, "DV Blu-ray: rejected layer={} pts={} dts={} bytes={} reason={} base_head={} rpu_first={}",
+    {
+      const auto state = m_blurayDovi->GetState();
+      CLog::Log(LOGERROR, "DV Blu-ray: rejected layer={} pts={} dts={} bytes={} reason={} base_head={} rpu_first={} "
+          "bl_dts={} el_head={} el_dts={} queues={}/{}/{} resync={} irap={}/{} restart_peer={}",
           packet->stream_index == m_blurayEnhancement ? "EL" : "BL", packet->pts,
-          packet->dts, packet->size, m_blurayDovi->LastError(),m_blurayDovi->BasePTS(),m_blurayDovi->RpuPTS());
+          packet->dts, packet->size, m_blurayDovi->LastError(), state.basePts, m_blurayDovi->RpuPTS(),
+          state.baseDts, state.elPts, state.elDts, state.basePackets, state.elPackets, state.rpuPackets,
+          state.resync, state.baseIrap, state.elIrap, state.restartPeer);
+    }
     av_packet_unref(packet);
     if (!accepted)
       return AVERROR_INVALIDDATA;

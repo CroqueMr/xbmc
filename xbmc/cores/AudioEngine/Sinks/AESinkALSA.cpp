@@ -204,6 +204,13 @@ inline CAEChannelInfo CAESinkALSA::GetChannelLayout(const AEAudioFormat& format,
 
       info = ALSAchmapToAEChannelMap(actualMap);
 
+      // HDMI may report unnamed channels while ELD is being refreshed.
+      if (channels == 2 && actualMap->channels == 2 && !info.IsLayoutValid() &&
+          format.m_channelLayout.Count() == 2 &&
+          format.m_channelLayout.HasChannel(AE_CH_FL) &&
+          format.m_channelLayout.HasChannel(AE_CH_FR))
+        info = GetChannelLayoutLegacy(format, channels, channels);
+
       /* "fake" a compatible map if it is more suitable for AE */
       if (!info.ContainsChannels(format.m_channelLayout))
       {

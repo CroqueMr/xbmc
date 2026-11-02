@@ -25,6 +25,7 @@ public:
       DVBRIDGE::SourceBinding binding, double pts, uint64_t now, bool buffered = true,
       bool metadataOnly = false);
   bool MetadataOnly() const { return m_metadataOnly; }
+  bool HDR10Plus() const { return m_preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV; }
   Decision DescribeHDR10Plus(DVBRIDGE::SourceBinding binding,
       std::shared_ptr<const AVDynamicHDRPlus> source, double pts, uint64_t now,
       cb1_ai_result* result);

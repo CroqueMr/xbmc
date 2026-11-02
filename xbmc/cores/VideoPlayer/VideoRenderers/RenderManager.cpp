@@ -762,11 +762,19 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
       m_overlays.Flush();
       m_debugRenderer.Flush();
 #ifdef CB1_HAS_HDR10_AI
-      ResetHDR10AIQueue();
+      // Reset display timing even when its decoded pictures survive.
+      if (m_clockSync.m_cb1Phase)
+      {
+        m_clockSync.Reset();
+        m_dvdClock.SetVsyncAdjust(0);
+      }
 #endif
 
       if (!m_pRenderer->Flush(saveBuffers))
       {
+#ifdef CB1_HAS_HDR10_AI
+        ResetHDR10AIQueue();
+#endif
         for (auto& slot : m_Queue) slot.sourceSideData.reset();
         m_queued.clear();
         m_discard.clear();
@@ -1194,8 +1202,14 @@ void CRenderManager::UpdateResolution()
       {
         RESOLUTION res = CResolutionUtils::ChooseBestResolution(
             m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
+#ifdef HAVE_DVBRIDGE
+        // Carry the stream's intent when this later request performs the modeset.
+        const auto previous = DVBRIDGE::guiModeChangeResolution;
+        DVBRIDGE::guiModeChangeResolution = m_nativeDVRate ? static_cast<int>(res) : -1;
+#endif
         CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
 #ifdef HAVE_DVBRIDGE
+        DVBRIDGE::guiModeChangeResolution = previous;
         if (m_nativeDVRate)
           if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
           {
@@ -1562,12 +1576,13 @@ void CRenderManager::PrepareNextRender()
 
 #ifdef CB1_HAS_HDR10_AI
   if (physicalPhase && completionAge && m_fps > 0 &&
-      frametime * m_fps < DVD_TIME_BASE * 0.75 && m_pRenderer->HDR10AILookahead() &&
-      (DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::ReferenceDV ||
-       DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV))
+      frametime * m_fps < DVD_TIME_BASE * 0.75 && m_pRenderer->HDR10AILookahead())
   {
-    // Select on the physical refresh phase, not an interpolated mid-refresh clock.
-    renderPts -= std::fmod(std::max(0.0, *completionAge), frametime);
+    const auto source = DVBRIDGE::FrameOutputSettings(
+        m_picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS).hdr10Source;
+    if (source == DVBRIDGE::HDR10SourceMode::ReferenceDV || source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV)
+      // Select on the physical refresh phase, not an interpolated mid-refresh clock.
+      renderPts -= std::fmod(std::max(0.0, *completionAge), frametime);
   }
 #endif
 

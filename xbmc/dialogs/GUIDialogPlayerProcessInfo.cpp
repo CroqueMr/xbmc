@@ -58,11 +58,11 @@ bool CGUIDialogPlayerProcessInfo::OnMessage(CGUIMessage& message)
       const RESOLUTION_INFO resolution(1920, 1080);
       SetCoordsRes(resolution);
       g_fontManager.LoadTTF("CB1.InfoBody", "special://xbmc/media/Fonts/arial.ttf",
-                            0xfff4f6f6, 0, 22, 0, false, 1.0f, 1.0f, &resolution);
+                            0xfff4f6f6, 0, 18, 0, false, 1.0f, 1.0f, &resolution);
       g_fontManager.LoadTTF("CB1.InfoSection", "special://xbmc/media/Fonts/arial.ttf",
-                            0xfff4f6f6, 0, 25, 0, false, 1.0f, 1.0f, &resolution);
+                            0xfff4f6f6, 0, 23, 0, false, 1.0f, 1.0f, &resolution);
       g_fontManager.LoadTTF("CB1.InfoTitle", "special://xbmc/media/Fonts/arial.ttf",
-                            0xfff4f6f6, 0, 30, 1, false, 1.0f, 1.0f, &resolution);
+                            0xfff4f6f6, 0, 28, 1, false, 1.0f, 1.0f, &resolution);
     }
   }
 #endif
@@ -128,19 +128,19 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.Profile", data.profile ? StringUtils::Format("{}", data.profile) : "N/A");
     SetProperty("DV.Level", data.profile ? StringUtils::Format("{}", data.level) : "N/A");
     SetProperty("DV.Version", data.profile ? StringUtils::Format("{}.{}", data.major, data.minor) : "N/A");
-    SetProperty("DV.CM", metadata ? (data.cm4 ? "CM4 source" : "CM2.9 source") : "");
+    SetProperty("DV.CM", metadata ? VideoProcessingInfoGUI::CMVersion(data) : "");
     const auto applied=data.AppliedBlocks();
     SetProperty("DV.ParsedBlocks", metadata ? CDVPlaybackInfo::Blocks(data.blocks) : "");
-    SetProperty("DV.AppliedBlocks", metadata ? CDVPlaybackInfo::Blocks(applied) : "");
+    SetProperty("DV.AppliedBlocks", metadata ? CDVPlaybackInfo::Blocks(applied | (active & CDVPlaybackInfo::HDR10PLUS ? data.blocks & std::bitset<256>(data.output.creativeEdited) : std::bitset<256>{})) : "");
     SetProperty("DV.TransmittedBlocks", active & CDVPlaybackInfo::HDMI ? CDVPlaybackInfo::Blocks(data.TransmittedBlocks())+
         (data.output.authoredLegacy ? " (authored)" : "") : "");
-    SetProperty("DV.UnappliedBlocks", metadata ? CDVPlaybackInfo::Blocks(data.blocks & ~applied) : "");
+    SetProperty("DV.UnappliedBlocks", metadata ? CDVPlaybackInfo::Blocks(data.blocks & ~(applied | data.TransmittedBlocks())) : "");
     SetProperty("DV.RPU", data.profile ? yesno(data.rpu) : "N/A");
     SetProperty("DV.BL", data.profile ? yesno(data.bl) : "N/A");
     SetProperty("DV.EL", data.profile ? yesno(data.el) : "N/A");
     SetProperty("DV.FEL", active ? (active & CDVPlaybackInfo::FEL ? "Full FEL" : "No FEL") : "");
     SetProperty("DV.FELUpscaling", active & CDVPlaybackInfo::FEL ?
-        (data.output.felUpscaling == 2 ? "Reference GPU" : data.output.felUpscaling == 0 ? "VAAPI" : data.output.felUpscaling == 1 ? "Nearest neighbour (GPU)" : "") : "");
+        (data.output.felUpscaling == 2 ? "Reference GPU" : data.output.felUpscaling == 0 ? "VAAPI" : data.output.felUpscaling == 1 ? "Bilinear GPU" : "") : "");
     SetProperty("DV.Mode", active ? VideoProcessingInfoGUI::Mode(data) : "Kodi default");
     SetProperty("DV.Engine", data.output.engine);
     SetProperty("DV.Circuit", data.output.circuit);
@@ -224,19 +224,19 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.CreativeTrims", active ? (data.output.creativeKnown ?
         (data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Invalid) ||
          data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Unsupported) ?
-            "Treatment unavailable / original metadata preserved" :
+            "Treatment unavailable" :
          data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Neutral) ?
-            "Neutral / original metadata preserved" :
+            "Neutral" :
          hdr10 ? (data.output.creativeApplied & ((1u<<2)|(1u<<8)) ?
-            "Applied in HDR10 processing" : "No compatible creative trims") :
+            "Applied locally" : "No compatible trims") :
           data.output.creativeApplied ? "Metadata-guided expansion" :
-          data.output.creativeEdited ? "Metadata adjusted for TV" : "Original metadata preserved") :
-        data.output.authoredLegacy || hdr10 ? "Source trims not applied" : "Forwarded to TV") : "");
+          data.output.creativeEdited ? "Metadata adjusted for TV" : "Original metadata") :
+        data.output.authoredLegacy || hdr10 ? "Not applied" : "Forwarded to TV") : "");
     if (active && data.output.effective==7)
-      SetProperty("DV.CreativeTrims", !(active & CDVPlaybackInfo::HDR10PLUS) ? "HDR10 output / dynamic metadata unavailable" :
-          data.output.creativeEdited & (1u<<8) ? "L8 curve converted to HDR10+" :
-          data.output.creativeEdited & (1u<<2) ? "L2 curve converted to HDR10+" :
-          data.output.creativeEdited & (1u<<1) ? "Scene curve converted to HDR10+" : "Statistics only / trims not represented");
+      SetProperty("DV.CreativeTrims", !(active & CDVPlaybackInfo::HDR10PLUS) ? "HDR10 fallback" :
+          data.output.creativeEdited & (1u<<8) ? "HDR10+ curve from L8" :
+          data.output.creativeEdited & (1u<<2) ? "HDR10+ curve from L2" :
+          data.output.creativeEdited & (1u<<1) ? "HDR10+ scene curve" : "Statistics only");
     SetProperty("DV.Precision", active ? StringUtils::Format("{}-bit framebuffer", data.output.bits) : "N/A");
     SetProperty("DV.L1PQ", metadata && data.l1 ? StringUtils::Format("{} | {} | {}", data.pq[0], data.pq[1], data.pq[2]) : "N/A");
     const auto nits = [](unsigned pq) {

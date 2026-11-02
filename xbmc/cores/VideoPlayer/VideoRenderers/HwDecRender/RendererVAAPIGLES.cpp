@@ -237,7 +237,7 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   bool hdr10 = false;
 #ifdef CB1_HAS_HDR10_AI
   hdr10 = DVBRIDGE::IsHDR10AIInput(source.hdrType,
-      DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
+      DVBRIDGE::FrameOutputSettings(source.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS).hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
       source.doviSourceBinding.Valid() && !source.doviSourceInfo.profile;
 #endif
   if (!hdr10 && (!buffer.doviMetadata.Data() || buffer.doviPts == DVD_NOPTS_VALUE))
@@ -332,15 +332,13 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
   if (!UploadTexture(queue.front())) return {false, {}, {}};
   const auto index = queue.front();
   const auto binding = head->doviSourceBinding;
-  const auto preferences = DVBRIDGE::FrameOutputSettings();
-  // A mode switch can reuse the decoded pool without another Configure().
-  m_aiOutputPending |=
-      (preferences.hdr10Source != DVBRIDGE::HDR10SourceMode::Native) != m_dvRequested;
+  const auto preferences = DVBRIDGE::FrameOutputSettings(head->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
   if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::Native)
   {
     // Preserve the original locked/native stop and readiness path.
     const bool ready = window->PrepareHDR10AIQueue(*head,layers,end,paused,presentationDeadline);
     m_aiLookahead = window->HDR10AILookaheadActive();
+    m_aiOutputPending |= m_aiLookahead != m_dvRequested;
     if (ready && m_aiOutputPending)
     {
       if (!ConfigureVideoOutput(*head)) return {false, {}, {}};
@@ -355,11 +353,13 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
       },
       [this,index,binding,preferences](const HDR10AIQueuePreparation::Outcome& outcome) {
         const auto& current = m_buffers[index].doviSourcePicture;
-        const auto settings = DVBRIDGE::FrameOutputSettings();
+        const auto settings = DVBRIDGE::FrameOutputSettings(current && current->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
         if (!current || !(current->doviSourceBinding == binding) ||
             settings.revision != preferences.revision || !settings.SameValues(preferences))
           return false;
         m_aiLookahead = outcome.lookahead;
+        // Automatic fallback can change the resolved route without a mode switch.
+        m_aiOutputPending |= m_aiLookahead != m_dvRequested;
         if (outcome.ready && m_aiOutputPending)
         {
           if (!ConfigureVideoOutput(*current)) return false;

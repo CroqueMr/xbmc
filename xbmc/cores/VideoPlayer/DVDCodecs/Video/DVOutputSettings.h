@@ -23,6 +23,7 @@ enum class HDR10SourceMode : int { Native = 0, ReferenceDV = 1, EnhancedDV = 2, 
 // Decoder ingress sees the last complete frame-boundary preference snapshot.
 inline std::atomic<OutputMode> playbackMode{OutputMode::Standard};
 inline std::atomic<HDR10SourceMode> hdr10PlaybackMode{HDR10SourceMode::Native};
+inline std::atomic<HDR10SourceMode> hdr10PlusPlaybackMode{HDR10SourceMode::Native};
 
 #ifdef HAVE_DVBRIDGE
 inline int PolicyCode(const dvbridge_policy& policy)
@@ -36,6 +37,7 @@ struct OutputPreferences
 {
   OutputMode output{OutputMode::Standard};
   HDR10SourceMode hdr10Source{HDR10SourceMode::Native};
+  HDR10SourceMode hdr10PlusSource{HDR10SourceMode::Native};
   int method{0}, panel{0}, gamut{0};
   double peak{0};
   bool optimizedDV{true};
@@ -54,7 +56,8 @@ struct OutputPreferences
 
   bool SameValues(const OutputPreferences& other) const
   {
-    return output == other.output && hdr10Source == other.hdr10Source && method == other.method &&
+    return output == other.output && hdr10Source == other.hdr10Source &&
+        hdr10PlusSource == other.hdr10PlusSource && method == other.method &&
         panel == other.panel && gamut == other.gamut && optimizedDV == other.optimizedDV &&
         masterIPT == other.masterIPT && allowMasterFallback == other.allowMasterFallback &&
         disableL2Trims == other.disableL2Trims &&
@@ -104,14 +107,19 @@ struct OutputPreferences
       result.tv = {peak, static_cast<dvbridge_panel>(panel), static_cast<dvbridge_gamut>(gamut)};
     return result;
   }
-  dvbridge_policy HDR10Policy() const
+  HDR10SourceMode HDR10Mode(bool hdr10Plus) const
+  {
+    return hdr10Plus ? hdr10PlusSource : hdr10Source;
+  }
+  dvbridge_policy HDR10Policy(bool hdr10Plus = false) const
   {
     auto result = Policy();
     result.adaptive=DVBRIDGE_ADAPTIVE_A;
     result.master_ipt=false;
-    result.mode = hdr10Source == HDR10SourceMode::ReferenceDV ||
-        hdr10Source == HDR10SourceMode::HDR10PlusDV ? DVBRIDGE_MODE_STANDARD :
-        hdr10Source == HDR10SourceMode::EnhancedDV ? DVBRIDGE_MODE_ENHANCED_DV : DVBRIDGE_MODE_DISABLED;
+    const auto source = HDR10Mode(hdr10Plus);
+    result.mode = source == HDR10SourceMode::ReferenceDV ||
+        source == HDR10SourceMode::HDR10PlusDV ? DVBRIDGE_MODE_STANDARD :
+        source == HDR10SourceMode::EnhancedDV ? DVBRIDGE_MODE_ENHANCED_DV : DVBRIDGE_MODE_DISABLED;
     result.tv = result.mode == DVBRIDGE_MODE_ENHANCED_DV ?
         dvbridge_tv_profile{peak,static_cast<dvbridge_panel>(panel),static_cast<dvbridge_gamut>(gamut)} : dvbridge_tv_profile{};
     return result;
@@ -130,7 +138,7 @@ inline std::mutex& OutputSettingsMutex()
 inline uint64_t hdr10Reselection{};
 #endif
 
-inline OutputPreferences FrameOutputSettings()
+inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false)
 {
   static OutputPreferences previous;
 #ifdef CB1_HAS_HDR10_AI
@@ -146,8 +154,10 @@ inline OutputPreferences FrameOutputSettings()
   if (settings)
   {
     const int hdr10 = settings->GetInt("dvbridge.hdr10source");
-    next.hdr10Source = hdr10 >= 0 && hdr10 <= 3 ?
+    next.hdr10Source = hdr10 >= 0 && hdr10 <= 2 ?
         static_cast<HDR10SourceMode>(hdr10) : HDR10SourceMode::Native;
+    next.hdr10PlusSource = settings->GetInt("dvbridge.hdr10plussource") == 3 ?
+        HDR10SourceMode::HDR10PlusDV : HDR10SourceMode::Native;
     next.method = settings->GetInt("dvbridge.hdr10method");
     next.peak = settings->GetNumber("dvbridge.tvpeak");
     next.panel = settings->GetInt("dvbridge.tvpanel");
@@ -165,7 +175,7 @@ inline OutputPreferences FrameOutputSettings()
       next.cmv40Trigger != 4000 && next.cmv40Trigger != 10000) next.cmv40Trigger = 0;
   if (next.cmv40Headroom < 0 || next.cmv40Headroom > 50) next.cmv40Headroom = 20;
   if (next.method < 0 || next.method > 2) next.method = 0;
-  if (next.felUpscaling < 0 || next.felUpscaling > 1) next.felUpscaling = 0;
+  if (next.felUpscaling < 0 || next.felUpscaling > 2) next.felUpscaling = 0;
   next.revision = previous.revision;
   bool changed = !next.SameValues(previous);
 #ifdef CB1_HAS_HDR10_AI
@@ -176,6 +186,9 @@ inline OutputPreferences FrameOutputSettings()
   previous = next;
   playbackMode.store(next.output);
   hdr10PlaybackMode.store(next.hdr10Source);
+  hdr10PlusPlaybackMode.store(next.hdr10PlusSource);
+  // Resolve only the returned copy; alternating inputs must not churn revisions.
+  if (hdr10Plus) next.hdr10Source = next.hdr10PlusSource;
   return next;
 }
 

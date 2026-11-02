@@ -23,12 +23,13 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return {OutputRoute::Vanilla, {}, OutputReason::SourceIneligible};
   if (caps.sourceKnown && caps.isHDR10 && !caps.isDV)
   {
-    if (preferences.hdr10Source == HDR10SourceMode::Native) return result;
-    if (caps.hdr10PlusSource && preferences.hdr10Source != HDR10SourceMode::HDR10PlusDV)
+    const auto source = preferences.HDR10Mode(caps.hdr10PlusSource);
+    if (source == HDR10SourceMode::Native) return result;
+    if (caps.hdr10PlusSource && source != HDR10SourceMode::HDR10PlusDV)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
-    if (preferences.hdr10Source == HDR10SourceMode::HDR10PlusDV && !caps.isHDR10Plus)
+    if (source == HDR10SourceMode::HDR10PlusDV && !caps.isHDR10Plus)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
-    auto policy = preferences.HDR10Policy();
+    auto policy = preferences.HDR10Policy(caps.hdr10PlusSource);
     if (policy.mode == DVBRIDGE_MODE_DISABLED)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
     if (policy.mode != DVBRIDGE_MODE_STANDARD && !preferences.ProfileValid())

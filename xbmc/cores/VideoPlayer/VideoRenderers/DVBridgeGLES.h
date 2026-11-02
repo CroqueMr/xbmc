@@ -155,7 +155,7 @@ public:
     submission.cmv40Status=dvbridge_renderer_cmv40_status(m_renderer);
     const bool fel=(m_pendingInfo & CDVPlaybackInfo::FEL) != 0;
     submission.felFilter=fel ? m_requested.felUpscaling : -1;
-    submission.felBackend=fel ? (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE ? 3 :
+    submission.felBackend=fel ? (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE || m_requested.felUpscaling == 2 ? 3 :
         m_hardwareBinding == m_pendingBinding &&
         m_hardwareFELFilter == m_requested.felUpscaling && m_hardwareFELVpp ? 2 : 1) : 0;
     if (m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS && m_prepared && m_hdr10plusMetadata)
