@@ -22,6 +22,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/HDR10SourceType.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
 #include <cmath>
+#include <algorithm>
 #endif
 
 #include <memory>
@@ -237,7 +238,7 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   bool hdr10 = false;
 #ifdef CB1_HAS_HDR10_AI
   hdr10 = DVBRIDGE::IsHDR10AIInput(source.hdrType,
-      DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
+      DVBRIDGE::FrameOutputSettings(source.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS).hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
       source.doviSourceBinding.Valid() && !source.doviSourceInfo.profile;
 #endif
   if (!hdr10 && (!buffer.doviMetadata.Data() || buffer.doviPts == DVD_NOPTS_VALUE))
@@ -332,15 +333,19 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
   if (!UploadTexture(queue.front())) return {false, {}, {}};
   const auto index = queue.front();
   const auto binding = head->doviSourceBinding;
-  const auto preferences = DVBRIDGE::FrameOutputSettings();
-  // A mode switch can reuse the decoded pool without another Configure().
-  m_aiOutputPending |=
-      (preferences.hdr10Source != DVBRIDGE::HDR10SourceMode::Native) != m_dvRequested;
+  const bool buffered = !layers.empty() &&
+      std::all_of(layers.begin(), layers.end(), [&](const auto& layer) {
+        return layer.lease && layer.binding.Valid() && std::isfinite(layer.pts) &&
+            layer.binding.stream == binding.stream && layer.binding.revision == binding.revision;
+      }) && ((end && layers.size() == queue.size()) ||
+             layers.back().pts >= layers.front().pts + 1.0 - 1e-9);
+  const auto preferences = DVBRIDGE::FrameOutputSettings(head->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
   if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::Native)
   {
     // Preserve the original locked/native stop and readiness path.
     const bool ready = window->PrepareHDR10AIQueue(*head,layers,end,paused,presentationDeadline);
     m_aiLookahead = window->HDR10AILookaheadActive();
+    m_aiOutputPending |= m_aiLookahead != m_dvRequested;
     if (ready && m_aiOutputPending)
     {
       if (!ConfigureVideoOutput(*head)) return {false, {}, {}};
@@ -355,18 +360,20 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
       },
       [this,index,binding,preferences](const HDR10AIQueuePreparation::Outcome& outcome) {
         const auto& current = m_buffers[index].doviSourcePicture;
-        const auto settings = DVBRIDGE::FrameOutputSettings();
+        const auto settings = DVBRIDGE::FrameOutputSettings(current && current->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
         if (!current || !(current->doviSourceBinding == binding) ||
             settings.revision != preferences.revision || !settings.SameValues(preferences))
           return false;
         m_aiLookahead = outcome.lookahead;
+        // Automatic fallback can change the resolved route without a mode switch.
+        m_aiOutputPending |= m_aiLookahead != m_dvRequested;
         if (outcome.ready && m_aiOutputPending)
         {
           if (!ConfigureVideoOutput(*current)) return false;
           m_aiOutputPending = false;
         }
         return true;
-      }};
+      }, buffered && head->hdrType == StreamHdrType::HDR_TYPE_HDR10};
 }
 
 bool CRendererVAAPIGLES::HDR10AIFrameCommitted() const
@@ -375,36 +382,6 @@ bool CRendererVAAPIGLES::HDR10AIFrameCommitted() const
   return window && window->HDR10AIFrameCommitted();
 }
 #endif
-
-dvbridge_geometry CRendererVAAPIGLES::DVBridgeGeometry()
-{
-  auto* window = CServiceBroker::GetWinSystem();
-  CRect source, dest, view;
-  GetVideoRect(source, dest, view);
-  const int width = window->GetWidth(), height = window->GetHeight();
-  const auto& context = window->GetGfxContext();
-  if (width <= 0 || height <= 0 || context.GetWidth() <= 0 || context.GetHeight() <= 0)
-    return {};
-  const CRect original = dest;
-  dest.Intersect(CRect(0, 0, context.GetWidth(), context.GetHeight()));
-  if (dest.Width() <= 0 || dest.Height() <= 0 || original.Width() <= 0 || original.Height() <= 0)
-    return {};
-  const float sourceX = source.Width() / original.Width();
-  const float sourceY = source.Height() / original.Height();
-  source.x1 += (dest.x1 - original.x1) * sourceX;
-  source.x2 += (dest.x2 - original.x2) * sourceX;
-  source.y1 += (dest.y1 - original.y1) * sourceY;
-  source.y2 += (dest.y2 - original.y2) * sourceY;
-  const float sx = float(width) / context.GetWidth();
-  const float sy = float(height) / context.GetHeight();
-  const float left = dest.x1 * sx, top = dest.y1 * sy;
-  const float right = dest.x2 * sx, bottom = dest.y2 * sy;
-  const int x = std::floor(left), y = std::floor(top);
-  return {static_cast<int>(m_sourceWidth), static_cast<int>(m_sourceHeight),
-          x, y, static_cast<int>(std::ceil(right)) - x,
-          static_cast<int>(std::ceil(bottom)) - y, width, height,
-          {source.x1, source.y1, source.x2, source.y2}, {left, top, right, bottom}};
-}
 
 void CRendererVAAPIGLES::SetDVBridgeFELSuccessor(int index)
 {

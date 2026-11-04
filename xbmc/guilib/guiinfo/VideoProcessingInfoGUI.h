@@ -9,6 +9,15 @@
 
 struct VideoProcessingInfoGUI
 {
+  static std::string CMVersion(const VideoProcessingInfo& info)
+  {
+    if (!info.metadata) return "";
+    if (info.cm4) return "CM4.0 (original)";
+    if ((info.output.flags & CDVPlaybackInfo::HDMI) && !info.output.hdr10AI &&
+        !info.output.authoredLegacy && (info.output.effective==1 || info.output.effective==5))
+      return info.output.flags & CDVPlaybackInfo::CM4 ? "CM2.9 (CM4 added)" : "CM2.9 (CM4 not added)";
+    return "CM2.9";
+  }
   static std::string Mode(const VideoProcessingInfo& info)
   {
     if (!info.output.flags) return "";
@@ -42,7 +51,7 @@ struct VideoProcessingInfoGUI
           value=CDVPlaybackInfo::Reason(static_cast<DVBRIDGE::OutputReason>(info.output.reason));
         break;
       case PLAYER_PROCESS_VIDEODVCMVERSION:
-        if (info.metadata) value=info.cm4 ? "CM4 source" : "CM2.9 source";
+        value=CMVersion(info);
         break;
       case PLAYER_PROCESS_VIDEODVPARSEDBLOCKS:
         if (info.metadata) value=CDVPlaybackInfo::Blocks(info.blocks);

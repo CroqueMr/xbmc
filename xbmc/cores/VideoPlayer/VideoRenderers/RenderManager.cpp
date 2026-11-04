@@ -319,6 +319,7 @@ bool CRenderManager::PrepareHDR10AILookahead(std::unique_lock<CCriticalSection>&
 {
   if (!m_pRenderer || !m_pRenderer->HDR10AIQueueEligible())
   {
+    m_aiStartupBuffered = false;
     m_aiQueuePreparationStale = false;
     return m_aiQueueReady = true;
   }
@@ -344,7 +345,7 @@ bool CRenderManager::PrepareHDR10AILookahead(std::unique_lock<CCriticalSection>&
   // A seek can retain the old scanout, but only the new queue may prime AI.
   if (m_aiStartPts != DVD_NOPTS_VALUE && (paused || pending || selected))
     queue.push_front(m_presentsource);
-  if (queue.empty()) return false;
+  if (queue.empty()) { m_aiStartupBuffered = false; return false; }
   uint64_t deadline = 0;
   if (m_pRenderer->HDR10AILookahead() && m_aiStartPts != DVD_NOPTS_VALUE)
   {
@@ -394,6 +395,7 @@ bool CRenderManager::ExecuteHDR10AIQueuePreparation(
   const auto generation = m_aiQueueGeneration;
   const double startPts = m_Queue[queue.front()].pts + m_Queue[queue.front()].duration;
   auto preparation = renderer->CaptureHDR10AIQueue(queue,m_aiEnd,paused,deadline);
+  m_aiStartupBuffered = preparation.buffered;
   if (preparation.execute)
   {
     m_aiGUIOwnsRenderer = true;
@@ -402,12 +404,13 @@ bool CRenderManager::ExecuteHDR10AIQueuePreparation(
     lock.unlock();
     HDR10AIQueuePreparation::Outcome outcome{};
     try { outcome = preparation.execute(); }
-    catch (...) { lock.lock(); throw; }
+    catch (...) { lock.lock(); m_aiStartupBuffered = false; throw; }
     lock.lock();
     if (generation != m_aiQueueGeneration || renderer != m_pRenderer ||
         !preparation.publish || !preparation.publish(outcome))
     {
       m_aiQueuePreparationStale = true;
+      m_aiStartupBuffered = false;
       // Reject only unsubmitted output; accepted KMS work keeps its owner.
 #ifdef HAVE_DVBRIDGE
       if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
@@ -419,6 +422,7 @@ bool CRenderManager::ExecuteHDR10AIQueuePreparation(
       m_presentstep = m_queued.empty() ? PRESENT_IDLE : PRESENT_READY;
       return m_aiQueueReady = false;
     }
+    m_aiStartupBuffered = preparation.buffered && outcome.lookahead;
     // After rejection, fresh pending analysis is not yet a new selected frame.
     if (outcome.lookahead && !lookahead)
     {
@@ -504,6 +508,13 @@ bool CRenderManager::HDR10AIPriming()
       m_aiFullscreenRequested && !m_aiGuiReady;
 }
 
+bool CRenderManager::HDR10AIStartupBuffered()
+{
+  std::unique_lock lock(m_presentlock);
+  return m_pRenderer && m_pRenderer->HDR10AIQueueEligible() && m_pRenderer->HDR10AILookahead() &&
+      !m_showVideo && m_aiFullscreenRequested && m_aiStartupBuffered;
+}
+
 void CRenderManager::EndHDR10AIQueue()
 {
   std::unique_lock lock(m_presentlock);
@@ -513,6 +524,7 @@ void CRenderManager::EndHDR10AIQueue()
 void CRenderManager::ResetHDR10AIQueue()
 {
   ++m_aiQueueGeneration;
+  m_aiStartupBuffered = false;
   if (m_clockSync.m_cb1Phase)
   {
     m_clockSync.Reset();
@@ -762,11 +774,19 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
       m_overlays.Flush();
       m_debugRenderer.Flush();
 #ifdef CB1_HAS_HDR10_AI
-      ResetHDR10AIQueue();
+      // Reset display timing even when its decoded pictures survive.
+      if (m_clockSync.m_cb1Phase)
+      {
+        m_clockSync.Reset();
+        m_dvdClock.SetVsyncAdjust(0);
+      }
 #endif
 
       if (!m_pRenderer->Flush(saveBuffers))
       {
+#ifdef CB1_HAS_HDR10_AI
+        ResetHDR10AIQueue();
+#endif
         for (auto& slot : m_Queue) slot.sourceSideData.reset();
         m_queued.clear();
         m_discard.clear();
@@ -1194,8 +1214,14 @@ void CRenderManager::UpdateResolution()
       {
         RESOLUTION res = CResolutionUtils::ChooseBestResolution(
             m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
+#ifdef HAVE_DVBRIDGE
+        // Carry the stream's intent when this later request performs the modeset.
+        const auto previous = DVBRIDGE::guiModeChangeResolution;
+        DVBRIDGE::guiModeChangeResolution = m_nativeDVRate ? static_cast<int>(res) : -1;
+#endif
         CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
 #ifdef HAVE_DVBRIDGE
+        DVBRIDGE::guiModeChangeResolution = previous;
         if (m_nativeDVRate)
           if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
           {
@@ -1562,12 +1588,13 @@ void CRenderManager::PrepareNextRender()
 
 #ifdef CB1_HAS_HDR10_AI
   if (physicalPhase && completionAge && m_fps > 0 &&
-      frametime * m_fps < DVD_TIME_BASE * 0.75 && m_pRenderer->HDR10AILookahead() &&
-      (DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::ReferenceDV ||
-       DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV))
+      frametime * m_fps < DVD_TIME_BASE * 0.75 && m_pRenderer->HDR10AILookahead())
   {
-    // Select on the physical refresh phase, not an interpolated mid-refresh clock.
-    renderPts -= std::fmod(std::max(0.0, *completionAge), frametime);
+    const auto source = DVBRIDGE::FrameOutputSettings(
+        m_picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS).hdr10Source;
+    if (source == DVBRIDGE::HDR10SourceMode::ReferenceDV || source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV)
+      // Select on the physical refresh phase, not an interpolated mid-refresh clock.
+      renderPts -= std::fmod(std::max(0.0, *completionAge), frametime);
   }
 #endif
 

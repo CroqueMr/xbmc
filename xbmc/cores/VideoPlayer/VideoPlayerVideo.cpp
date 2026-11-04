@@ -112,6 +112,7 @@ CVideoPlayerVideo::~CVideoPlayerVideo()
 {
   m_bAbortOutput = true;
   StopThread();
+
 }
 
 double CVideoPlayerVideo::GetOutputDelay()
@@ -298,6 +299,8 @@ void CVideoPlayerVideo::CloseStream(bool bWaitForBuffers)
   m_bAbortOutput = true;
   StopThread();
 
+  m_drainPending = 0;
+
   m_messageQueue.End();
 
   CLog::Log(LOGINFO, "deleting video codec");
@@ -318,7 +321,8 @@ bool CVideoPlayerVideo::AcceptsData() const
 
 bool CVideoPlayerVideo::HasData() const
 {
-  return m_messageQueue.GetDataSize() > 0;
+  return m_drainPending || m_messageQueue.GetDataSize() > 0 ||
+      m_messageParent.GetPacketCount(CDVDMsg::PLAYER_ABORT) > 0;
 }
 
 bool CVideoPlayerVideo::IsInited() const
@@ -328,7 +332,14 @@ bool CVideoPlayerVideo::IsInited() const
 
 inline void CVideoPlayerVideo::SendMessage(std::shared_ptr<CDVDMsg> pMsg, int priority)
 {
-  m_messageQueue.Put(pMsg, priority);
+  if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
+  {
+    std::scoped_lock lock(m_drainMutex);
+    ++m_drainPending;
+    m_messageQueue.Put(pMsg, priority);
+  }
+  else
+    m_messageQueue.Put(pMsg, priority);
   m_processInfo.SetLevelVQ(m_messageQueue.GetLevel());
 }
 
@@ -340,7 +351,9 @@ inline void CVideoPlayerVideo::SendMessageBack(const std::shared_ptr<CDVDMsg>& p
 
 inline void CVideoPlayerVideo::FlushMessages()
 {
+  std::scoped_lock lock(m_drainMutex);
   m_messageQueue.Flush();
+  m_drainPending = 0;
   m_processInfo.SetLevelVQ(m_messageQueue.GetLevel());
 }
 
@@ -385,6 +398,15 @@ void CVideoPlayerVideo::Process()
   m_iDroppedFrames = 0;
   m_rewindStalled = false;
   m_outputSate = OUTPUT_NORMAL;
+
+  const auto processDecoderOutput = [&]() {
+#ifdef CB1_HAS_HDR10_AI
+    if ((m_syncState == IDVDStreamPlayer::SYNC_STARTING || m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC) &&
+        m_renderManager.HDR10AIStartupBuffered())
+      return true;
+#endif
+    return ProcessDecoderOutput(frametime, pts);
+  };
 
   while (!m_bStop)
   {
@@ -448,7 +470,7 @@ void CVideoPlayerVideo::Process()
                 m_processInfo.IsFrameAdvance() ||
                 m_syncState != IDVDStreamPlayer::SYNC_INSYNC) && !m_paused)
       {
-        if (ProcessDecoderOutput(frametime, pts))
+        if (processDecoderOutput())
         {
           onlyPrioMsgs = true;
           continue;
@@ -465,7 +487,7 @@ void CVideoPlayerVideo::Process()
         // squeeze pictures out
         while (!m_bStop && m_pVideoCodec)
         {
-          m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
+          m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN | DVD_CODEC_CTRL_POLL);
           if (!ProcessDecoderOutput(frametime, pts))
             break;
         }
@@ -578,7 +600,7 @@ void CVideoPlayerVideo::Process()
 
       while (!m_bStop && m_pVideoCodec)
       {
-        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
+        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN | DVD_CODEC_CTRL_POLL);
         bool cont = ProcessDecoderOutput(frametime, pts);
 
         if (!cont)
@@ -601,6 +623,7 @@ void CVideoPlayerVideo::Process()
         if (!ProcessDecoderOutput(frametime, pts))
           break;
       }
+      --m_drainPending;
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
@@ -680,7 +703,7 @@ void CVideoPlayerVideo::Process()
         m_videoStats.AddSampleBytes(pPacket->iSize);
         UpdatePlayerInfo();
 
-        if (ProcessDecoderOutput(frametime, pts))
+        if (processDecoderOutput())
         {
           onlyPrioMsgs = true;
         }
@@ -718,6 +741,17 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
   if (decoderState == CDVDVideoCodec::VC_BUFFER)
   {
+    return false;
+  }
+
+  if (decoderState == CDVDVideoCodec::VC_FATAL)
+  {
+    if (!m_messageQueue.ReceivedAbortRequest())
+    {
+      CLog::Log(LOGERROR, "CVideoPlayerVideo - non-recoverable video decoder failure, stopping playback");
+      m_messageParent.Put(std::make_shared<CDVDMsgBool>(CDVDMsg::PLAYER_ABORT, true));
+      m_messageQueue.Abort();
+    }
     return false;
   }
 
@@ -1131,6 +1165,9 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   int buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
   if (buffer < 0)
   {
+    if (m_bAbortOutput)
+      return OUTPUT_ABORT;
+
     // The render buffer pool can fill up in trick-play FF, with more new pictures decoded than
     // are taken out at the display rate.
     // Drop the picture to let the renderer naturally drain the pool and make room for next iteration.

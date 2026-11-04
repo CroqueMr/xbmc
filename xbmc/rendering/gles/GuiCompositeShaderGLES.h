@@ -21,6 +21,7 @@ public:
 
   void SetProjection(const GLfloat* proj) { m_proj = proj; }
   void SetInputPQ(bool value) { m_inputPQ = value; }
+  void SetOutputRange(float scale, float offset) { m_outputScale = scale; m_outputOffset = offset; }
 
   bool CreateLUTs(int colorTransfer);
 
@@ -48,6 +49,7 @@ private:
   GLuint m_lutTFTexId{0};
   float m_ootfGamma{0.0f};
   bool m_inputPQ{false};
+  float m_outputScale{1.0f}, m_outputOffset{0.0f};
 
   GLint m_hPos{-1};
   GLint m_hTex{-1};
@@ -57,4 +59,5 @@ private:
   GLint m_hProj{-1};
   GLint m_hOotfGamma{-1};
   GLint m_hInputPQ{-1};
+  GLint m_hOutputRange{-1};
 };

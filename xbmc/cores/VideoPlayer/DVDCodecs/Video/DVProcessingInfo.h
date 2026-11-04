@@ -16,6 +16,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   accepted.effective=output.effective; accepted.method=output.method;
   accepted.panel=output.panel;
   accepted.gamut=output.gamut; accepted.manualPeak=output.manualPeak;
+  accepted.displayBlack=output.displayBlack;
   accepted.revision=output.revision; accepted.stream=output.stream; accepted.picture=output.picture;
   accepted.format=output.format; accepted.width=output.width; accepted.height=output.height;
   accepted.refresh=output.refresh; accepted.fallback=output.fallback;
@@ -29,6 +30,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   accepted.felUpscaling=output.felUpscaling;
 #ifdef CB1_HAS_HDR10_AI
   accepted.hdr10AI=output.hdr10AI; accepted.aiL1L3=output.aiL1L3;
+  accepted.aiModel=output.aiModel; accepted.aiBaseline=output.aiBaseline;
   accepted.hdr10PlusDV=output.hdr10PlusDV;
   accepted.guidedSourceFields=output.guidedSourceFields;
   accepted.guidedEstimatedFields=output.guidedEstimatedFields;

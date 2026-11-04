@@ -105,7 +105,9 @@ std::vector<uint8_t> CDRMConnector::GetEDID(bool refresh) const
   uint64_t blob_id = GetPropertyValue("EDID").value_or(0);
   if (refresh)
   {
-    auto* current = drmModeGetConnector(m_fd,m_connector->connector_id);
+    // Refresh the published properties, not the physical link. Video startup
+    // must not force a new DDC probe while HDMI is changing modes.
+    auto* current = drmModeGetConnectorCurrent(m_fd,m_connector->connector_id);
     if (!current) return {};
     const auto property = GetPropertyId("EDID");
     blob_id = 0;

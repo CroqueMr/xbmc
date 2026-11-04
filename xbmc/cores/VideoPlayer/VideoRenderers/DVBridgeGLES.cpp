@@ -650,7 +650,8 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
   ClearNextHDR10AI();
   if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::Native)
     return StopHDR10AI() ? Decision::Native : Decision::Wait;
-  if (m_state->aiStopping && !StopHDR10AI()) return Decision::Wait;
+  const bool retiring = m_state->aiStopping;
+  if (retiring && !StopHDR10AI()) return Decision::Wait;
   if (queue.empty() || !result) return Decision::Ignore;
   // Retire completed RGB leases even while anticipation is incomplete.
   if (Poll() == DVBRIDGE_DV_FAILED)
@@ -671,8 +672,8 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
   {
     cb1_hdr10plus_dovi_result description{};
     const bool direct=metadata && cb1_hdr10plus_dovi_describe(&description,metadata.get(),nullptr)==CB1_HDR10PLUS_DOVI_OK;
-    // The existing stop fence retires prior analysis/leases before changing strategy.
-    if(direct && !StopHDR10AI())return Decision::Wait;
+    // A stop completed at entry already retired prior analysis/leases.
+    if(direct && !retiring && !StopHDR10AI())return Decision::Wait;
     const auto status = direct ? (m_state->gl && !Quarantined() ?
         HDR10AI().Begin(m_state->gl->gpu,bundle,preferences,head.binding,head.pts,now,true,true) :
         HDR10AI().RecordStatus("metadata-context",CB1_AI_INCOMPATIBLE)) :
@@ -1116,7 +1117,7 @@ void CDVBridgeGLES::SetOverlayVisible(bool visible)
 }
 
 bool CDVBridgeGLES::SetNativeOverlay(unsigned texture, unsigned degamma, unsigned pq,
-                                    const CRect& bounds, uint64_t content, bool inputPQ)
+                                    const CRect& bounds, uint64_t content, bool inputPQ, bool optimized)
 {
   const int width = m_scanout ? m_scanout->params.w : 0;
   const int height = m_scanout ? m_scanout->params.h : 0;
@@ -1136,6 +1137,7 @@ bool CDVBridgeGLES::SetNativeOverlay(unsigned texture, unsigned degamma, unsigne
   const bool layoutChanged = m_nativeOverlayEnabled != enabled || (enabled &&
       (texture != m_nativeOverlayTextures[0] || degamma != m_nativeOverlayTextures[1] ||
        pq != m_nativeOverlayTextures[2] || formatChanged || sizeChanged ||
+       optimized != m_nativeOverlay.optimized ||
        !std::equal(std::begin(nextRect),std::end(nextRect),std::begin(m_nativeOverlay.rect))));
   if (layoutChanged || (enabled && content != m_nativeOverlayContent))
     ++m_nativeOverlayRevision;
@@ -1144,6 +1146,7 @@ bool CDVBridgeGLES::SetNativeOverlay(unsigned texture, unsigned degamma, unsigne
   if (!enabled)
     return false;
   m_nativeOverlay.input_pq = inputPQ;
+  m_nativeOverlay.optimized = optimized;
   std::copy(std::begin(nextRect),std::end(nextRect),std::begin(m_nativeOverlay.rect));
   const unsigned ids[]{texture, degamma, pq};
   pl_tex* wrapped[]{&m_nativeOverlay.texture, &m_nativeOverlay.degamma, &m_nativeOverlay.pq};
@@ -1444,7 +1447,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   }
   // A selected policy already passed output admission, including compatibility routes.
   const bool fallback = !selected &&
-      (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid();
+      (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid(policy.mode);
   if (fallback)
   {
     policy.mode = preferences.output == DVBRIDGE::OutputMode::HDR10 ?
@@ -1459,6 +1462,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
       policy.mode);
   const bool sameGeometry = geometry.source_width == m_sourceGeometry.source_width &&
+      geometry.ignore_l5 == m_sourceGeometry.ignore_l5 &&
       geometry.source_height == m_sourceGeometry.source_height &&
       geometry.x == m_sourceGeometry.x && geometry.y == m_sourceGeometry.y &&
       geometry.width == m_sourceGeometry.width && geometry.height == m_sourceGeometry.height &&
@@ -1542,7 +1546,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
   policy.revision = revision;
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
-  dvbridge_renderer_set_fel_nearest(m_renderer,preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416));
+  dvbridge_renderer_set_fel_filter(m_renderer, preferences.felUpscaling == 2 ? DVBRIDGE_FEL_REFERENCE : preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416) ? DVBRIDGE_FEL_BILINEAR : DVBRIDGE_FEL_DEFAULT);
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   m_fallback = fallback;
@@ -1576,10 +1580,10 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       m_auditRequested.Record(DVBRIDGE::DiagnosticNowMs(),"requested",m_auditSerial))
   {
     m_auditRequestedSerial=m_auditSerial;
-    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={} l2_trims_disabled={} method={} tv_peak={} tv_panel={} tv_gamut={} tv_profile_valid={}",
+    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={} l2_trims_disabled={} method={} tv_peak={} tv_panel={} tv_gamut={} tv_profile_valid={} encoded_active_area={}",
         base.binding.stream,base.binding.picture,base.binding.revision,revision,
         int(preferences.Policy().mode),int(policy.mode),!m_fallback,m_fallback,preferences.L2TrimsDisabled(policy.mode),
-        preferences.method,preferences.peak,preferences.panel,preferences.gamut,preferences.ProfileValid());
+        preferences.method,preferences.peak,preferences.panel,preferences.gamut,preferences.ProfileValid(),geometry.ignore_l5);
     const auto admission=DVBRIDGE::StreamTelemetry::Read().transaction;
     DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge output admission: generation={} source_known={} gpu_known={} native_dv={} hdr10={} requested={} effective={} reason={}",
         admission.capabilities.generation,admission.capabilities.sourceKnown,admission.capabilities.processingKnown,
@@ -1664,6 +1668,9 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   }
   else
   {
+    // Reserve the film's representable ceiling before the GUI is composed.
+    policy.expert_output_bits=m_outputBits;
+    policy.expert_output_limited=m_hdr10Limited;
     if (allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
         geometry.width == geometry.target_width && geometry.height == geometry.target_height)
     {
@@ -1986,8 +1993,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
       return FrameStatus::Failed;
     if (m_hardwareFELFilter != effectiveFilter)
       DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 FEL filter selection: requested={} backend={}",
-          master ? "reference" : preferences.felUpscaling == 1 ? "nearest" : "vaapi",
-          master ? "reference-gpu" : preferences.felUpscaling == 1 ? "shader" : "vaapi-vpp");
+          master || preferences.felUpscaling == 2 ? "reference" : preferences.felUpscaling == 1 ? "bilinear" : "vaapi",
+          master || preferences.felUpscaling == 2 ? "reference-gpu" : preferences.felUpscaling == 1 ? "shader" : "vaapi-vpp");
     if (m_felVppStream != base.binding.stream)
     {
       m_rawELCache.clear();
@@ -2041,7 +2048,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
       else if (status == DVBRIDGE_VPP_FAILED)
       {
         m_felVppEnabled = false;
-        DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 FEL upscaling: VAAPI unavailable, using nearest GPU reconstruction");
+        DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 FEL upscaling: VAAPI unavailable, using bilinear GPU reconstruction");
       }
     }
     if (!imported->scaled)
@@ -2268,6 +2275,9 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
       submission.identity.revision != m_pendingIdentity.revision)
     return false;
   const auto* hdrOutput = HDR10Output();
+  // Capture the executed mapping before commit releases its pending plan.
+  const double displayBlack = hdrOutput ? hdrOutput->policy.expert_black_nits : 0;
+  const int displayGamut = hdrOutput ? static_cast<int>(hdrOutput->policy.tv.gamut) : 0;
   const float peak = m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS ? 992.0f :
       hdrOutput ? hdrOutput->nominal_target.hdr.max_luma :
       m_advanced && m_effectiveMode == DVBRIDGE_MODE_ENHANCED_DV ? static_cast<float>(m_requested.peak) :
@@ -2298,8 +2308,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
       DVBRIDGE::DiagnosticLog(LOGINFO,
           "CB1 FEL presented: applicable={} requested={} executed={} backend={}",
           submission.felBackend != 0,
-          submission.felFilter < 0 ? "not-applicable" : submission.felFilter == 1 ? "nearest" : "vaapi",
-          submission.felBackend == 3 ? "reference" : submission.felBackend == 0 ? "not-applicable" : submission.felBackend == 2 ? "vaapi" : "nearest",
+          submission.felFilter < 0 ? "not-applicable" : submission.felFilter == 2 ? "reference" : submission.felFilter == 1 ? "bilinear" : "vaapi",
+          submission.felBackend == 3 ? "reference" : submission.felBackend == 0 ? "not-applicable" : submission.felBackend == 2 ? "vaapi" : "bilinear",
           submission.felBackend == 3 ? "reference-gpu" : submission.felBackend == 2 ? "vaapi-vpp" : submission.felBackend == 1 ? "shader" : "not-applicable"))
   {
     m_reportedFELStream=submission.identity.stream;
@@ -2334,6 +2344,11 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
       output.hdr10AI=true;
       const auto& raw=prediction->raw;
       output.aiL1L3={raw.l1_min,raw.l1_max,raw.l1_avg,raw.l3_min,raw.l3_max,raw.l3_avg};
+      if (prediction->model && !(prediction->source_flags & CB1_SOURCE_STATISTICS))
+      {
+        output.aiModel=prediction->model;
+        output.aiBaseline={prediction->base[0],prediction->base[2],prediction->base[1]};
+      }
       if (m_aiGuidance)
       {
         output.hdr10PlusDV = true;
@@ -2374,8 +2389,11 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
       , m_aiFrame
 #endif
   );
-  output.panel = m_requested.panel; output.gamut = m_requested.gamut;
-  output.manualPeak = m_requested.peak; output.revision = m_pendingIdentity.revision;
+  const bool expert=m_effectiveMode==DVBRIDGE_MODE_HDR10_EXPERT;
+  output.panel = m_requested.panel; output.gamut = expert?displayGamut:m_requested.gamut;
+  output.manualPeak = expert?peak:m_requested.peak;
+  output.displayBlack = expert?displayBlack:0;
+  output.revision = m_pendingIdentity.revision;
   output.fallback = m_fallback;
   if (m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS)
   {
@@ -2518,7 +2536,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
           m_pendingSourceInfo.profile,m_pendingSourceInfo.bl,m_pendingSourceInfo.el,m_pendingSourceInfo.rpu,
           CDVPlaybackInfo::IsHDR10PlusDV(acceptedOutput) ?
               (acceptedOutput.guidedSourceFields & CB1_HDR10PLUS_DOVI_AVG ?
-                  "source-HDR10+-statistics" : "source-HDR10+-and-AI-estimates") :
+                  "source-HDR10+-statistics" : "source-HDR10+-and-estimates") :
           acceptedOutput.effective == 7 ? "reconstructed-picture-statistics" :
           acceptedOutput.flags & CDVPlaybackInfo::HDR10 ? (acceptedOutput.effective>=3 ? "manual-tv-profile" :
               acceptedOutput.level6 ? "source-L6" : "reference-default") : "source-RPU");
@@ -2529,7 +2547,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   m_submission = {};
 #ifdef CB1_HAS_HDR10_AI
   // The accepted page owns its immutable current fence; future commands follow it.
-  if (m_aiFrame) m_context->AdvanceNextHDR10AI(m_committedBinding,DVBRIDGE::FrameOutputSettings());
+  if (m_aiFrame) m_context->AdvanceNextHDR10AI(m_committedBinding,
+      DVBRIDGE::FrameOutputSettings(m_requested.hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV));
 #endif
   return true;
 }
