@@ -909,6 +909,11 @@ void CApplication::Render()
     return;
 
   // render gui layer
+  // Subtitle/input invalidations can arrive in player FrameMove after the first dirty check.
+  if (m_skipGuiRender && !appPlayer->IsRenderingVideoLayer() &&
+      (!CServiceBroker::GetWinSystem()->CanReuseGuiComposite() ||
+       CServiceBroker::GetGUI()->GetWindowManager().HasDirtyRegions()))
+    m_skipGuiRender = false;
   const bool guiWillRender = appPower->GetRenderGUI() && !m_skipGuiRender;
   bool compositing = CServiceBroker::GetWinSystem()->BeginGuiComposite(guiWillRender);
 
@@ -1627,7 +1632,8 @@ void CApplication::FrameMove(bool processEvents, bool processGUI)
     // Dirty-driven skip: on paths with a persistent framebuffer (D2P plane or
     // HDR GUI compositing FBO), skip Render when no controls dirtied themselves
     // this frame. The persistence keeps the previous OSD on screen for free.
-    if (!m_skipGuiRender && appPlayer->IsRenderingVideoLayer() &&
+    if (!m_skipGuiRender && (appPlayer->IsRenderingVideoLayer() ||
+        CServiceBroker::GetWinSystem()->CanReuseGuiComposite()) &&
         !CServiceBroker::GetGUI()->GetWindowManager().HasDirtyRegions())
       m_skipGuiRender = true;
     CServiceBroker::GetGUI()->GetWindowManager().FrameMove();

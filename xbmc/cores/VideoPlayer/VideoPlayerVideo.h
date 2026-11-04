@@ -20,6 +20,7 @@
 #include "utils/BitstreamStats.h"
 
 #include <atomic>
+#include <mutex>
 #ifdef HAVE_DVBRIDGE
 #include "utils/DVRenderUsage.h"
 #endif
@@ -140,6 +141,8 @@ protected:
   unsigned m_diagnosticTransitions{0};
 #endif
   std::atomic_bool m_stalled = false;
+  std::atomic_uint m_drainPending = 0;
+  std::mutex m_drainMutex;
   std::atomic_bool m_rewindStalled;
   bool m_paused;
   IDVDStreamPlayer::ESyncState m_syncState;

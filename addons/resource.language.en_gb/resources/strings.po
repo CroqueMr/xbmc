@@ -25803,7 +25803,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40811"
-msgid "Dolby Vision output"
+msgid "Dolby Vision playback"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25818,12 +25818,12 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40814"
-msgid "Dolby Vision Disabled (native Kodi)"
+msgid "Kodi default"
 msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40815"
-msgid "Choose Dolby Vision Master Reference, Dolby Vision Reference, Adaptive HDR Mapping, HDR10 conversion or standard Kodi playback. Changes apply at a video frame boundary."
+msgid "Choose playback for Dolby Vision sources: Reference, Master Reference, Adaptive HDR Mapping, HDR10 Rendering, HDR10 Rendering Reference, HDR10+ Rendering or Kodi default. Kodi default bypasses CB1 processing. Changes apply at a video frame boundary."
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25851,11 +25851,11 @@ msgid "HDR10 conversion method"
 msgstr ""
 
 msgctxt "#40821"
-msgid "Basic uses source metadata. Expert requires a TV profile. HDR10+ sends picture statistics and representable trims to a compatible display."
+msgid "HDR10 Rendering uses source metadata. HDR10 Rendering Reference maps to the configured display peak, black level and gamut. HDR10+ sends picture statistics and representable trims to a compatible display."
 msgstr ""
 
 msgctxt "#40922"
-msgid "HDR10+ conversion"
+msgid "HDR10+ Rendering"
 msgstr ""
 
 msgctxt "#40923"
@@ -25871,11 +25871,11 @@ msgid "Reference and Master Reference only. L8 trims remain active."
 msgstr ""
 
 msgctxt "#40822"
-msgid "HDR10 Reference Basic"
+msgid "HDR10 Rendering"
 msgstr ""
 
 msgctxt "#40823"
-msgid "HDR10 Reference Expert"
+msgid "HDR10 Rendering Reference"
 msgstr ""
 
 msgctxt "#40829"
@@ -25883,7 +25883,7 @@ msgid "TV peak luminance (nits)"
 msgstr ""
 
 msgctxt "#40830"
-msgid "Enter a known TV peak, 1 to 10000 nits. This is a processing reference, not measured TV light. Disable TV dynamic tone mapping for HDR10 Expert."
+msgid "Enter a known TV peak, 1 to 10000 nits. This is a processing reference, not measured TV light. HDR10 Rendering Reference has its own display calibration settings."
 msgstr ""
 
 msgctxt "#40831"
@@ -26012,11 +26012,11 @@ msgid "HDR10 playback"
 msgstr ""
 
 msgctxt "#40866"
-msgid "HDR10 Native"
+msgid "Kodi default"
 msgstr ""
 
 msgctxt "#40867"
-msgid "Dolby Vision Reference (AI)"
+msgid "Dolby Vision Rendering"
 msgstr ""
 
 msgctxt "#40868"
@@ -26024,7 +26024,7 @@ msgid "Dolby Vision Adaptive HDR Mapping (AI)"
 msgstr ""
 
 msgctxt "#40870"
-msgid "Convert HDR10 to Dolby Vision with AI. Adaptive requires a TV profile. HDR10+ metadata-guided mode keeps source pixels; missing statistics use AI estimates."
+msgid "Remember playback for HDR10 sources: Dolby Vision Rendering with AI, Adaptive HDR Mapping with AI or Kodi default. Kodi default bypasses CB1 processing. Adaptive requires a TV profile. Automatic fallback does not change this choice."
 msgstr ""
 
 msgctxt "#40875"
@@ -26040,11 +26040,15 @@ msgid "FEL upscaling"
 msgstr ""
 
 msgctxt "#40908"
-msgid "Choose FEL upscaling: VAAPI or nearest neighbour on the GPU. If VAAPI is unavailable, nearest neighbour is used."
+msgid "FEL upscaling: VAAPI, GPU bilinear or Reference GPU. Master Reference always uses Reference GPU. If VAAPI is unavailable, GPU bilinear is used."
 msgstr ""
 
 msgctxt "#40909"
-msgid "Nearest neighbour (GPU)"
+msgid "Bilinear (GPU)"
+msgstr ""
+
+msgctxt "#40995"
+msgid "Reference (GPU)"
 msgstr ""
 
 msgctxt "#40911"
@@ -26099,8 +26103,20 @@ msgctxt "#40971"
 msgid "Source pixels unchanged. HDR10+ curve and saturation are not translated. Requires full-source analysis."
 msgstr ""
 
+msgctxt "#41012"
+msgid "HDR10+ playback"
+msgstr ""
+
+msgctxt "#41013"
+msgid "Remember playback for HDR10+ sources: Dolby Vision Rendering or Kodi default. Kodi default bypasses CB1 processing. Automatic fallback does not change this choice."
+msgstr ""
+
+msgctxt "#41014"
+msgid "Kodi default"
+msgstr ""
+
 msgctxt "#40970"
-msgid "HDR10+ to Dolby Vision (metadata-guided)"
+msgid "Dolby Vision Rendering"
 msgstr ""
 
 msgctxt "#40940"
@@ -26196,15 +26212,15 @@ msgid "Adjust only bitmap subtitles in their authoring domain before composition
 msgstr ""
 
 msgctxt "#40980"
-msgid "CM4.0 metadata"
+msgid "Add CM4.0 metadata"
 msgstr ""
 
 msgctxt "#40981"
-msgid "Reference and Master only. Adds default CM4 metadata without changing video pixels. Automatic selection uses the original L2 trims."
+msgid "Adds CM4 metadata without changing video pixels or removing L2 trims. TV rendering may change. Reference and Master only."
 msgstr ""
 
 msgctxt "#40982"
-msgid "CM2.9 without L2 trims"
+msgid "Only if source has no L2 trims"
 msgstr ""
 
 msgctxt "#40983"
@@ -26253,4 +26269,68 @@ msgstr ""
 
 msgctxt "#40994"
 msgid "Append while L1 peak fits the TV peak plus this margin. Requires TV peak brightness. Sources without L2 always qualify."
+msgstr ""
+
+msgctxt "#41030"
+msgid "HDR10 Rendering Reference peak brightness (nits)"
+msgstr ""
+
+msgctxt "#41031"
+msgid "Enter the measured peak manually: 50 to 10000 nits, in 0.1-nit steps. Zero means not configured. Disable additional tone mapping on the display when comparing this player-led mapping."
+msgstr ""
+
+msgctxt "#41032"
+msgid "HDR10 Rendering Reference display black level"
+msgstr ""
+
+msgctxt "#41033"
+msgid "Estimated display black floor. Custom overrides the estimate without changing peak brightness or gamut."
+msgstr ""
+
+msgctxt "#41034"
+msgid "OLED (0 nits)"
+msgstr ""
+
+msgctxt "#41035"
+msgid "LCD / Mini-LED (0.005 nits)"
+msgstr ""
+
+msgctxt "#41036"
+msgid "Projector (0.05 nits)"
+msgstr ""
+
+msgctxt "#41037"
+msgid "Custom"
+msgstr ""
+
+msgctxt "#41038"
+msgid "HDR10 Rendering Reference custom black level (nits)"
+msgstr ""
+
+msgctxt "#41039"
+msgid "0 to 0.5 nit, in 0.0001-nit steps. This value is remembered independently of the selected black-level preset."
+msgstr ""
+
+msgctxt "#41040"
+msgid "HDR10 Rendering Reference target color gamut"
+msgstr ""
+
+msgctxt "#41041"
+msgid "Nominal rendering volume. HDMI output remains BT.2020 PQ. Selecting BT.2020 does not imply that the display covers the entire gamut."
+msgstr ""
+
+msgctxt "#41100"
+msgid "Optimized GUI rendering"
+msgstr ""
+
+msgctxt "#41101"
+msgid "Reduce GUI compositing work during Dolby Vision playback on supported GPUs. Movie pixels and metadata are unchanged; very small GUI differences are possible. Off retains the existing rendering path."
+msgstr ""
+
+msgctxt "#41120"
+msgid "Use encoded frame as Dolby Vision active area"
+msgstr ""
+
+msgctxt "#41121"
+msgid "Ignore Level 5 margins only for files already cropped without matching metadata. Kodi zoom and placement still apply. Off preserves the authored active area; no automatic aspect-ratio correction is performed."
 msgstr ""

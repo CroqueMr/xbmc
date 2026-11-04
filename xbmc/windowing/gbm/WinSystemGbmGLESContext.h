@@ -67,6 +67,7 @@ public:
   // GUI compositing for HDR
   bool SetGuiCompositing(int colorTransfer) override;
   bool BeginGuiComposite(bool guiWillRender) override;
+  bool CanReuseGuiComposite() const override;
   void EndGuiComposite() override;
   void CompositeGui() override;
   bool IsHdrComposite() const override { return m_guiCompositing; }
@@ -105,7 +106,8 @@ public:
   bool HDR10AIFrameCommitted() const
   {
     return m_dvBridge && m_dvContext &&
-        m_dvContext->HDR10AI().Current(m_aiActivation,DVBRIDGE::FrameOutputSettings()) &&
+        m_dvContext->HDR10AI().Current(m_aiActivation,
+            DVBRIDGE::FrameOutputSettings(m_dvContext->HDR10AI().HDR10Plus())) &&
         m_dvBridge->CommittedHDR10AI().has_value();
   }
   bool PrepareHDR10AIQueue(const VideoPicture& picture,
@@ -188,6 +190,8 @@ private:
   bool m_guiFboClean{false};
   // Whether the GUI render pass will run this frame; set by BeginGuiComposite.
   bool m_guiWillRender{true};
+  bool m_guiCacheValid{false};
+  unsigned m_guiCachedElementCount{0};
 
   std::unique_ptr<CGuiCompositeShaderGLES> m_compositeShader;
 #ifdef HAVE_DVBRIDGE

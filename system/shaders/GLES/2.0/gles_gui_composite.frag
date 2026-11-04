@@ -16,6 +16,7 @@ uniform sampler2D u_lutTF;      // linear -> PQ LUT (1024 entries, sdrPeak baked
 uniform float u_ootfGamma;      // HLG: OOTF gamma (1.2 for BT.2100 1000-nit ref)
                                 // PQ: 0.0 (use LUT path instead)
 uniform bool u_inputPQ;         // CB1 subtitle layer already contains BT.2020 PQ.
+uniform highp vec2 u_outputRange; // CB1 final HDR target: exact bit-depth scale and black code.
 
 // BT.709 -> BT.2020 color space conversion matrix (applied in linear light)
 const mat3 bt709_to_bt2020 = mat3(
@@ -36,7 +37,7 @@ void main()
 
   if (u_inputPQ)
   {
-    gl_FragColor = gui;
+    gl_FragColor = vec4(gui.rgb * u_outputRange.x + gui.a * u_outputRange.y, gui.a);
     return;
   }
 
@@ -92,5 +93,5 @@ void main()
   result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
 #endif
 
-  gl_FragColor = vec4(result, gui.a);
+  gl_FragColor = vec4(result * u_outputRange.x + u_outputRange.y, gui.a);
 }

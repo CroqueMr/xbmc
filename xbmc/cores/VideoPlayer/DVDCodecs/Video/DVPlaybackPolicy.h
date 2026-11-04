@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #pragma once
 #include <atomic>
+#include <optional>
 
 class CDVDStreamInfo;
 class VideoPicture;
@@ -8,6 +9,8 @@ class VideoPicture;
 namespace DVBRIDGE
 {
 inline std::atomic<int> modeChangeResolution{-1};
+// A synchronous GUI request must not replace a queued decoder request's intent.
+inline thread_local std::optional<int> guiModeChangeResolution;
 // Keep software metadata probes and ordinary HDR/SDR playback on Kodi's path.
 constexpr bool Eligible(bool standardDVDisplay, bool transportAvailable,
                         bool dolbySource, bool softwareProbe, bool interlaced, bool stereo)

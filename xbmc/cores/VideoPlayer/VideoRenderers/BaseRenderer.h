@@ -62,6 +62,7 @@ struct HDR10AIQueuePreparation
   bool ready{true};
   std::function<Outcome()> execute;
   std::function<bool(const Outcome&)> publish;
+  bool buffered{false}; // Valid owned startup horizon, available before execute.
 };
 #endif
 

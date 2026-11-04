@@ -7,6 +7,7 @@
 #include "application/ApplicationPlayer.h"
 #include "cores/VideoPlayer/Interface/StreamInfo.h"
 #include "GUIDialogNumeric.h"
+#include "guilib/GUIKeyboardFactory.h"
 #include "GUIDialogKaiToast.h"
 #include "GUIDialogSelect.h"
 #include "GUIDialogBusy.h"
@@ -30,11 +31,43 @@
 #include "threads/IRunnable.h"
 #include <cstdio>
 
+namespace
+{
+struct Choice { int output,method,label; };
+constexpr Choice dvChoices[]={{0,0,40812},{4,0,40913},
+    {5,0,40914},
+    {2,0,40814},{1,0,40822},{1,1,40823},{1,2,40922}};
+}
 
 CDVPlaybackModes& CDVPlaybackModes::GetInstance()
 {
   static CDVPlaybackModes instance;
   return instance;
+}
+
+void CDVPlaybackModes::OnSettingsLoaded()
+{
+  const auto settings=CServiceBroker::GetSettingsComponent()->GetSettings();
+  m_expertBlackPreset=settings->GetInt("dvbridge.expertblack");
+}
+
+void CDVPlaybackModes::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
+{
+  if(!setting)return;
+  const auto settings=CServiceBroker::GetSettingsComponent()->GetSettings();
+  if(setting->GetId()=="dvbridge.expertblackcustom")
+    settings->SetBool("dvbridge.expertblackcustomset",true);
+  else if(setting->GetId()=="dvbridge.expertblack")
+  {
+    const int mode=settings->GetInt("dvbridge.expertblack");
+    if(mode==3 && !settings->GetBool("dvbridge.expertblackcustomset"))
+    {
+      settings->SetNumber("dvbridge.expertblackcustom",
+          m_expertBlackPreset==1 ? 0.005 : m_expertBlackPreset==2 ? 0.05 : 0);
+      settings->SetBool("dvbridge.expertblackcustomset",true);
+    }
+    if(mode!=3)m_expertBlackPreset=mode;
+  }
 }
 
 bool CDVPlaybackModes::MenuEnabled()
@@ -59,33 +92,38 @@ bool CDVPlaybackModes::ConfigureProfile()
   auto* dialog=CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogSelect>(WINDOW_DIALOG_SELECT);
   if (!settings || !dialog) return false;
   const auto preferences=DVBRIDGE::FrameOutputSettings();
+  const bool expert=preferences.output==DVBRIDGE::OutputMode::HDR10 && preferences.method==1;
   const auto& strings=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
-  std::string peak=StringUtils::Format("{:g}",preferences.peak);
-  if (!CGUIDialogNumeric::ShowAndGetNumber(peak,strings.Get(40829))) return false;
+  std::string peak=StringUtils::Format("{:g}",expert?preferences.expertPeak:preferences.peak);
+  if (expert ? !CGUIKeyboardFactory::ShowAndGetInput(peak,strings.Get(41030),false) :
+               !CGUIDialogNumeric::ShowAndGetNumber(peak,strings.Get(40829))) return false;
   double value{};
   try
   {
     size_t length{};
     value=std::stod(peak,&length);
-    if (length!=peak.size() || !std::isfinite(value) || value<=0 || value>10000) return false;
+    if (length!=peak.size() || !std::isfinite(value) || value<(expert?50:0.000001) || value>10000) return false;
   }
   catch (const std::exception&) { return false; }
   dialog->Reset(); dialog->SetHeading(40836);
   for(int id : {40838,40839,40840}) dialog->Add(strings.Get(id));
-  dialog->SetSelected(preferences.gamut>0 ? preferences.gamut-1 : 1);
+  const int currentGamut=expert?preferences.expertGamut:preferences.gamut;
+  dialog->SetSelected(currentGamut>0 ? currentGamut-1 : 1);
   dialog->Open();
   if (!dialog->IsConfirmed()) return false;
   const int gamut=dialog->GetSelectedItem()+1;
   auto profile=preferences;
-  profile.peak=value; profile.gamut=gamut;
-  if (!profile.ProfileValid()) return false;
+  if(expert){profile.expertPeak=value;profile.expertGamut=gamut;}
+  else{profile.peak=value;profile.gamut=gamut;}
+  if (!(expert?profile.ExpertProfileValid():profile.ProfileValid())) return false;
   {
     std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
-    if (!settings->SetNumber("dvbridge.tvpeak",value) ||
-        !settings->SetInt("dvbridge.tvgamut",gamut))
+    const char* peakKey=expert?"dvbridge.expertpeak":"dvbridge.tvpeak";
+    const char* gamutKey=expert?"dvbridge.expertgamut":"dvbridge.tvgamut";
+    if (!settings->SetNumber(peakKey,value) || !settings->SetInt(gamutKey,gamut))
     {
-      settings->SetNumber("dvbridge.tvpeak",preferences.peak);
-      settings->SetInt("dvbridge.tvgamut",preferences.gamut);
+      settings->SetNumber(peakKey,expert?preferences.expertPeak:preferences.peak);
+      settings->SetInt(gamutKey,currentGamut);
       return false;
     }
   }
@@ -93,33 +131,33 @@ bool CDVPlaybackModes::ConfigureProfile()
   return true;
 }
 
-bool CDVPlaybackModes::ShowMenu()
+bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
 {
-  if (!MenuEnabled()) return false;
+  if (!settingsMenu && !MenuEnabled()) return false;
   auto* dialog=CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogSelect>(WINDOW_DIALOG_SELECT);
   if (!dialog) return false;
   const auto settings=CServiceBroker::GetSettingsComponent()->GetSettings();
   const auto& strings=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
-  struct Choice { int output,method,label; };
-  constexpr Choice dvChoices[]={{0,0,40812},{4,0,40913},
-      {5,0,40914},
-      {2,0,40814},{1,0,40822},{1,1,40823},{1,2,40922}};
-  const auto nativeSource=SourceType();
+  const auto nativeSource=settingsMenu ? StreamHdrType::HDR_TYPE_DOLBYVISION : SourceType();
+  const bool hdr10PlusSource=nativeSource==StreamHdrType::HDR_TYPE_HDR10PLUS;
   const bool hdr10Source=nativeSource==StreamHdrType::HDR_TYPE_HDR10 ||
                          nativeSource==StreamHdrType::HDR_TYPE_HDR10PLUS;
   if (!hdr10Source && nativeSource!=StreamHdrType::HDR_TYPE_DOLBYVISION) return false;
   const auto source=DVBRIDGE::StreamTelemetry::Read().transaction.capabilities;
 #ifdef CB1_HAS_HDR10_AI
-  constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,40866},{3,0,40970}};
+  constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,40866}};
+  constexpr Choice hdr10PlusChoices[]={{3,0,40970},{0,0,41014}};
 #else
   constexpr Choice hdr10Choices[]={{0,0,40866}};
+  constexpr Choice hdr10PlusChoices[]={{0,0,41014}};
 #endif
-  const Choice* choices=hdr10Source ? hdr10Choices : dvChoices;
-  const int count=hdr10Source ? std::size(hdr10Choices) : std::size(dvChoices);
-  const auto choiceSetting=std::make_shared<CSettingInt>(hdr10Source ?
-      "dvbridge.hdr10playbackchoice" : "dvbridge.playbackchoice");
+  const Choice* choices=hdr10PlusSource ? hdr10PlusChoices : hdr10Source ? hdr10Choices : dvChoices;
+  const int count=hdr10PlusSource ? std::size(hdr10PlusChoices) : hdr10Source ? std::size(hdr10Choices) : std::size(dvChoices);
+  const char* sourceSetting=hdr10PlusSource ? "dvbridge.hdr10plussource" : "dvbridge.hdr10source";
+  const auto choiceSetting=std::make_shared<CSettingInt>(settingsMenu ? "dvbridge.playback" : hdr10PlusSource ? "dvbridge.hdr10plusplaybackchoice" :
+      hdr10Source ? "dvbridge.hdr10playbackchoice" : "dvbridge.playbackchoice");
   {
-    const auto preferences=DVBRIDGE::FrameOutputSettings();
+    const auto preferences=DVBRIDGE::FrameOutputSettings(hdr10PlusSource);
     std::vector<IntegerSettingOption> options;
     int current=-1;
     for(int i=0;i<count;++i)
@@ -136,8 +174,9 @@ bool CDVPlaybackModes::ShowMenu()
         int(nativeSource), source.sourceKnown, source.isDV, source.isHDR10, source.isHDR10Plus, source.processingKnown,
         int(preferences.output), int(preferences.hdr10Source));
     dialog->Reset();
-    dialog->SetHeading(StringUtils::Format(strings.Get(40876), hdr10Source ? "HDR10" : "Dolby Vision"));
-    dialog->SetUseDetails(true);
+    dialog->SetHeading(settingsMenu ? strings.Get(40811) :
+        StringUtils::Format(strings.Get(40876), hdr10PlusSource ? "HDR10+" : hdr10Source ? "HDR10" : "Dolby Vision"));
+    dialog->SetUseDetails(!settingsMenu);
     for(const auto& option : options)
     {
       DVBRIDGE::DiagnosticLog(LOGINFO, "Playback mode option: value={} label={} reason={}",
@@ -150,14 +189,14 @@ bool CDVPlaybackModes::ShowMenu()
       dialog->Add(item);
     }
     dialog->SetSelected(current);
-    dialog->SetProperty("CB1.PlaybackModes",true);
+    if (!settingsMenu) dialog->SetProperty("CB1.PlaybackModes",true);
     dialog->Open();
     dialog->SetProperty("CB1.PlaybackModes", CVariant{});
     if (!dialog->IsConfirmed()) return true;
     const int selected=dialog->GetSelectedItem();
     if (selected<0 || selected>=count) return true;
     // Admission may change during the dialog's nested event loop.
-    if (SourceType()!=nativeSource) return true;
+    if (!settingsMenu && SourceType()!=nativeSource) return true;
     CSettingConditions::DVOutputOptions(choiceSetting,options);
     for(const auto& [name,value] : options[selected].properties)
       if (name=="disabled" && value.asBoolean()) return true;
@@ -165,14 +204,14 @@ bool CDVPlaybackModes::ShowMenu()
     {
       std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
       const int priorOutput=settings->GetInt("dvbridge.outputmode");
-      const int priorHDR10=settings->GetInt("dvbridge.hdr10source");
+      const int priorHDR10=settings->GetInt(sourceSetting);
       const int priorMethod=settings->GetInt("dvbridge.hdr10method");
-      if (!(hdr10Source ? settings->SetInt("dvbridge.hdr10source",choice.output) :
+      if (!(hdr10Source ? settings->SetInt(sourceSetting,choice.output) :
           (settings->SetInt("dvbridge.outputmode",choice.output) &&
            settings->SetInt("dvbridge.hdr10method",choice.method))))
       {
         settings->SetInt("dvbridge.outputmode",priorOutput);
-        settings->SetInt("dvbridge.hdr10source",priorHDR10);
+        settings->SetInt(sourceSetting,priorHDR10);
         settings->SetInt("dvbridge.hdr10method",priorMethod);
         return true;
       }
@@ -188,6 +227,7 @@ bool CDVPlaybackModes::ShowMenu()
 void CDVPlaybackModes::OnSettingAction(const std::shared_ptr<const CSetting>& setting)
 {
   if (setting && setting->GetId()=="dvbridge.configureprofile") ConfigureProfile();
+  else if (setting && setting->GetId()=="dvbridge.playback") ShowMenu(true);
 }
 
 

@@ -67,7 +67,10 @@ extern "C"
 #include "application/ApplicationPlayer.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
+#include "guilib/IDirtyRegionSolver.h"
 #include "rendering/capture/CaptureService.h"
+#include "settings/AdvancedSettings.h"
+#include "settings/SettingsComponent.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVStreamTelemetry.h"
@@ -240,7 +243,10 @@ bool CWinSystemGbmGLESContext::SetFullScreen(bool fullScreen,
     return false;
   m_dvBridge.reset();
   if (!RetireDVContext()) return false;
-  const int opening = DVBRIDGE::modeChangeResolution.load();
+  const int opening = DVBRIDGE::guiModeChangeResolution.value_or(
+      DVBRIDGE::modeChangeResolution.load());
+  CLog::Log(LOGINFO,"CB1 HDMI startup: intent={} output_usable={}",
+      opening, SupportsDVOutputMode());
   if (opening >= 0 && SupportsDVOutputMode())
   {
     const auto& requested=CDisplaySettings::GetInstance().GetResolutionInfo(static_cast<RESOLUTION>(opening));
@@ -303,7 +309,15 @@ bool CWinSystemGbmGLESContext::CB1ModeCanJoin(const RESOLUTION_INFO& res) const
 
 bool CWinSystemGbmGLESContext::HoldCB1Mode(RESOLUTION_INFO& res)
 {
-  if (!CB1ModeCanJoin(res) || m_dispReset || !m_DRM->SetMode(res) ||
+  const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  const bool eligible = CB1ModeCanJoin(res);
+  if (!eligible || m_dispReset)
+    DVBRIDGE::DiagnosticLog(LOGINFO,
+        "CB1 HDMI transition: join_refused eligible={} reset_pending={} page_pending={} committed={} selected_refresh={:.3f} requested_refresh={:.3f}",
+        eligible, m_dispReset, drm && drm->HasPendingCB1Page(),
+        drm && drm->IsSelectedModeCommitted(),
+        m_DRM ? m_DRM->GetCurrentMode().fRefreshRate : 0.0f, res.fRefreshRate);
+  if (!eligible || m_dispReset || !m_DRM->SetMode(res) ||
       !m_DRM->SetVideoMode(res,nullptr)) return false;
   m_modeAnnouncement.Held();
   DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 HDMI transition: mode_selected={}x{}@{:.3f} commit=deferred",
@@ -366,6 +380,8 @@ bool CWinSystemGbmGLESContext::BeginRender()
   // A prepared picture already includes its GUI; wait before drawing it again.
   if (m_cb1FramePending && m_dvFrame)
   {
+    if (CServiceBroker::GetGUI()->GetWindowManager().HasDirtyRegions())
+      m_guiCacheValid = false;
     PresentFrame(false, true);
     return false;
   }
@@ -749,6 +765,7 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus(bool overlay)
 
 bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
 {
+  m_guiCacheValid = false;
   m_guiCompositing = (colorTransfer != 0);
 
   if (m_guiCompositing)
@@ -798,8 +815,66 @@ bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
   return m_guiCompositing;
 }
 
+bool CWinSystemGbmGLESContext::CanReuseGuiComposite() const
+{
+#ifdef HAVE_DVBRIDGE
+  const auto advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  const int dirtyAlgorithm = advanced->m_guiAlgorithmDirtyRegions;
+  // A live redraw clears the entire GUI FBO; partial-scissor damage cannot repopulate it.
+  if (advanced->m_guiVisualizeDirtyRegions ||
+      (dirtyAlgorithm != DIRTYREGION_SOLVER_FILL_VIEWPORT_ALWAYS &&
+       dirtyAlgorithm != DIRTYREGION_SOLVER_FILL_VIEWPORT_ON_CHANGE))
+    return false;
+  if (!(m_dvState.Captured() || m_hdrConversion) || !GetGfxContext().IsFullScreenVideo() ||
+      !DVBRIDGE::FrameOutputSettings().optimizedGUI || !m_guiCompositing || !m_guiCacheValid ||
+      !m_guiFbo.IsValid() || !m_guiFbo.IsBound() || !m_compositeShader ||
+      m_guiFboWidth != m_nWidth || m_guiFboHeight != m_nHeight ||
+      m_dvOverlays || m_dvSubtitleDraws || m_dvPQSubtitleDraws)
+    return false;
+  const auto player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+  if (player && player->HasVisibleOverlay()) return false;
+  const auto capture = CServiceBroker::GetCaptureService();
+  return !capture || (capture->TakeActive(KODI::RENDERING::CAPTURE::CaptureContent::COMPOSITE).empty() &&
+                      capture->TakeActive(KODI::RENDERING::CAPTURE::CaptureContent::VIDEO).empty());
+#else
+  return false;
+#endif
+}
+
 bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
 {
+#ifdef HAVE_DVBRIDGE
+  if (guiWillRender && (m_dvContext || m_dvState.Captured() || m_hdrConversion))
+  {
+    // AI priming can run before DV output or GUI compositing is active.
+    // Restore Kodi's logical GUI state before either drawing path.
+    CRect viewport;
+    CRenderSystemGLES::GetViewPort(viewport);
+    GLint before[4]{}, framebuffer{};
+    const auto now = DVBRIDGE::DiagnosticNowMs();
+    const bool report = DVBRIDGE::DiagnosticsEnabled() && m_dvGuiDiagnostic.Due(now);
+    if (report)
+    {
+      // Bound GL queries even when the common diagnostic budget is exhausted.
+      m_dvGuiDiagnostic.Emitted(now);
+      glGetIntegerv(GL_VIEWPORT, before);
+      glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
+    }
+    CRenderSystemGLES::SetViewPort(viewport);
+    const auto& context = GetGfxContext();
+    CRenderSystemGLES::SetScissors(context.StereoCorrection(context.GetScissors()));
+    if (report)
+    {
+      GLint after[4]{};
+      glGetIntegerv(GL_VIEWPORT, after);
+      DVBRIDGE::DiagnosticLog(LOGINFO,
+          "CB1 GUI viewport: before={},{},{},{} after={},{},{},{} framebuffer={} fbo={}x{} window={}x{} dv={} hdr_conversion={}",
+          before[0], before[1], before[2], before[3], after[0], after[1], after[2], after[3],
+          framebuffer, m_guiFboWidth, m_guiFboHeight, m_nWidth, m_nHeight,
+          m_dvState.Captured(), m_hdrConversion);
+    }
+  }
+#endif
   if (!m_guiCompositing)
     return false;
 
@@ -838,21 +913,26 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
 
     m_guiFboWidth = width;
     m_guiFboHeight = height;
+    m_guiCacheValid = false;
     m_guiFboClean = false; // fresh FBO is undefined, force a clear
     CLog::Log(LOGDEBUG, "CWinSystemGbmGLESContext: created GUI FBO {}x{}", width, height);
   }
 
-  // When GUI render is being skipped, leave the FBO bind/clear out: nothing
-  // will draw into it this frame. The FBO's prior sRGB GUI content is
-  // implicitly preserved across the skipped frame as a side effect.
-  //! @todo The preserved sRGB FBO is currently not leveraged: D2P reuses the
-  //! post-PQ GUI plane back buffer directly via display HW, and single-plane
-  //! never reaches !guiWillRender (the dirty-driven skip is gated on
-  //! IsRenderingVideoLayer). Future single-plane "gate, don't move" work
-  //! lets the GUI walk skip while CompositeGui still runs each video frame,
-  //! re-using this cached sRGB FBO as the composite source.
+#ifdef HAVE_DVBRIDGE
+  if ((m_dvState.Captured() || m_hdrConversion) && std::getenv("CB1_PRESENTATION_AUDIT"))
+  {
+    static unsigned redraws = 0, cached = 0;
+    ++(guiWillRender ? redraws : cached);
+    if ((redraws + cached) % 120 == 0)
+      DVBRIDGE::DiagnosticLog(LOGINFO, "CB1 GUI cache: redraws={} cached={}", redraws, cached);
+  }
+#endif
+  // Reuse only GUI content; RenderEx still prepares the current movie picture.
   if (!guiWillRender)
+  {
+    m_GUIElementCount = m_guiCachedElementCount;
     return true;
+  }
 
 #ifdef HAVE_DVBRIDGE
   m_dvPQGuiMergeAttempted = m_dvPQGuiComposed = false;
@@ -870,37 +950,6 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
   if (!m_guiFbo.BeginRender())
     return false;
 
-#ifdef HAVE_DVBRIDGE
-  if (m_dvState.Captured() || m_hdrConversion)
-  {
-    // Restore Kodi's GUI viewport and clip after offscreen video or AI passes.
-    CRect viewport;
-    CRenderSystemGLES::GetViewPort(viewport);
-    GLint before[4]{}, framebuffer{};
-    const auto now = DVBRIDGE::DiagnosticNowMs();
-    const bool report = DVBRIDGE::DiagnosticsEnabled() && m_dvGuiDiagnostic.Due(now);
-    if (report)
-    {
-      // Bound GL queries even when the common diagnostic budget is exhausted.
-      m_dvGuiDiagnostic.Emitted(now);
-      glGetIntegerv(GL_VIEWPORT, before);
-      glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
-    }
-    CRenderSystemGLES::SetViewPort(viewport);
-    const auto& context = GetGfxContext();
-    CRenderSystemGLES::SetScissors(context.StereoCorrection(context.GetScissors()));
-    if (report)
-    {
-      GLint after[4]{};
-      glGetIntegerv(GL_VIEWPORT, after);
-      DVBRIDGE::DiagnosticLog(LOGINFO,
-          "CB1 GUI viewport: before={},{},{},{} after={},{},{},{} framebuffer={} fbo={}x{} window={}x{} dv={} hdr_conversion={}",
-          before[0], before[1], before[2], before[3], after[0], after[1], after[2], after[3],
-          framebuffer, m_guiFboWidth, m_guiFboHeight, m_nWidth, m_nHeight,
-          m_dvState.Captured(), m_hdrConversion);
-    }
-  }
-#endif
 
   // Clear only when the FBO holds stale content; idle frames are already clean.
   if (!m_guiFboClean)
@@ -921,7 +970,11 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
 void CWinSystemGbmGLESContext::EndGuiComposite()
 {
   if (m_guiWillRender)
+  {
     m_guiFbo.EndRender();
+    m_guiCachedElementCount = GetGUIElementCount();
+    m_guiCacheValid = true;
+  }
 
 #ifdef HAVE_DVBRIDGE
   // CB1 overwrites the full scanout raster, including exact black borders.
@@ -999,15 +1052,23 @@ void CWinSystemGbmGLESContext::CompositeGui()
   GLint previousFramebuffer = 0;
   GLint previousViewport[4]{};
   const bool dvComposite = m_dvState.Captured() || m_hdrConversion;
+  bool directHDR10 = false;
   if (dvComposite)
   {
     if (!m_dvFrame || !m_dvBridge)
       return;
-    const auto target = m_dvBridge->GetPQFramebuffer();
-    if (!target)
+    unsigned target = 0, bits = 0;
+    directHDR10 = m_hdrConversion && m_dvBridge->GetHDR10OutputTarget(target, bits);
+    if (!directHDR10 && !(target = m_dvBridge->GetPQFramebuffer()))
     {
       m_dvFrame = false;
       return;
+    }
+    if (directHDR10 && UseLimitedColor())
+    {
+      const float maximum = (1u << bits) - 1;
+      m_compositeShader->SetOutputRange((219u << (bits - 8)) / maximum,
+                                      (16u << (bits - 8)) / maximum);
     }
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
     glGetIntegerv(GL_VIEWPORT, previousViewport);
@@ -1038,7 +1099,7 @@ void CWinSystemGbmGLESContext::CompositeGui()
   // BEGIN GUI target projection (also exercised by the GPU orientation regression).
   GLfloat proj[16] = {2.0f / w, 0, 0, 0, 0, -2.0f / h, 0, 0, 0, 0, -1, 0, -1.0f, 1.0f, 0, 1};
 #ifdef HAVE_DVBRIDGE
-  if (dvComposite)
+  if (dvComposite && !directHDR10)
   {
     // libplacebo's PQ texture stores logical top at row zero. The final HDMI
     // packing pass reverses it for EGL scanout. Compose the GUI in that same
@@ -1093,6 +1154,7 @@ void CWinSystemGbmGLESContext::CompositeGui()
     m_compositeShader->Disable();
   }
   m_compositeShader->SetInputPQ(false);
+  m_compositeShader->SetOutputRange(1.0f, 0.0f);
 
   glDisableVertexAttribArray(posLoc);
   glDisableVertexAttribArray(texLoc);
@@ -1102,6 +1164,8 @@ void CWinSystemGbmGLESContext::CompositeGui()
   {
     glBindFramebuffer(GL_FRAMEBUFFER, previousFramebuffer);
     glViewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+    // A delayed handoff owns this finished surface, including its GUI.
+    m_dvNativeGui = directHDR10;
   }
 #endif
 }
@@ -1368,6 +1432,8 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
     return caps;
   }
   const auto& metadata = picture->doviMetadata;
+  auto importGeometry=m_dvImportGeometry;
+  importGeometry.ignore_l5=preferences.encodedActiveArea;
   const bool paired = picture->doviEnhancement && picture->doviEnhancementBinding.Valid() &&
       picture->doviEnhancementBinding == metadata.Binding() &&
       picture->doviEnhancement->pts == picture->doviSourcePts;
@@ -1376,7 +1442,7 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
   const bool valid = m_dvImportUsable && metadata.Binding().Valid() &&
       picture->doviSourcePts != AV_NOPTS_VALUE && !(picture->iFlags & DVP_FLAG_INTERLACED) &&
       picture->stereoMode.empty() &&
-      dvbridge_frame_area(margins, metadata.Data(), metadata.Size(), m_dvImportGeometry) &&
+      dvbridge_frame_area(margins, metadata.Data(), metadata.Size(), importGeometry) &&
       dvbridge_map_color(&color, metadata.Data(), metadata.Size(), paired);
   dvbridge_hdr10_session session{};
   const bool basic = valid && dvbridge_hdr10_session_init(&session, metadata.Data(), metadata.Size());
@@ -1402,14 +1468,18 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
           (!raw.residual || masterChroma == enhancementChroma);
       if(!masterPhase) caps.processing[mode]={false,DVBRIDGE::OutputReason::SourceIneligible};
     }
-    else if ((mode == DVBRIDGE_MODE_HDR10_EXPERT || mode == DVBRIDGE_MODE_ENHANCED_DV) && caps.processing[mode].usable && preferences.ProfileValid())
+    else if ((mode == DVBRIDGE_MODE_HDR10_EXPERT || mode == DVBRIDGE_MODE_ENHANCED_DV) && caps.processing[mode].usable && preferences.ProfileValid(static_cast<dvbridge_mode>(mode)))
     {
       auto policy = preferences.Policy();
       policy.mode = static_cast<dvbridge_mode>(mode);
       if (mode != DVBRIDGE_MODE_ENHANCED_DV)
         policy.adaptive = DVBRIDGE_ADAPTIVE_A;
-      policy.tv = {preferences.peak, static_cast<dvbridge_panel>(preferences.panel),
-          static_cast<dvbridge_gamut>(preferences.gamut)};
+      policy.tv = mode==DVBRIDGE_MODE_HDR10_EXPERT ?
+          dvbridge_tv_profile{preferences.expertPeak,DVBRIDGE_PANEL_OLED,
+              static_cast<dvbridge_gamut>(preferences.expertGamut)} :
+          dvbridge_tv_profile{preferences.peak,static_cast<dvbridge_panel>(preferences.panel),
+              static_cast<dvbridge_gamut>(preferences.gamut)};
+      policy.expert_black_nits=mode==DVBRIDGE_MODE_HDR10_EXPERT?preferences.expertBlack:0;
       pl_color_space nominal{};
       dvbridge_hdr10_metadata signal{};
       if (!dvbridge_reference_map(&color, &nominal, &signal, &policy,
@@ -1422,7 +1492,7 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
 
 DVBRIDGE::OutputSelection CWinSystemGbmGLESContext::SelectedDVOutput(const VideoPicture* picture) const
 {
-  const auto preferences = DVBRIDGE::FrameOutputSettings();
+  const auto preferences = DVBRIDGE::FrameOutputSettings(picture && picture->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
   auto caps = GetDVOutputCapabilities(picture, preferences);
   return SelectedDVOutput(picture, preferences, caps);
 }
@@ -1461,7 +1531,7 @@ DVBRIDGE::OutputSelection CWinSystemGbmGLESContext::SelectedDVOutput(const Video
     if (!m_aiReady || m_aiFallback || binding.stream != m_aiActivation.stream ||
         binding.revision != m_aiActivation.revision || preferences.revision != m_aiPolicy)
       result = {DVBRIDGE::OutputRoute::Vanilla, {},
-          preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV ?
+          preferences.HDR10Mode(caps.hdr10PlusSource) == DVBRIDGE::HDR10SourceMode::HDR10PlusDV ?
               result.reason : DVBRIDGE::OutputReason::None};
   }
 #endif
@@ -1483,7 +1553,7 @@ bool CWinSystemGbmGLESContext::PrepareHDR10AIQueue(const VideoPicture& picture,
     std::span<const CDVBridgeGLES::Layer> queue, bool end, bool paused,
     uint64_t presentationDeadline)
 {
-  const auto preferences = DVBRIDGE::FrameOutputSettings();
+  const auto preferences = DVBRIDGE::FrameOutputSettings(picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
   const auto caps = GetDVOutputCapabilities(&picture, preferences);
   const auto binding = picture.doviSourceBinding;
   if (!caps.isHDR10 ||
@@ -1536,6 +1606,8 @@ bool CWinSystemGbmGLESContext::PrepareHDR10AIQueue(const VideoPicture& picture,
   cb1_ai_result prediction{};
   if (m_dvContext->Initialize(false))
   {
+    // Kodi's display-reset delay is not time spent waiting for an AI prediction.
+    paused |= picture.hdrType == StreamHdrType::HDR_TYPE_HDR10 && m_dispReset;
     decision = m_dvContext->PrepareHDR10AIQueue(queue, preferences,
         CB1_L1L3_BUNDLE_DIR, DVBRIDGE::DiagnosticNowMs(), end, &prediction, paused,
         presentationDeadline);
@@ -1984,7 +2056,7 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
   if (m_dvOrdinaryFrame && HasPendingDVOutputSurface())
     return deferred("output-await-previous-scanout");
   ResetDVActivation(&picture);
-  const auto preferences = DVBRIDGE::FrameOutputSettings();
+  const auto preferences = DVBRIDGE::FrameOutputSettings(picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
   const auto capabilities = GetDVOutputCapabilities(&picture, preferences);
 #ifdef CB1_HAS_HDR10_AI
   if ((!capabilities.isHDR10 || preferences.hdr10Source==DVBRIDGE::HDR10SourceMode::Native) &&
@@ -2053,8 +2125,8 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
   }
   if (!PollRejectedDVSurface()) return deferred("output-await-rejected-scanout");
   // A format match cannot carry a fixed target across original source streams.
-  if (m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10 && m_hdr10Session &&
-      m_hdr10SessionStream != picture.doviMetadata.Binding().stream)
+  if (m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10 && m_hdrConversion &&
+      m_hdr10Session && m_hdr10SessionStream != picture.doviMetadata.Binding().stream)
     return ConfigureHDR10Conversion(picture);
   if (m_dvSelection.reason == DVBRIDGE::OutputReason::TVProfileRequired)
   {
@@ -2248,14 +2320,20 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
       KODI::RENDERING::CAPTURE::CaptureContent::COMPOSITE).empty();
   const bool masterCapture=capturing && m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE;
   if (masterCapture) m_dvBridge->InvalidateScreenshot();
+  const bool guiAvailable = m_guiWillRender || CanReuseGuiComposite();
   const bool overlayFree = (!capturing || masterCapture) &&
-      (!m_guiWillRender || GetGUIElementCount() == 0) && !m_dvOverlays;
+      (!guiAvailable || GetGUIElementCount() == 0) && !m_dvOverlays;
   const auto player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
   m_continuousFrameEligible = !capturing && overlayFree && player && player->GetPlaySpeed() == 1 &&
       m_previousSourceStream == layer.binding.stream &&
       DVBRIDGE::ContinuousPresentationPicture(layer.pts, m_previousSourcePts) &&
       m_dvSelection.reason == DVBRIDGE::OutputReason::None;
+#ifdef CB1_HAS_HDR10_AI
+  const auto preferences = DVBRIDGE::FrameOutputSettings(
+      !metadata.Data() && m_dvContext && m_dvContext->HDR10AI().HDR10Plus());
+#else
   const auto preferences = DVBRIDGE::FrameOutputSettings();
+#endif
   m_masterFramePeriodNs=m_continuousFrameEligible && preferences.allowMasterFallback &&
       m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE ?
       DVBRIDGE::MasterFramePeriodNs(CServiceBroker::GetDataCacheCore().GetVideoFps()) : 0;
@@ -2278,20 +2356,21 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   }
   m_preparedSourceStream = layer.binding.stream;
   m_preparedSourcePts = layer.pts;
+  geometry.ignore_l5=metadata.Data() && preferences.encodedActiveArea;
   const bool mergedPQGUI = ComposeDVPQGUI();
-  const bool subtitlesOnly = !capturing && m_guiWillRender && m_guiFbo.IsValid() &&
+  const bool subtitlesOnly = !capturing && guiAvailable && m_guiFbo.IsValid() &&
       m_guiFboWidth == m_nWidth && m_guiFboHeight == m_nHeight && m_compositeShader &&
       m_dvSubtitleDraws && m_dvSubtitleDraws == GetGUIElementCount() &&
       (!m_dvPQSubtitleDraws || m_dvPQSubtitleDraws == m_dvSubtitleDraws);
   const bool pqSubtitles = (subtitlesOnly || mergedPQGUI) && m_dvPQSubtitleDraws;
   const bool enhancedSubtitles = subtitlesOnly && metadata.Data() &&
       m_dvSelection.policy.mode == DVBRIDGE_MODE_ENHANCED_DV;
-  const bool fullGUI = m_guiWillRender && GetGUIElementCount() &&
+  const bool fullGUI = guiAvailable && GetGUIElementCount() &&
       (mergedPQGUI || CDVBridgeGLES::CanComposeSDRGUI(preferences.optimizedDV ||
           m_dvSelection.policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE,m_hdrConversion,capturing && !masterCapture,
           m_guiFboWidth,m_guiFboHeight,m_dvPQSubtitleDraws));
   // The TV masks L5 margins. Keep controls/subtitles in letterbox bars visible.
-  m_dvBridge->SetOverlayVisible((m_guiWillRender && GetGUIElementCount()) || m_dvOverlays);
+  m_dvBridge->SetOverlayVisible((guiAvailable && GetGUIElementCount()) || m_dvOverlays);
   // Prime the subtitle shader once; empty frames retain the lean native shader.
   const bool nativeOverlay = !m_hdrConversion &&
       (fullGUI || subtitlesOnly || (overlayFree && !m_dvBridge->NativeOverlayPrimed())) &&
@@ -2301,7 +2380,8 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
       nativeOverlay ? m_compositeShader->GetDegammaTexture() : 0,
       nativeOverlay ? m_compositeShader->GetTransferTexture() : 0,
       fullGUI && !enhancedSubtitles ? CRect(0,0,m_nWidth,m_nHeight) : m_dvSubtitleBounds,
-      fullGUI && !enhancedSubtitles ? m_dvGUIContentGeneration : m_dvSubtitleContent, pqSubtitles);
+      fullGUI && !enhancedSubtitles ? m_dvGUIContentGeneration : m_dvSubtitleContent,
+      pqSubtitles, preferences.optimizedGUI);
   if (std::getenv("CB1_PRESENTATION_AUDIT"))
   {
     static unsigned prior = ~0u;
@@ -2332,7 +2412,8 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
           prediction, policy, allowAsync, overlayFree || (preferences.optimizedDV && nativeSubtitles));
 #endif
     return m_dvBridge->PrepareHardwareFrame(layer, enhancement, enhancementBinding,
-        metadata, geometry, preferences, overlayFree || nativeSubtitles, &policy, allowAsync);
+        metadata, geometry, preferences,
+        overlayFree || nativeSubtitles || (preferences.optimizedGUI && m_hdrConversion && !capturing), &policy, allowAsync);
   };
   const double refresh = m_DRM->GetCurrentMode().fRefreshRate;
   const auto interval = std::chrono::duration<double>(refresh >= 10 ? 1.0 / refresh : 0.02);
@@ -2840,10 +2921,10 @@ bool CWinSystemGbmGLESContext::DestroyWindow()
 {
   m_modeHold.Cancel();
   if (!EndDVBridge() || !RetireDVContext()) return false;
-  // A resize can precede presentation of the ordinary successor surface.
+  // Drawable retirement must not discard deferred playback/SDR cleanup.
   if (HasPendingDVOutputSurface() &&
       (!m_dvOrdinaryFrame || !CompleteDVOutputSurface(false))) return false;
-  m_dvOrdinaryFrame = m_dvStopPending = false;
+  m_dvOrdinaryFrame = false;
   if (!CWinSystemGbmEGLContext::DestroyWindow()) return false;
   ObserveDVImport({}, {}, false);
   return true;

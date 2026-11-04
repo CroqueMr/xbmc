@@ -155,7 +155,7 @@ public:
     submission.cmv40Status=dvbridge_renderer_cmv40_status(m_renderer);
     const bool fel=(m_pendingInfo & CDVPlaybackInfo::FEL) != 0;
     submission.felFilter=fel ? m_requested.felUpscaling : -1;
-    submission.felBackend=fel ? (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE ? 3 :
+    submission.felBackend=fel ? (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE || m_requested.felUpscaling == 2 ? 3 :
         m_hardwareBinding == m_pendingBinding &&
         m_hardwareFELFilter == m_requested.felUpscaling && m_hardwareFELVpp ? 2 : 1) : 0;
     if (m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS && m_prepared && m_hdr10plusMetadata)
@@ -184,7 +184,7 @@ public:
   bool Fallback() const { return m_fallback; }
   bool Advanced() const { return m_advanced; }
   bool SetNativeOverlay(unsigned texture, unsigned degamma, unsigned pq,
-                        const CRect& bounds, uint64_t content, bool inputPQ);
+                        const CRect& bounds, uint64_t content, bool inputPQ, bool optimized = false);
   bool NativeOverlayComposed() const { return m_direct && m_nativeOverlayEnabled; }
   bool NativeOverlayPrimed() const { return m_nativeOverlayPrimed; }
   // GUI or subtitles will cover the next picture: send a full-raster L5.
@@ -214,6 +214,15 @@ public:
                        const CDVMetadataBuffer& metadata, dvbridge_geometry geometry, bool allowPacked = false);
   unsigned int GetPQTexture() const;
   unsigned int GetPQFramebuffer();
+  bool GetHDR10OutputTarget(unsigned& framebuffer, unsigned& bits)
+  {
+    if (!m_hdr10 || !m_prepared || !m_direct || !m_scanout) return false;
+    framebuffer = m_scanoutFramebuffer;
+    bits = m_outputBits;
+    // As with GetPQFramebuffer, redraw film before another equal-PTS GUI blend.
+    if (m_live) m_guiComposed = true;
+    return true;
+  }
   bool Pack(unsigned int framebuffer, int width, int height, bool flipY);
   bool ResolveHDR10(bool limited);
   bool Presented(bool success);
