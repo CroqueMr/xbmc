@@ -2035,6 +2035,13 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
 
 void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
 {
+#ifdef HAVE_DVBRIDGE
+  if (pPacket->doviLayerTimes.valid && pPacket->doviLayerTimes.basePts == AV_NOPTS_VALUE)
+  {
+    m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, false));
+    return; // Terminal EL work does not advance or initialize the BL clock.
+  }
+#endif
   CheckStreamChanges(m_CurrentVideo, pStream);
   bool checkcont = false;
 
@@ -2610,7 +2617,8 @@ bool CVideoPlayer::CheckPlayerInit(CCurrentStream& current)
       return true;
     }
 
-    if ((current.startpts - current.dts) > DVD_SEC_TO_TIME(20))
+    if ((current.startpts - current.dts) > DVD_SEC_TO_TIME(20) &&
+        !(m_pDemuxer && m_pDemuxer->HasSeekPreroll()))
     {
       CLog::Log(LOGDEBUG, "{} - too far to decode before finishing seek", __FUNCTION__);
       if(m_CurrentAudio.startpts != DVD_NOPTS_VALUE)

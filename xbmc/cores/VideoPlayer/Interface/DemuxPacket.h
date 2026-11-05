@@ -43,6 +43,15 @@ extern "C"
 
     //! @brief PTS offset correction applied to the PTS and DTS.
     double m_ptsOffsetCorrection{0};
+
+    // Native dual-layer identity, kept separate from Kodi's adjusted clock.
+    struct DoviLayerTimes
+    {
+      int64_t basePts{0}, enhancementPts{0};
+      uint64_t epoch{0};
+      int clockNum{0}, clockDen{0};
+      bool valid{false}, presentable{false};
+    } doviLayerTimes;
   };
 
 #ifdef __cplusplus
