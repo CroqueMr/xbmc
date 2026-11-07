@@ -74,6 +74,8 @@ protected:
   std::shared_ptr<dvbridge_fel> m_dvFel;
   std::deque<std::shared_ptr<VideoPicture>> m_dvPending;
   bool m_dvFailed{false};
+  uint64_t m_dvLayerEpoch{0};
+  bool m_dvVideoWindow{false};
   unsigned m_dvStartupReported{};
   uint64_t m_dvDiagnosticGeneration{};
   void ReportDVStartup(unsigned fact, const char* stage) noexcept;

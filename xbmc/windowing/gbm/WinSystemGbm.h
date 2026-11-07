@@ -18,6 +18,7 @@
 
 #include "platform/linux/input/LibInputHandler.h"
 
+#include <atomic>
 #include <utility>
 
 #include <gbm.h>
@@ -62,6 +63,10 @@ public:
 
   bool CanDoWindowed() override { return false; }
   void UpdateResolutions() override;
+  std::optional<uint32_t> GetBluray3DDisplayCapabilities() const override
+  {
+    return m_bluray3DDisplayCapabilities.load();
+  }
 
   bool UseLimitedColor() override;
 
@@ -115,6 +120,8 @@ protected:
   std::unique_ptr<CLibInputHandler> m_libinput;
 
 private:
+  // Claim no 3D display formats until an entire DRM mode enumeration proves them.
+  std::atomic<uint32_t> m_bluray3DDisplayCapabilities{0};
   CDRMPropertyBlob m_hdrBlob;
   KODI::UTILS::Eotf m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
   KODI::UTILS::Colorimetry m_colorimetry = KODI::UTILS::Colorimetry::DEFAULT;

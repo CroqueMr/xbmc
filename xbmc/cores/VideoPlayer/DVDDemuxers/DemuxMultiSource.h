@@ -49,6 +49,12 @@ public:
   DemuxPacket* Read() override;
   bool Reset() override;
   bool SeekTime(double time, bool backwards = false, double* startpts = NULL) override;
+  bool HasSeekPreroll() const override
+  {
+    for (const auto& [id, demuxer] : m_demuxerMap)
+      if (demuxer->HasSeekPreroll()) return true;
+    return false;
+  }
 
 protected:
   CDemuxStream* GetStream(int iStreamId) const override { return nullptr; }

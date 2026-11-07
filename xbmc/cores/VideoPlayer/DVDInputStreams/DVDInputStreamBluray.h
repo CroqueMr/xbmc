@@ -17,6 +17,7 @@
 #include "filesystem/UDFContext.h"
 #endif
 
+#include <atomic>
 #include <chrono>
 #include <list>
 #include <map>
@@ -137,6 +138,7 @@ public:
   bool PosTime(int ms) override;
 
   void GetStreamInfo(int pid, std::string &language);
+  bool GetVideoPresentationWindow(bool& required, int64_t& first, int64_t& last) const;
 
   /*!
    * \brief Check whether a stream is the default of the playlist being played, ie. audio stream
@@ -225,6 +227,7 @@ public:
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
 
   void ProcessEvent();
+  bool HoldEvent();
 
   void SaveCurrentState(const CStreamDetails& details) override;
   UpdateState UpdateItemFromSavedStates(CFileItem& item, double time, bool& closed) override;
@@ -233,6 +236,7 @@ public:
 protected:
   struct SPlane;
 
+  static bool PlaneShows(const SPlane& plane);
   void OverlayFlush(SPlane& updated, int64_t pts);
   void OverlayClose();
   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
@@ -249,9 +253,9 @@ protected:
   //! GetStreamInfo). Owned, and only valid while m_clip refers to the same play item.
   struct clpi_cl* m_clipInfo = nullptr;
   uint32_t m_angle = 0;
-  bool m_menu = false;
+  std::atomic_bool m_menu{false};
   bool m_isInMainMenu = false;
-  bool m_hasOverlay = false;
+  std::atomic_bool m_menuShows{false};
   bool m_navmode = false;
   int m_dispTimeBeforeRead = 0;
 

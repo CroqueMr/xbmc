@@ -583,6 +583,12 @@ bool CDecoder::Open(AVCodecContext* avctx, AVCodecContext* mainctx, const enum A
   m_vaapiConfig.surfaceHeight = avctx->coded_height;
   m_vaapiConfig.aspect = avctx->sample_aspect_ratio;
   m_vaapiConfig.bitDepth = avctx->bits_per_raw_sample;
+  // get_format's software format describes the decoded samples. Add-on hints
+  // can still say 8 bits for a 10-bit stream; retain the old fallback if absent.
+  const auto* decodedFormat = av_pix_fmt_desc_get(avctx->sw_pix_fmt);
+  if (decodedFormat && !(decodedFormat->flags & AV_PIX_FMT_FLAG_HWACCEL) &&
+      decodedFormat->comp[0].depth > 0)
+    m_vaapiConfig.bitDepth = decodedFormat->comp[0].depth;
   // ffmpeg's HEVC, VP9, and AV1 decoders do not set bits_per_raw_sample,
   // but they do set pix_fmt correctly (e.g. yuv420p10le for 10-bit).
   // Derive bit depth from the pixel format when bits_per_raw_sample is 0,
