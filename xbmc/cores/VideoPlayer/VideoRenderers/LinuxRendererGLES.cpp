@@ -684,6 +684,14 @@ void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigne
     return;
   }
 
+  if (const bool fullRange = !CServiceBroker::GetWinSystem()->UseLimitedColor();
+      fullRange != m_fullRange)
+  {
+    m_fullRange = fullRange;
+    m_reloadShaders = true;
+    m_scalingMethodGui = VS_SCALINGMETHOD_MAX;
+  }
+
   // if its first pass, just init textures and return
   if (ValidateRenderTarget())
   {
@@ -763,6 +771,14 @@ void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsig
   m_frameRendered = false;
   if (!m_bConfigured)
     return;
+
+  if (const bool fullRange = !CServiceBroker::GetWinSystem()->UseLimitedColor();
+      fullRange != m_fullRange)
+  {
+    m_fullRange = fullRange;
+    m_reloadShaders = true;
+    m_scalingMethodGui = VS_SCALINGMETHOD_MAX;
+  }
 
   if (IsGuiLayer())
     return;
@@ -2502,6 +2518,8 @@ void CLinuxRendererGLES::CheckVideoParameters(int index)
       tmp.color_space = toneMap ? AVCOL_SPC_UNSPECIFIED : buf.m_srcColSpace;
       tmp.iWidth = m_sourceWidth;
       tmp.iHeight = m_sourceHeight;
+      // Keep Adaptive on the format already selected for this source depth.
+      tmp.colorBits = buf.m_srcBits;
       CServiceBroker::GetWinSystem()->SetColorimetry(&tmp);
     }
 

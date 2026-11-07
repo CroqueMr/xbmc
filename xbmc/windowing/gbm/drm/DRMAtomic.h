@@ -32,6 +32,7 @@ public:
   CDRMAtomic() = default;
   ~CDRMAtomic() override;
   void FlipPage(struct gbm_bo* bo, bool rendered, bool videoLayer, bool async) override;
+  void SetColorRangeTransition() { m_colorRangeTransition = true; }
   bool LastPageAccepted() const { return m_lastPageAccepted; }
   bool IsSDRRestorePending() const { return m_sdrRestorePending; }
   void SetSDRRestorePending(bool pending)
@@ -51,6 +52,8 @@ public:
   bool SetVideoMode(const RESOLUTION_INFO& res, struct gbm_bo* bo) override;
   bool SetActive(bool active) override;
   bool IsActive() const { return m_active; }
+  void RequestModeset() override { m_need_modeset = true; }
+  bool LastCommitFellBack() const override { return m_commitFellBack; }
   void AllowModeset() { m_need_modeset = true; }
   bool InitDrm() override;
   void DestroyDrm() override;
@@ -105,7 +108,7 @@ private:
   void ReportDVCommit(const char* stage) noexcept;
   void ReportSignalState() noexcept;
   bool m_signalDirty{false}, m_signalKnown{false};
-  std::array<uint64_t, 25> m_signalState{};
+  std::array<uint64_t, 27> m_signalState{};
   drmModeModeInfo m_committedMode{};
   DVBRIDGE::DiagnosticFailures m_dvFailures;
   bool m_dvCommitReported{}, m_dvLastCommitRestore{};
@@ -114,6 +117,8 @@ private:
   uint32_t m_dvSnapshotConnector{0};
 
   bool m_need_modeset{true};
+  bool m_commitFellBack{false};
+  bool m_colorRangeTransition{false};
   bool m_cb1Pending{}, m_cb1Uncertain{};
   int m_cb1OutFence{-1};
   uint64_t m_cb1CompletedNs{};
