@@ -29,6 +29,7 @@
 #include "utils/log.h"
 #include "video/VideoFileItemClassify.h"
 #include "video/VideoInfoTag.h"
+#include "windowing/WinSystem.h"
 
 #include <algorithm>
 #include <chrono>
@@ -48,6 +49,12 @@
 
 using namespace KODI;
 using namespace std::chrono_literals;
+
+// PSR24 bit 5 promises BD-J while outputting stereo. The bundled BD-J runtime
+// supplies no DirectDrawS3D stereo planes; retain MVC and all other capabilities.
+// Revisit this bit only when that runtime implements the corresponding service.
+constexpr uint32_t BLURAY_3D_CAPABILITIES = 0xffffffffu & ~0x20u;
+
 
 static int read_blocks(void* handle, void* buf, int lba, int num_blocks)
 {
@@ -185,6 +192,7 @@ bool CDVDInputStreamBluray::Open()
           return false;
 
         openStream = true;
+        root = item.GetDynPath();
       }
     }
   }
@@ -195,12 +203,7 @@ bool CDVDInputStreamBluray::Open()
 
     openStream = true;
 
-    // libbluray reads the image through our block callback and so needs no path, but
-    // Kodi's own MPLS parser does - it reads the playlist to find the 3D extension data
-    // that libbluray parses but does not expose.
-    CURL udfUrl("udf://");
-    udfUrl.SetHostName(m_item.GetDynPath());
-    root = udfUrl.Get();
+    root = m_item.GetDynPath();
   }
   else if (VIDEO::IsProtectedBlurayDisc(m_item))
   {
@@ -229,6 +232,15 @@ bool CDVDInputStreamBluray::Open()
     // extension, causing the MPLS title selector to be lost and playback
     // to fall through to navigation/main-feature mode.
     filename = URIUtils::GetFileName(m_item.GetDynPath());
+  }
+
+  // Stream mode gives libbluray blocks, but Kodi's MPLS reader still needs a
+  // filesystem root. Both direct images and menu entries use the image's UDF view.
+  if (openStream)
+  {
+    CURL udfUrl("udf://");
+    udfUrl.SetHostName(root);
+    root = udfUrl.Get();
   }
 
   // Keep the VFS form, including any trailing slash, before it is trimmed below - a
@@ -302,6 +314,28 @@ bool CDVDInputStreamBluray::Open()
   {
     CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - bd_get_disc_info() failed");
     return false;
+  }
+
+  // Automatic profile initialization overwrites PSR24 as well. Reapply the actual
+  // bundled runtime capability before disc code chooses its Java/HDMV menu path.
+  if (!bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, BLURAY_3D_CAPABILITIES))
+  {
+    CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to set 3D player capabilities");
+    return false;
+  }
+
+  // libbluray's automatic profile initialization also supplies optimistic display
+  // capabilities. Replace only PSR23, after opening and before starting disc code,
+  // when the window backend can report the formats its connected output can drive.
+  if (const auto* windowSystem = CServiceBroker::GetWinSystem())
+  {
+    if (const auto capabilities = windowSystem->GetBluray3DDisplayCapabilities();
+        capabilities && !bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_DISPLAY_CAP,
+                                               *capabilities))
+    {
+      CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed to set display capabilities");
+      return false;
+    }
   }
 
   m_stereoscopicDisc = disc_info->content_exist_3D != 0;
@@ -387,6 +421,11 @@ bool CDVDInputStreamBluray::Open()
 
   if (m_navmode)
   {
+#ifdef HAVE_DVBRIDGE
+    // The demuxer carries the authored PTS window to both video consumers.
+    if (!bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_DV_VIDEO_PREROLL, 1))
+      return false;
+#endif
 
     bd_register_overlay_proc (m_bd, this, bluray_overlay_cb);
 #ifdef HAVE_LIBBLURAY_BDJ
@@ -491,6 +530,13 @@ void CDVDInputStreamBluray::UpdateClipInfo(unsigned int playItem)
 }
 
 void CDVDInputStreamBluray::ProcessEvent() {
+
+  // The last data/still transition owns the state, even without DISCONTINUITY.
+  if (m_hold == HOLD_STILL &&
+      (m_event.event == BD_EVENT_SEEK || m_event.event == BD_EVENT_TITLE ||
+       m_event.event == BD_EVENT_ANGLE || m_event.event == BD_EVENT_PLAYLIST ||
+       m_event.event == BD_EVENT_PLAYITEM))
+    m_hold = HOLD_HELD;
 
   int pid = -1;
   switch (m_event.event) {
@@ -654,12 +700,17 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
 
   case BD_EVENT_MENU:
+  {
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_MENU {}", m_event.param);
-    m_menu = (m_event.param != 0);
-    if (!m_menu)
-      m_isInMainMenu = false;
+    const BLURAY_DISC_INFO* discInfo = bd_get_disc_info(m_bd);
+    const bool topMenu = m_title && discInfo && m_title == discInfo->top_menu;
+    // BD-J plane INIT also emits MENU=1 without visible pixels. The top title,
+    // unlike an ordinary BD-J title, remains an explicit navigation owner.
+    m_menu = m_event.param != 0 && (topMenu || !m_title || !m_title->bdj);
+    m_isInMainMenu = m_menu && (topMenu || m_isInMainMenu);
     m_player->OnDiscNavResult(&m_event.param, BD_EVENT_MENU);
     break;
+  }
 
   case BD_EVENT_IDLE:
     KODI::TIME::Sleep(100ms);
@@ -707,6 +758,36 @@ void CDVDInputStreamBluray::ProcessEvent() {
   m_event.event = BD_EVENT_NONE;
 }
 
+bool CDVDInputStreamBluray::HoldEvent()
+{
+  if (m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
+    return true;
+
+  switch (m_event.event)
+  {
+    case BD_EVENT_SEEK:
+    case BD_EVENT_TITLE:
+    case BD_EVENT_ANGLE:
+    case BD_EVENT_PLAYLIST:
+    case BD_EVENT_PLAYITEM:
+      if (m_hold != HOLD_DATA)
+      {
+        m_hold = HOLD_HELD;
+        return true;
+      }
+      break;
+    case BD_EVENT_STILL_TIME:
+      if (m_hold == HOLD_STILL)
+        m_event.event = BD_EVENT_NONE;
+      else
+        m_hold = HOLD_HELD;
+      return true;
+    default:
+      break;
+  }
+  return false;
+}
+
 int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 {
   int result = 0;
@@ -730,30 +811,8 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         return result;
       }
 
-      /* Check for holding events */
-      switch(m_event.event) {
-        case BD_EVENT_SEEK:
-        case BD_EVENT_TITLE:
-        case BD_EVENT_ANGLE:
-        case BD_EVENT_PLAYLIST:
-        case BD_EVENT_PLAYITEM:
-          if(m_hold != HOLD_DATA)
-          {
-            m_hold = HOLD_HELD;
-            return result;
-          }
-          break;
-
-        case BD_EVENT_STILL_TIME:
-          if(m_hold == HOLD_STILL)
-            m_event.event = 0; /* Consume duplicate still event */
-          else
-            m_hold = HOLD_HELD;
-          return result;
-
-        default:
-          break;
-      }
+      if (HoldEvent())
+        return result;
 
       if(result > 0)
         m_hold = HOLD_NONE;
@@ -818,7 +877,7 @@ void CDVDInputStreamBluray::OverlayClose()
   group->SetSource(DVDOverlaySource::MENU);
   group->SetOverlayContainerFlushable(false);
   m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
-  m_hasOverlay = false;
+  m_menuShows = false;
 #endif
 }
 
@@ -871,6 +930,39 @@ void CDVDInputStreamBluray::OverlayClear(SPlane& plane, int x, int y, int w, int
 #endif
 }
 
+bool CDVDInputStreamBluray::PlaneShows(const SPlane& plane)
+{
+#if(BD_OVERLAY_INTERFACE_VERSION >= 2)
+  for (const SOverlay& overlay : plane.committed)
+  {
+    const size_t pixelBytes = overlay->palette.empty() ? 4 : 1;
+    if (overlay->width <= 0 || overlay->height <= 0 || overlay->linesize <= 0 ||
+        static_cast<size_t>(overlay->width) > overlay->linesize / pixelBytes ||
+        static_cast<size_t>(overlay->height) > overlay->pixels.size() / overlay->linesize)
+      continue;
+    for (int y = 0; y < overlay->height; ++y)
+    {
+      const uint8_t* row = overlay->pixels.data() + static_cast<size_t>(y) * overlay->linesize;
+      for (int x = 0; x < overlay->width; ++x)
+      {
+        uint32_t pixel = 0;
+        if (pixelBytes == 1)
+        {
+          if (row[x] < overlay->palette.size())
+            pixel = overlay->palette[row[x]];
+        }
+        else
+          memcpy(&pixel, row + static_cast<size_t>(x) * 4, sizeof(pixel));
+        const unsigned alphaShift = pixelBytes == 1 ? PIXEL_ASHIFT : 24;
+        if ((pixel >> alphaShift) & 0xff)
+          return true;
+      }
+    }
+  }
+#endif
+  return false;
+}
+
 void CDVDInputStreamBluray::OverlayFlush(SPlane& updated, int64_t pts)
 {
 #if(BD_OVERLAY_INTERFACE_VERSION >= 2)
@@ -893,7 +985,9 @@ void CDVDInputStreamBluray::OverlayFlush(SPlane& updated, int64_t pts)
   }
 
   m_player->OnDiscNavResult(static_cast<void*>(&group), BD_EVENT_MENU_OVERLAY);
-  m_hasOverlay = !group->m_overlays.empty();
+  // PG does not change committed IG; avoid rescanning it for subtitle-only updates.
+  if (&updated == &m_planes[1] || m_planes[1].committed.empty())
+    m_menuShows = PlaneShows(m_planes[1]);
 #endif
 }
 
@@ -1014,11 +1108,11 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     overlay->SetSource(DVDOverlaySource::MENU);
 
     overlay->palette.clear();
-    size_t bytes = static_cast<size_t>(ov->stride * ov->h * 4);
-    overlay->pixels.resize(bytes);
-    memcpy(overlay->pixels.data(), ov->argb, bytes);
-
-    overlay->linesize = ov->stride * 4;
+    overlay->linesize = ov->w * 4;
+    overlay->pixels.resize(static_cast<size_t>(overlay->linesize) * ov->h);
+    for (int y = 0; y < ov->h; ++y)
+      memcpy(overlay->pixels.data() + static_cast<size_t>(y) * overlay->linesize,
+             ov->argb + static_cast<size_t>(y) * ov->stride, overlay->linesize);
     overlay->x = ov->x;
     overlay->y = ov->y;
     overlay->height = ov->h;
@@ -1033,6 +1127,29 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
 }
 #endif
 
+
+bool CDVDInputStreamBluray::GetVideoPresentationWindow(
+    bool& required, int64_t& first, int64_t& last) const
+{
+  required = false;
+  if (!m_navmode)
+    return true;
+  if (!m_titleInfo || m_playItem >= m_titleInfo->clip_count)
+    return false;
+  // Angle events can replace title information without repeating PLAYITEM.
+  const auto& clip = m_titleInfo->clips[m_playItem];
+  if (clip.video_stream_count == 1 && clip.video_streams &&
+      clip.video_streams[0].coding_type == 0x24 &&
+      clip.dv_stream_count == 1 && clip.dv_streams && clip.dv_streams[0].coding_type == 0x24)
+  {
+    required = true;
+    if (clip.in_time > clip.out_time || clip.out_time > INT64_MAX)
+      return false;
+    first = static_cast<int64_t>(clip.in_time);
+    last = static_cast<int64_t>(clip.out_time);
+  }
+  return true;
+}
 
 int CDVDInputStreamBluray::GetTotalTime()
 {
@@ -1049,11 +1166,17 @@ int CDVDInputStreamBluray::GetTime()
 
 bool CDVDInputStreamBluray::PosTime(int ms)
 {
+  if (m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
+    return false;
+
   if(bd_seek_time(m_bd, ms * 90) < 0)
     return false;
 
-  while (bd_get_event(m_bd, &m_event))
-    ProcessEvent();
+  if (m_navmode)
+    m_hold = HOLD_HELD;
+  else
+    while (bd_get_event(m_bd, &m_event))
+      ProcessEvent();
 
   return true;
 }
@@ -1091,11 +1214,17 @@ void CDVDInputStreamBluray::GetChapterName(std::string& name, int ch)
 
 bool CDVDInputStreamBluray::SeekChapter(int ch)
 {
+  if (m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
+    return false;
+
   if(m_titleInfo && bd_seek_chapter(m_bd, ch-1) < 0)
     return false;
 
-  while (bd_get_event(m_bd, &m_event))
-    ProcessEvent();
+  if (m_navmode)
+    m_hold = HOLD_HELD;
+  else
+    while (bd_get_event(m_bd, &m_event))
+      ProcessEvent();
 
   return true;
 }
@@ -1401,10 +1530,16 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
 
   /* process any current event */
   ProcessEvent();
+  if (m_hold == HOLD_ERROR || m_hold == HOLD_EXIT)
+    return NEXTSTREAM_NONE;
 
   /* process all queued up events */
   while(bd_get_event(m_bd, &m_event))
+  {
     ProcessEvent();
+    if (m_hold == HOLD_ERROR || m_hold == HOLD_EXIT)
+      return NEXTSTREAM_NONE;
+  }
 
   if(m_hold == HOLD_STILL)
     return NEXTSTREAM_RETRY;
@@ -1415,7 +1550,7 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
 
 void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
 {
-  if(m_bd == nullptr || !m_navmode)
+  if (m_bd == nullptr || !m_navmode || m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
     return;
 
   int ret = bd_user_input(m_bd, -1, vk);
@@ -1425,9 +1560,17 @@ void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
   }
   else
   {
-    /* process all queued up events */
+    // Preserve a reader's pending boundary; ordinary paused-menu events stay immediate.
+    if (m_hold == HOLD_HELD)
+      return;
     while (bd_get_event(m_bd, &m_event))
+    {
+      if (HoldEvent())
+        break;
       ProcessEvent();
+      if (m_hold == HOLD_ERROR || m_hold == HOLD_EXIT)
+        return;
+    }
   }
 }
 
@@ -1508,10 +1651,8 @@ bool CDVDInputStreamBluray::IsInMenu()
   if(m_bd == nullptr || !m_navmode)
     return false;
 
-  // since there is no way to tell in a BD-J blu-ray when a popup menu actually is visible,
-  // we have to assume that the blu-ray is in menu/navigation mode when there is an overlay
-  // on screen, even if it might be invisible (which is impossible to detect)
-  if(m_menu || m_hasOverlay)
+  // Disc navigation is authoritative; transparent BD-J graphics and PG alone are not menus.
+  if(m_menu || m_menuShows)
     return true;
   return false;
 }
@@ -1526,9 +1667,7 @@ void CDVDInputStreamBluray::SkipStill()
     m_hold = HOLD_HELD;
     bd_read_skip_still(m_bd);
 
-    /* process all queued up events */
-    while (bd_get_event(m_bd, &m_event))
-      ProcessEvent();
+    // NextStream consumes the pending events after the old demuxer reaches EOF.
   }
 }
 
@@ -1558,7 +1697,7 @@ void CDVDInputStreamBluray::SetupPlayerSettings()
   }
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_REGION_CODE, static_cast<uint32_t>(region));
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_PARENTAL, 99);
-  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, 0xffffffff);
+  bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_3D_CAP, BLURAY_3D_CAPABILITIES);
 #if (BLURAY_VERSION >= BLURAY_VERSION_CODE(1, 0, 2))
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_CAP, 0xffffffff);
   bd_set_player_setting(m_bd, BLURAY_PLAYER_SETTING_UHD_DISPLAY_CAP, 0xffffffff);

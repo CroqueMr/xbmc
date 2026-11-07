@@ -217,11 +217,47 @@ bool CWinSystemGbm::DestroyWindowSystem()
   return true;
 }
 
+namespace
+{
+// Blu-ray PSR23 formats, independent of the player profile or current arrangement.
+// Keep this display backend independent of the optional libbluray headers.
+uint32_t Bluray3DDisplayCapabilities(const std::vector<RESOLUTION_INFO>& modes)
+{
+  bool p1080Ntsc = false;
+  bool p720Ntsc = false;
+  bool p720Pal = false;
+  for (const auto& mode : modes)
+  {
+    if ((mode.dwFlags & D3DPRESENTFLAG_INTERLACED) ||
+        !(mode.dwFlags & (D3DPRESENTFLAG_MODE3DSBS | D3DPRESENTFLAG_MODE3DTB)))
+      continue;
+
+    const int height = mode.iBlanking > 0
+                           ? (mode.iScreenHeight - mode.iBlanking) / 2
+                           : mode.iScreenHeight;
+    if (mode.iScreenWidth == 1920 && height == 1080)
+      p1080Ntsc |= std::abs(mode.fRefreshRate - 24000.0f / 1001.0f) < 0.005f;
+    if (mode.iScreenWidth == 1280 && height == 720)
+    {
+      p720Ntsc |= std::abs(mode.fRefreshRate - 60000.0f / 1001.0f) < 0.005f;
+      p720Pal |= std::abs(mode.fRefreshRate - 50.0f) < 0.005f;
+    }
+  }
+
+  // Bit 0 requires both NTSC formats, bit 1 is 720p50. Physical width is unknown;
+  // neither glasses-free nor interlaced capability can be inferred from these modes.
+  return (p1080Ntsc && p720Ntsc ? 0x01u : 0u) | (p720Pal ? 0x02u : 0u);
+}
+} // namespace
+
 void CWinSystemGbm::UpdateResolutions()
 {
   RESOLUTION_INFO current = m_DRM->GetCurrentMode();
 
   auto resolutions = m_DRM->GetModes();
+  // Publish from the complete local enumeration, before rebuilding the GUI catalogue.
+  // An empty/mono enumeration must also clear a previously advertised 3D capability.
+  m_bluray3DDisplayCapabilities.store(Bluray3DDisplayCapabilities(resolutions));
   if (resolutions.empty())
   {
     CDisplaySettings::GetInstance().ClearCustomResolutions();

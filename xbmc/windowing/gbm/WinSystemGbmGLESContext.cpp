@@ -427,7 +427,10 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 #ifdef HAVE_DVBRIDGE
   // Yield to the pending scanout instead of repeatedly redrawing the GUI.
   if (!CompleteDVBridgePage(8)) return;
+  // Once the first output owns the mode, its real flip (or restoration) ends
+  // the hold. The ordinary deadline must not turn prepared output into failure.
   if (m_modeHold.Holding() == CModeChangeHold::Kind::START && !m_dvFrame &&
+      !(m_dvState.Captured() || m_hdrConversion) &&
       !m_modeHold.Commits(DVBRIDGE::DiagnosticNowMs()))
   {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));

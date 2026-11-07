@@ -1128,8 +1128,11 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
 {
   // if input stream dictate, we will open later
   // unless we are loading a bluray playlist directly in which case set now
+  // Disc stream events may arrive while probing, before playback state is
+  // published. Consult the live input capability instead of its initial NONE cache.
+  const auto menus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
   const bool noBlurayMenu{m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
-                          m_State.menuType == MenuType::NONE};
+                          (!menus || menus->GetSupportedMenuType() == MenuType::NONE)};
   if (!noBlurayMenu && (m_dvd.iSelectedAudioStream >= 0 || m_dvd.iSelectedSPUStream >= 0))
     return;
 
@@ -1674,6 +1677,28 @@ void CVideoPlayer::Process()
   Prepare();
 
   unsigned int emptyPackets = 0;
+  bool stillDrainPending = false;
+
+  // A newly selected PG stream may have no packets for a long time. Retire
+  // the previous internal track immediately, without clearing the disc menu.
+  // Run on the player thread, never from a potentially reentrant AVIO callback.
+  const auto closeDeselectedBluraySubtitle = [this]
+  {
+    if (!m_pInputStream || !m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) ||
+        !m_pDemuxer || m_CurrentSubtitle.id < 0 ||
+        STREAM_SOURCE_MASK(m_CurrentSubtitle.source) != STREAM_SOURCE_DEMUX ||
+        m_dvd.iSelectedSPUStream < 0)
+      return;
+
+    const auto menus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
+    if (!menus || menus->GetSupportedMenuType() != MenuType::NATIVE)
+      return;
+
+    const auto* current =
+        m_pDemuxer->GetStream(m_CurrentSubtitle.demuxerId, m_CurrentSubtitle.id);
+    if (current && current->dvdNavId != m_dvd.iSelectedSPUStream)
+      CloseStream(m_CurrentSubtitle, false);
+  };
 
   while (!m_bAbortRequest)
   {
@@ -1692,6 +1717,9 @@ void CVideoPlayer::Process()
 
     if (m_bAbortRequest)
       break;
+
+    // UserInput can publish selection while paused or before full queues drain.
+    closeDeselectedBluraySubtitle();
 
     // should we open a new input stream?
     if (!m_pInputStream)
@@ -1785,6 +1813,8 @@ void CVideoPlayer::Process()
     DemuxPacket* pPacket = NULL;
     CDemuxStream *pStream = NULL;
     ReadPacket(pPacket, pStream);
+    // AVIO may also publish selection while producing an empty/null packet.
+    closeDeselectedBluraySubtitle();
     if (pPacket && !pStream)
     {
       /* probably a empty packet, just free it and move on */
@@ -1849,6 +1879,14 @@ void CVideoPlayer::Process()
       // input stream asked us to just retry
       if(next == CDVDInputStream::NEXTSTREAM_RETRY)
       {
+        // The disc ended this still's video input. Unlike an ordinary read
+        // timeout, release its delayed pictures before waiting for navigation.
+        if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
+            m_dvd.state == DVDSTATE_STILL && m_CurrentVideo.inited && stillDrainPending)
+        {
+          m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN));
+          stillDrainPending = false;
+        }
         CThread::Sleep(100ms);
         continue;
       }
@@ -1938,6 +1976,8 @@ void CVideoPlayer::Process()
     }
 
     // process the packet
+    if (CheckIsCurrent(m_CurrentVideo, pStream, pPacket))
+      stillDrainPending = true;
     ProcessPacket(pStream, pPacket);
   }
 }
@@ -2035,6 +2075,13 @@ void CVideoPlayer::ProcessAudioData(CDemuxStream* pStream, DemuxPacket* pPacket)
 
 void CVideoPlayer::ProcessVideoData(CDemuxStream* pStream, DemuxPacket* pPacket)
 {
+#ifdef HAVE_DVBRIDGE
+  if (pPacket->doviLayerTimes.valid && pPacket->doviLayerTimes.basePts == AV_NOPTS_VALUE)
+  {
+    m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsgDemuxerPacket>(pPacket, false));
+    return; // Terminal EL work does not advance or initialize the BL clock.
+  }
+#endif
   CheckStreamChanges(m_CurrentVideo, pStream);
   bool checkcont = false;
 
@@ -2610,7 +2657,8 @@ bool CVideoPlayer::CheckPlayerInit(CCurrentStream& current)
       return true;
     }
 
-    if ((current.startpts - current.dts) > DVD_SEC_TO_TIME(20))
+    if ((current.startpts - current.dts) > DVD_SEC_TO_TIME(20) &&
+        !(m_pDemuxer && m_pDemuxer->HasSeekPreroll()))
     {
       CLog::Log(LOGDEBUG, "{} - too far to decode before finishing seek", __FUNCTION__);
       if(m_CurrentAudio.startpts != DVD_NOPTS_VALUE)
