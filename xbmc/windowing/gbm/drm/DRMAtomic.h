@@ -54,6 +54,7 @@ public:
   bool IsActive() const { return m_active; }
   void RequestModeset() override { m_need_modeset = true; }
   bool LastCommitFellBack() const override { return m_commitFellBack; }
+  bool HasColorRangeTransition() const { return m_colorRangeTransition; }
   void AllowModeset() { m_need_modeset = true; }
   bool InitDrm() override;
   void DestroyDrm() override;
