@@ -17,6 +17,7 @@
 #endif
 
 #include "OptionalsReg.h"
+#include "ServiceBroker.h"
 #include "cores/RetroPlayer/process/gbm/RPProcessInfoGbm.h"
 #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererDMAOpenGLES.h"
 #include "cores/RetroPlayer/rendering/VideoRenderers/RPRendererFBO.h"
@@ -28,6 +29,8 @@
 #include "cores/VideoPlayer/VideoRenderers/HwDecRender/RendererDRMPRIMEGLES.h"
 #include "cores/VideoPlayer/VideoRenderers/LinuxRendererGLES.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
+#include "guilib/GUIComponent.h"
+#include "guilib/GUIWindowManager.h"
 #include "rendering/gles/GuiCompositeShaderGLES.h"
 #include "rendering/gles/ScreenshotSurfaceGLES.h"
 
@@ -143,7 +146,8 @@ CWinSystemGbmGLESContext::~CWinSystemGbmGLESContext()
   if (m_dvContext && m_dvContext->GL())
   {
     m_nativeDVRetirement = std::move(m_dvContext);
-    m_nativeDVProperties = std::make_shared<CDVBridgeState>(std::move(m_dvState));
+    m_nativeDVProperties = std::make_shared<std::pair<CDVBridgeState, CDVBridgeState>>(
+        std::move(m_dvState), std::move(m_cb1ConnectorState));
   }
 #endif
 }
@@ -437,11 +441,29 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     return;
   }
   // An ordinary restoration must present before stop can stage its successor.
-  if (m_dvStopPending && !m_dvOrdinaryFrame && !StopDVBridgePlayback()) return;
-  if (m_dvEndPending && !EndDVBridge()) return;
-  if (m_failedHDR10SetupRestore && !HasPendingDVOutputSurface() && !EndDVBridge())
+  if (m_dvStopPending && !m_dvOrdinaryFrame)
+  {
+    if (!StopDVBridgePlayback()) return;
+    if (m_dvOrdinaryFrame)
+    {
+      CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+      return;
+    }
+  }
+  if (m_dvEndPending)
+  {
+    if (!EndDVBridge()) return;
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
     return;
+  }
   if (!PollRejectedDVSurface()) return;
+  if (m_failedHDR10SetupRestore || m_dvRecoveryPending)
+  {
+    if (m_failedHDR10SetupRestore && !HasPendingDVOutputSurface() && !EndDVBridge()) return;
+    if (m_dvRecoveryPending && !RecoverDVActivation()) return;
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+    return;
+  }
   if (m_dvOrdinaryFrame)
   {
     if (!rendered || !m_eglContext.TrySwapBuffers()) return;
@@ -465,6 +487,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     PublishVideoSource(true, m_videoSourceSideData);
     surface.EndTransactionalMode();
     m_dvState.Restored(); m_hdrDeepColorPrevious.reset();
+    CompleteCB1ConnectorRestore();
     m_dvOrdinaryFrame = false;
     m_dvStopPending = false;
     m_hdr10Session.reset(); m_hdr10BasicSignal.reset(); m_hdr10Signal.reset();
@@ -476,7 +499,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
   }
   if (m_hdrConversion)
   {
-    if (!m_dvFrame) return;
+    if (!m_dvFrame || !StageCB1ConnectorPreferences(false)) return;
     bool presented = false;
     CDVBridgeGLES::Submission submitted;
     if (m_dvFrame && m_dvBridge && m_dvBridge->ResolveHDR10(UseLimitedColor()))
@@ -769,6 +792,7 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus(bool overlay)
 bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
 {
   m_guiCacheValid = false;
+  m_guiColorTransfer = colorTransfer;
   m_guiCompositing = (colorTransfer != 0);
 
   if (m_guiCompositing)
@@ -776,11 +800,12 @@ bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
     if (!m_compositeShader)
     {
       std::string defines;
-      if (UseLimitedColor()
+      m_compositeShaderLimited = UseLimitedColor()
 #ifdef HAVE_DVBRIDGE
           && !m_dvState.Captured() && !m_hdrConversion
 #endif
-          )
+          ;
+      if (m_compositeShaderLimited)
         defines += "#define KODI_LIMITED_RANGE 1\n";
       m_compositeShader = std::make_unique<CGuiCompositeShaderGLES>(defines);
       if (!m_compositeShader->CompileAndLink())
@@ -880,6 +905,22 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
 #endif
   if (!m_guiCompositing)
     return false;
+
+  // the range is a compile time define, rebuild the shader when it changes
+  const bool limited = UseLimitedColor()
+#ifdef HAVE_DVBRIDGE
+      && !m_dvState.Captured() && !m_hdrConversion
+#endif
+      ;
+  if (m_compositeShader && m_compositeShaderLimited != limited)
+  {
+    m_compositeShader.reset();
+    if (!SetGuiCompositing(m_guiColorTransfer))
+      return false;
+    // a skipped GUI walk would leave the GUI plane with the old range
+    if (!guiWillRender)
+      CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  }
 
   m_guiWillRender = guiWillRender;
 
@@ -1772,6 +1813,7 @@ bool CWinSystemGbmGLESContext::ConfigureHDR10Conversion(const VideoPicture& pict
     output.lightMetadata.MaxCLL = metadata.max_cll;
     output.lightMetadata.MaxFALL = metadata.max_fall;
   }
+  if (!CaptureCB1ConnectorPreferences()) return false;
   // Every rejected setup after this point must restore ordinary HDR/color state.
   m_failedHDR10SetupRestore = true;
   SetColorimetry(&output);
@@ -1831,11 +1873,12 @@ bool CWinSystemGbmGLESContext::RestoreFailedHDR10Setup()
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   if (!drm)
     return false;
-  if (!StageOrdinaryHDR10Recovery())
+  if (!StageCB1ConnectorPreferences(true) || !StageOrdinaryHDR10Recovery())
   {
     drm->FlipPageTransactional(nullptr, true);
     return false;
   }
+  SetColorimetry(nullptr);
   glBindFramebuffer(GL_FRAMEBUFFER, 0);
   glDisable(GL_SCISSOR_TEST);
   glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -1855,8 +1898,67 @@ bool CWinSystemGbmGLESContext::RestoreFailedHDR10Setup()
     return false;
   surface.EndTransactionalMode();
   CompleteOrdinaryHDR10Recovery();
+  CompleteCB1ConnectorRestore();
   m_failedHDR10SetupRestore = false;
   return true;
+}
+
+bool CWinSystemGbmGLESContext::ConnectorPreferencesAllowed() const
+{
+  const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  return !HasPendingDVBridgeRestore() && !m_dvOutputSurface && !HasPendingDVOutputSurface() &&
+      !m_nativeDVProperties && !m_cb1ConnectorState.Captured() &&
+      !m_dvOrdinaryFrame && !m_dvEndPending &&
+      (!drm || !drm->HasPendingCB1Page());
+}
+
+bool CWinSystemGbmGLESContext::CaptureCB1ConnectorPreferences()
+{
+  auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  if (!drm || !m_cb1ConnectorState.CaptureColorPreferences(*drm, DefaultMaxBpc()))
+    return false;
+  if (!m_cb1LimitedRange)
+  {
+    m_cb1LimitedRange = RequestedLimitedColor();
+    m_cb1OrdinaryLimitedRange = OrdinaryShaderLimitedColor();
+  }
+  return true;
+}
+
+std::optional<bool> CWinSystemGbmGLESContext::TransportLimitedColor() const
+{
+  return m_cb1RestoringPreferences ? m_cb1OrdinaryLimitedRange : m_cb1LimitedRange;
+}
+
+bool CWinSystemGbmGLESContext::StageCB1ConnectorPreferences(bool restore)
+{
+  m_cb1RestoringPreferences = restore;
+  if (!m_cb1ConnectorState.Captured()) return true;
+  auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  return drm && m_cb1ConnectorState.Stage(*drm, restore);
+}
+
+bool CWinSystemGbmGLESContext::StageTransportPreferences()
+{
+  if (!m_cb1RestoringPreferences && m_dvState.Captured() && !m_hdrConversion)
+    return true;
+  if (!StageCB1ConnectorPreferences(m_cb1RestoringPreferences)) return false;
+  if (m_cb1RestoringPreferences) ApplyColorspace();
+  return true;
+}
+
+std::optional<uint64_t> CWinSystemGbmGLESContext::RestoredConnectorProperty(const char* name) const
+{
+  return m_cb1RestoringPreferences ? m_cb1ConnectorState.Before(name) : std::nullopt;
+}
+
+void CWinSystemGbmGLESContext::CompleteCB1ConnectorRestore()
+{
+  m_cb1ConnectorState.Restored();
+  m_cb1RestoringPreferences = false;
+  m_cb1LimitedRange.reset();
+  m_cb1OrdinaryLimitedRange.reset();
+  DeferConnectorPreferences();
 }
 
 bool CWinSystemGbmGLESContext::BeginDVBridge()
@@ -1907,6 +2009,9 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
     m_dvBridge->SetHDR10PlusVersion(hdr10plusVersion);
   }
   m_GBM->GetDevice().UseDVOutputLifetime();
+  const bool hadConnectorState = m_cb1ConnectorState.Captured();
+  if (!CaptureCB1ConnectorPreferences())
+    return failure("connector-preferences", m_cb1ConnectorState.CaptureFailure());
   if (!hdr10 && !m_dvState.Captured())
   {
     const auto* display = GetDisplayInfo();
@@ -1919,13 +2024,18 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
         mode && mode->vdisplay >= 2160 && rate > 30.01)
       return failure("output-format", "sink-dv-rate");
     if (!m_dvState.Capture(*drm, 0, sink.legacy_vsif))
+    {
+      if (!hadConnectorState) CompleteCB1ConnectorRestore();
       return failure("drm-state-capture", m_dvState.CaptureFailure());
+    }
     m_presentStall.Reset();
     if (DVBRIDGE::DiagnosticsEnabled())
       DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge TV-Led state captured: hdr_static_metadata={}",
           drm->GetConnector()->SupportsProperty("HDR_OUTPUT_METADATA") ? "preserved" : "not-exposed");
   }
   m_hdrConversion = hdr10;
+  if (!StageCB1ConnectorPreferences(false)) return failure("connector-preferences");
+  DeferConnectorPreferences();
   m_compositeShader.reset();
   const bool ready = SetGuiCompositing(AVCOL_TRC_SMPTE2084);
   if (ready) m_dvConfiguredOutput = m_dvSelection.policy.mode;
@@ -2185,6 +2295,7 @@ bool CWinSystemGbmGLESContext::StageOrdinaryDVOutput(const VideoPicture* picture
       (m_hdrDeepColorPrevious && !drm->AddProperty(drm->GetConnector(),
           "DVBRIDGE_HDR10_DEEP_COLOR",*m_hdrDeepColorPrevious)))
   { if (!m_dvStopPending) RejectDVOutputSurface(); return false; }
+  if (!StageCB1ConnectorPreferences(true)) return false;
   SetColorimetry(picture);
   const bool hdr = SetHDR(picture);
   SetGuiCompositing(hdr && picture ? picture->color_transfer : 0);
@@ -2808,17 +2919,19 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
   }
   if (m_failedHDR10SetupRestore && !RestoreFailedHDR10Setup())
     return false;
-  if (m_hdrDeepColorPrevious)
+  if (m_hdrDeepColorPrevious || (m_cb1ConnectorState.Captured() && !m_dvState.Captured()))
   {
     auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
     if (!drm)
       return false;
-    if (!drm->AddProperty(drm->GetConnector(), "DVBRIDGE_HDR10_DEEP_COLOR",
-                          *m_hdrDeepColorPrevious))
+    if (!StageCB1ConnectorPreferences(true) ||
+        (m_hdrDeepColorPrevious && !drm->AddProperty(drm->GetConnector(),
+            "DVBRIDGE_HDR10_DEEP_COLOR", *m_hdrDeepColorPrevious)))
     {
       drm->FlipPageTransactional(nullptr, true);
       return false;
     }
+    SetColorimetry(nullptr);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDisable(GL_SCISSOR_TEST);
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
@@ -2837,6 +2950,7 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
       return false;
     surface.EndTransactionalMode();
     m_hdrDeepColorPrevious.reset();
+    CompleteCB1ConnectorRestore();
     if (DVBRIDGE::DiagnosticsEnabled())
       DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge HDR10: native link policy restored");
   }
@@ -2858,6 +2972,8 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
     glClear(GL_COLOR_BUFFER_BIT);
     if (!m_dvBridge || !m_dvBridge->Advanced()) glFinish();
     AnnounceCB1Mode(false);
+    if (!StageCB1ConnectorPreferences(true)) return false;
+    SetColorimetry(nullptr);
     const bool restored=m_eglContext.TrySwapBuffers() && FlipDVBridgePage(m_dvState, true);
     CompleteCB1Mode(restored,false);
     if (!restored)
@@ -2878,6 +2994,7 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
   m_hdr10Signal.reset();
   m_hdr10SessionStream = 0;
   m_hdrConversion = false;
+  CompleteCB1ConnectorRestore();
   if (DVBRIDGE::DiagnosticsEnabled() &&
       m_dvSetupFailures.Recovered(DVBRIDGE::DiagnosticNowMs()))
     DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge: normal display restored after failures={}", m_dvSetupFailures.Count());

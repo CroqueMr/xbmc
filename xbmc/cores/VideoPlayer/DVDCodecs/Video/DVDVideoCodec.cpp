@@ -110,5 +110,6 @@ bool VideoPicture::IsSameParams(const VideoPicture& pic) const
          this->iDisplayWidth == pic.iDisplayWidth && this->iDisplayHeight == pic.iDisplayHeight &&
          this->stereoMode == pic.stereoMode && this->color_primaries == pic.color_primaries &&
          this->color_transfer == pic.color_transfer && this->hdrType == pic.hdrType &&
+         this->colorBits == pic.colorBits &&
          CompareDisplayMetadata(pic);
 }
