@@ -494,7 +494,8 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     m_hdr10SessionStream=0;
     if (m_dvBridge) m_dvBridge->Reset();
     DVBRIDGE::StreamTelemetry::ClearOutput();
-    DVBRIDGE::PlaybackNotification::OrdinaryOutputAccepted(true);
+    if (m_dvSelection.reason != DVBRIDGE::OutputReason::ProcessingPending)
+      DVBRIDGE::PlaybackNotification::OrdinaryOutputAccepted(true);
     return;
   }
   if (m_hdrConversion)
@@ -682,7 +683,8 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 #ifdef HAVE_DVBRIDGE
     if (auto drm=std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
     {
-      DVBRIDGE::PlaybackNotification::OrdinaryOutputAccepted(drm->LastPageAccepted());
+      if (m_dvSelection.reason != DVBRIDGE::OutputReason::ProcessingPending)
+        DVBRIDGE::PlaybackNotification::OrdinaryOutputAccepted(drm->LastPageAccepted());
       if (drm->LastPageAccepted() &&
           CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>()->IsPlayingVideo())
       {
@@ -1272,7 +1274,8 @@ bool DVBRIDGE::WantsNativeOutput(const VideoPicture* picture)
   if (!window) return false;
   const auto selected = window->SelectedDVOutput(picture);
   if (selected.route != OutputRoute::Vanilla) return true;
-  if (selected.reason != OutputReason::NoGPUProcessing &&
+  if (selected.reason != OutputReason::ProcessingPending &&
+      selected.reason != OutputReason::NoGPUProcessing &&
       selected.reason != OutputReason::NoDVTransport &&
       selected.reason != OutputReason::NoHDR10Transport) return false;
   auto caps = window->GetDVOutputCapabilities(picture, true);

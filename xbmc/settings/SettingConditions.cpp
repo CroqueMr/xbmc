@@ -569,14 +569,14 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
       else if (mode!=7 && !(dv ? caps.nativeDV : caps.hdr10))
         reason=dv ? DVBRIDGE::OutputReason::NoDVTransport : DVBRIDGE::OutputReason::NoHDR10Transport;
       else if (mode==6 && !caps.hdr10plus) reason=DVBRIDGE::OutputReason::NoHDR10PlusTransport;
-      else if (!caps.processingKnown) reason=DVBRIDGE::OutputReason::NoGPUProcessing;
+      else if (!caps.processingKnown) reason=DVBRIDGE::OutputReason::ProcessingPending;
       else if (caps.sourceKnown && !(hlgSource ? (caps.isHLG && !caps.isDV) : hdr10Source ? (caps.isHDR10 && !caps.isDV) : caps.isDV))
         reason=DVBRIDGE::OutputReason::SourceIneligible;
       else if (!processing[mode].usable)
         reason=processing[mode].reason==DVBRIDGE::OutputReason::None ?
             DVBRIDGE::OutputReason::NoGPUProcessing : processing[mode].reason;
       else if ((mode==3 || mode==4 || mode==7) && !preferences.ProfileValid(static_cast<dvbridge_mode>(mode)))
-        reason=DVBRIDGE::OutputReason::TVProfileRequired;
+        reason=mode==7 ? DVBRIDGE::OutputReason::SDRTargetInvalid : DVBRIDGE::OutputReason::TVProfileRequired;
     }
     int reasonId=CDVPlaybackInfo::ReasonLabel(reason);
     if (reason==DVBRIDGE::OutputReason::TVProfileRequired)
@@ -586,12 +586,13 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
       reasonId=!std::isfinite(peak) || peak<(mode==3?50:0.000001) || peak>10000 ? 40911 :
           gamut<1 || gamut>3 ? 40912 : 40845;
     }
-    if (reasonId && reason!=DVBRIDGE::OutputReason::TVProfileRequired)
+    const bool profile=reason==DVBRIDGE::OutputReason::TVProfileRequired || reason==DVBRIDGE::OutputReason::SDRTargetInvalid;
+    if (reasonId && !profile && reason!=DVBRIDGE::OutputReason::ProcessingPending)
       option.label+=" / "+localizer.Get(40851);
     option.label2=reasonId ? localizer.Get(reasonId) :
         guided ? localizer.Get(40971) : mode==3 ? localizer.Get(40864) : "";
     // Settings must allow selection before the required profile controls appear.
-    const bool configure=reason==DVBRIDGE::OutputReason::TVProfileRequired && !menu && !hdr10Menu && !hlgMenu;
+    const bool configure=profile && !menu && !hdr10Menu && !hdr10PlusMenu && !hlgMenu;
     option.properties.emplace_back("disabled",reasonId!=0 && !configure);
   }
 }

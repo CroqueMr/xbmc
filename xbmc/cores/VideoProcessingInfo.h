@@ -10,7 +10,7 @@
 enum class VideoOutputType { SDR, HDR10, HLG, DolbyVision, HDR10Plus };
 enum class VideoProcessingReason { None, NoDVTransport, NoHDR10Transport,
   NoGPUProcessing, SourceIneligible, TVProfileRequired, ActivationFailed, RestoreFailed,
-  NoHDR10PlusTransport };
+  NoHDR10PlusTransport, SDRTargetInvalid, ProcessingPending };
 enum class VideoCreativeStatus { Invalid, Unsupported, Neutral, Ready };
 
 // How the decoder tagged the picture: FFmpeg AVColor* codes, -1 when unknown.

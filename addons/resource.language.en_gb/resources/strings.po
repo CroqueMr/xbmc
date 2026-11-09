@@ -25958,7 +25958,7 @@ msgid "HDR10+ Rendering"
 msgstr ""
 
 msgctxt "#40923"
-msgid "HDR10+ output requires a supported HDMI driver and display."
+msgid "No HDR10+ output"
 msgstr ""
 
 msgctxt "#40925"
@@ -26026,11 +26026,11 @@ msgid "BT2020"
 msgstr ""
 
 msgctxt "#40841"
-msgid "Dolby Vision output not supported"
+msgid "No Dolby Vision output"
 msgstr ""
 
 msgctxt "#40842"
-msgid "HDR10 output not supported"
+msgid "No HDR10 output"
 msgstr ""
 
 msgctxt "#40843"
@@ -26038,7 +26038,7 @@ msgid "GPU processing unavailable"
 msgstr ""
 
 msgctxt "#40844"
-msgid "Source cannot use this processing mode"
+msgid "Mode unavailable for source"
 msgstr ""
 
 msgctxt "#40845"
@@ -26050,7 +26050,7 @@ msgid "Output activation failed"
 msgstr ""
 
 msgctxt "#40847"
-msgid "Display restoration failed"
+msgid "Display restore failed"
 msgstr ""
 
 msgctxt "#40848"
@@ -26151,11 +26151,11 @@ msgid "Reference (GPU)"
 msgstr ""
 
 msgctxt "#40911"
-msgid "Configure TV peak brightness (nits)"
+msgid "Set HDR target peak"
 msgstr ""
 
 msgctxt "#40912"
-msgid "Configure TV color gamut"
+msgid "Set HDR target gamut"
 msgstr ""
 
 msgctxt "#40910"
@@ -26472,6 +26472,14 @@ msgstr ""
 
 msgctxt "#41139"
 msgid "SDR target gamma"
+msgstr ""
+
+msgctxt "#41142"
+msgid "Checking rendering support"
+msgstr ""
+
+msgctxt "#41141"
+msgid "Check SDR target settings"
 msgstr ""
 
 msgctxt "#41140"
