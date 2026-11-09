@@ -274,6 +274,10 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
   // the picture is reused from one stream to the next, so a stream without them would
   // inherit what the last one left here and be taken for 3D.
   m_picture.stereoMode.clear();
+  // Likewise the enhancement-layer type and the primaries guess: only the FFmpeg decoder
+  // sets them, and the layer type only for pictures whose RPU describes an EL.
+  m_picture.strDVELType.clear();
+  m_picture.colorPrimariesGuessed = false;
 
   m_stalled = m_messageQueue.GetPacketCount(CDVDMsg::DEMUXER_PACKET) == 0;
   m_rewindStalled = false;
@@ -1032,7 +1036,9 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
 #endif
 #ifdef HAVE_DVBRIDGE
   if (HandleDVPlaybackFailure(pPicture)) return OUTPUT_ABORT;
-  DVBRIDGE::StreamTelemetry::SourceBits(pPicture->colorBits,pPicture->pixelFormat,pPicture->doviSourceInfo);
+  DVBRIDGE::StreamTelemetry::SourceBits(pPicture->colorBits,pPicture->pixelFormat,pPicture->doviSourceInfo,
+      {static_cast<int>(pPicture->color_primaries),static_cast<int>(pPicture->color_transfer),
+       pPicture->colorPrimariesGuessed,pPicture->color_range==1,pPicture->strDVELType});
   if (DVBRIDGE::DiagnosticsEnabled() && CDVPlaybackInfo::presented.load())
   {
     ++m_diagnosticPictures;

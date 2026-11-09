@@ -39,6 +39,7 @@ void VideoPicture::Reset()
   color_range = 0;
   chroma_position = AVCHROMA_LOC_UNSPECIFIED;
   color_primaries = AVColorPrimaries::AVCOL_PRI_UNSPECIFIED;
+  colorPrimariesGuessed = false;
   color_transfer = AVCOL_TRC_UNSPECIFIED;
   colorBits = 8;
   stereoMode.clear();
