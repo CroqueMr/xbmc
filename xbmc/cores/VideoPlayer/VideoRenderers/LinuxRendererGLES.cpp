@@ -34,6 +34,7 @@
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
 #ifdef HAVE_DVBRIDGE
+#include "cores/VideoSourceSideData.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
 #endif
@@ -220,7 +221,7 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
 
 #ifdef CB1_HAS_HDR10_AI
   m_aiOutputPending = HDR10AILookahead() &&
-      DVBRIDGE::FrameOutputSettings(picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS).hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
+      DVBRIDGE::FrameOutputSettings(picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS, picture.hdrType == StreamHdrType::HDR_TYPE_HLG).hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
   if (m_aiOutputPending)
   {
     // Keep the GUI output until AI preparation selects DV or native HDR10.
@@ -1327,10 +1328,13 @@ bool CLinuxRendererGLES::UploadTexture(int index)
 bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& layer)
 {
   auto& buffer=m_buffers[index];
-  if (!buffer.doviSourcePicture || !buffer.doviMetadata.Data() ||
-      buffer.doviPts==DVD_NOPTS_VALUE || !std::isfinite(buffer.doviPts) ||
-      m_textureTarget!=GL_TEXTURE_2D || m_renderOrientation!=0)
+  if (!buffer.doviSourcePicture || m_textureTarget!=GL_TEXTURE_2D || m_renderOrientation!=0)
     return false;
+  const auto& source=*buffer.doviSourcePicture;
+  const bool hdr10=!source.doviSourceInfo.profile && source.doviSourceBinding.Valid() &&
+      (source.hdrType==StreamHdrType::HDR_TYPE_HDR10 || source.hdrType==StreamHdrType::HDR_TYPE_HDR10PLUS);
+  if (!hdr10 && (!buffer.doviMetadata.Data() || buffer.doviPts==DVD_NOPTS_VALUE ||
+      !std::isfinite(buffer.doviPts))) return false;
   if (m_sourceWidth<=0 || m_sourceWidth>3840 || m_sourceHeight<=0 || m_sourceHeight>2160)
     return false;
   switch (m_format)
@@ -1341,11 +1345,25 @@ bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& lay
   }
   layer.width=m_sourceWidth; layer.height=m_sourceHeight;
   layer.scalingMethod=SelectScalingMethod();
-  layer.pts=buffer.doviPts;
-  layer.binding=buffer.doviMetadata.Binding();
+  layer.pts=hdr10 ? source.pts / DVD_TIME_BASE : buffer.doviPts;
+  layer.binding=hdr10 ? source.doviSourceBinding : buffer.doviMetadata.Binding();
+  if (!std::isfinite(layer.pts) || (hdr10 && (source.pts==DVD_NOPTS_VALUE ||
+      source.doviSourcePts==AV_NOPTS_VALUE))) return false;
+  if (hdr10)
+  {
+    layer.fullRange=source.color_range!=0;
+    if (source.hasDisplayMetadata && source.displayMetadata.has_luminance)
+    {
+      layer.hdr.max_luma=av_q2d(source.displayMetadata.max_luminance);
+      layer.hdr.min_luma=av_q2d(source.displayMetadata.min_luminance);
+    }
+    if (source.hasLightMetadata)
+    { layer.hdr.max_cll=source.lightMetadata.MaxCLL; layer.hdr.max_fall=source.lightMetadata.MaxFALL; }
+  }
   layer.lease=buffer.doviSourcePicture;
   layer.sourceInfo=buffer.doviSourcePicture->doviSourceInfo;
   layer.sourceSideData=buffer.doviSourcePicture->sourceSideData;
+  layer.sourceSerial=layer.sourceSideData ? layer.sourceSideData->Serial() : 0;
   layer.chromaLocation=buffer.doviSourcePicture->chroma_position;
   for (int p=0;p<3;++p)
   {

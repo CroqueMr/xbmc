@@ -100,6 +100,7 @@ public:
     std::shared_ptr<const VideoSourceSideData> sourceSideData;
     uint64_t sourceSerial{};
     bool fullRange{};
+    bool hlg{};
     pl_hdr_metadata hdr{};
     AVChromaLocation chromaLocation{AVCHROMA_LOC_UNSPECIFIED};
   };
@@ -276,6 +277,7 @@ private:
   bool m_live{}, m_advanced{}, m_dvPolicyActive{}, m_pending{}, m_fallback{};
   bool m_asyncEligible{};
 #ifdef CB1_HAS_HDR10_AI
+  bool m_sourceHLG{};
   bool m_aiFrame{}, m_aiOutputAccepted{};
   std::optional<cb1_hdr10plus_dovi_result> m_aiGuidance;
   uint64_t m_aiRenderSubmitNs{};

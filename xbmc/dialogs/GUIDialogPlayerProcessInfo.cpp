@@ -389,12 +389,14 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.OutputStage", transaction ?
         std::string(data.transaction.stage)+" (not committed)" : "");
     SetProperty("DV.ReferenceWarning", data.referenceWarning ? "Consider Reference" : "");
-    SetProperty("DV.TVProfile", active && (data.output.effective==3 || data.output.effective==4 || data.output.effective==6) ?
+    SetProperty("DV.TVProfile", active && data.output.effective==8 ?
+        StringUtils::Format("BT.709 / {:g} nits / gamma {:g}", data.output.target,data.output.sdrGamma) :
+        active && (data.output.effective==3 || data.output.effective==4 || data.output.effective==6) ?
         StringUtils::Format("{}{} / {:g} nits",
             data.output.panel==1 || data.output.panel==2 ? localizer.Get(40833+data.output.panel)+" · " : "",
             data.output.gamut==1 ? "BT.709" : data.output.gamut==2 ? "P3-D65" : "BT.2020",
             data.output.effective==3 ? data.output.target : data.output.manualPeak) : "");
-    SetProperty("DV.DisplayBlack", hdr10 && data.output.effective==3 ?
+    SetProperty("DV.DisplayBlack", (hdr10 && data.output.effective==3 || active && data.output.effective==8) ?
         StringUtils::Format("{:g} nits", data.output.displayBlack) : "");
     SetProperty("DV.HDR10Policy", hdr10 ? CDVPlaybackInfo::Policy(data.output) : "");
     SetProperty("DV.HDR10Target", hdr10 && data.output.effective!=3 ? StringUtils::Format("{:g} nits", data.output.target) : "");

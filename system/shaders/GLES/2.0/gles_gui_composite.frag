@@ -13,10 +13,10 @@ varying vec2 v_tex;
 uniform sampler2D u_samp;       // GUI FBO texture (sRGB, rendered by GUI shaders)
 uniform sampler2D u_lutDegamma; // sRGB -> linear LUT (IEC 61966-2-1)
 uniform sampler2D u_lutTF;      // linear -> PQ LUT (1024 entries, sdrPeak baked in)
-uniform float u_ootfGamma;      // HLG: OOTF gamma (1.2 for BT.2100 1000-nit ref)
+uniform highp float u_ootfGamma; // HLG OOTF or negative SDR target gamma
                                 // PQ: 0.0 (use LUT path instead)
 uniform bool u_inputPQ;         // CB1 subtitle layer already contains BT.2020 PQ.
-uniform highp vec2 u_outputRange; // CB1 final HDR target: exact bit-depth scale and black code.
+uniform highp vec2 u_outputRange; // CB1 exact bit-depth scale and black code.
 
 // BT.709 -> BT.2020 color space conversion matrix (applied in linear light)
 const mat3 bt709_to_bt2020 = mat3(
@@ -42,11 +42,22 @@ void main()
   }
 
   // sRGB -> linear via LUT (IEC 61966-2-1 EOTF, replaces inline pow)
-  vec3 linear = vec3(
+  highp vec3 linear = vec3(
     texture2D(u_lutDegamma, vec2(gui.r, 0.5)).r,
     texture2D(u_lutDegamma, vec2(gui.g, 0.5)).r,
     texture2D(u_lutDegamma, vec2(gui.b, 0.5)).r
   );
+
+  // SDR movie composition stays in BT.709 and uses the independent target gamma.
+  if (u_ootfGamma < 0.0)
+  {
+    highp vec3 result = pow(max(linear, vec3(0.0)), vec3(-1.0 / u_ootfGamma));
+#if defined(KODI_LIMITED_RANGE)
+    result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
+#endif
+    gl_FragColor = vec4(result * u_outputRange.x + u_outputRange.y, gui.a);
+    return;
+  }
 
   // BT.709 -> BT.2020 gamut mapping
   linear = bt709_to_bt2020 * linear;

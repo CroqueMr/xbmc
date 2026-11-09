@@ -1591,7 +1591,7 @@ void CRenderManager::PrepareNextRender()
       frametime * m_fps < DVD_TIME_BASE * 0.75 && m_pRenderer->HDR10AILookahead())
   {
     const auto source = DVBRIDGE::FrameOutputSettings(
-        m_picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS).hdr10Source;
+        m_picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS, m_picture.hdrType == StreamHdrType::HDR_TYPE_HLG).hdr10Source;
     if (source == DVBRIDGE::HDR10SourceMode::ReferenceDV || source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV)
       // Select on the physical refresh phase, not an interpolated mid-refresh clock.
       renderPts -= std::fmod(std::max(0.0, *completionAge), frametime);

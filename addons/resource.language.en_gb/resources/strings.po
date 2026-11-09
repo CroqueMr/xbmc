@@ -26433,3 +26433,47 @@ msgstr ""
 msgctxt "#41121"
 msgid "Ignore Level 5 margins only for files already cropped without matching metadata. Kodi zoom and placement still apply. Off preserves the authored active area; no automatic aspect-ratio correction is performed."
 msgstr ""
+
+msgctxt "#41130"
+msgid "SDR Rendering"
+msgstr ""
+
+msgctxt "#41131"
+msgid "HLG rendering"
+msgstr ""
+
+msgctxt "#41132"
+msgid "Choose Dolby Vision Reference rendering or Kodi default for original HLG video."
+msgstr ""
+
+msgctxt "#41133"
+msgid "SDR rendering target"
+msgstr ""
+
+msgctxt "#41134"
+msgid "Independent BT.709 rendering target, not measured screen brightness. Custom values set peak luminance, gamma and black floor."
+msgstr ""
+
+msgctxt "#41135"
+msgid "Reference (100 nits / gamma 2.4)"
+msgstr ""
+
+msgctxt "#41136"
+msgid "Bright room (200 nits / gamma 2.2)"
+msgstr ""
+
+msgctxt "#41137"
+msgid "Custom / Projector"
+msgstr ""
+
+msgctxt "#41138"
+msgid "SDR target peak (nits)"
+msgstr ""
+
+msgctxt "#41139"
+msgid "SDR target gamma"
+msgstr ""
+
+msgctxt "#41140"
+msgid "SDR target black (nits)"
+msgstr ""
