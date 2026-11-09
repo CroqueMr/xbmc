@@ -27,8 +27,8 @@
 #include "settings/lib/Setting.h"
 #include "utils/log.h"
 
-#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && defined(HAS_GLES)
-#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM)
+#include "windowing/gbm/WinSystemGbmDVContext.h"
 #endif
 
 #include <algorithm>
@@ -41,8 +41,8 @@ namespace
 {
 bool ConsumeDesktopModeDeferral()
 {
-#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && defined(HAS_GLES)
-  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM)
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
           CServiceBroker::GetWinSystem()))
     return window->ConsumeDVModeSwitchDeferral();
 #endif
@@ -373,9 +373,9 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
 
     if (allowResolutionChangeOnStop && !bTriggerUpdateRes)
     {
-#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && defined(HAS_GLES)
+#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM)
       if (CServiceBroker::GetAppMessenger()->IsProcessThread() && !appPlayer->IsPlaying() &&
-          dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+          dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
               CServiceBroker::GetWinSystem()))
       {
         const bool initial = !m_desktopResolutionRequest ||

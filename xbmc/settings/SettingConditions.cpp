@@ -34,7 +34,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/DVStreamTelemetry.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
-#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#include "windowing/gbm/WinSystemGbmDVContext.h"
 #endif
 
 namespace
@@ -526,7 +526,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   }
   const auto data=DVBRIDGE::StreamTelemetry::Read();
   auto caps=data.transaction.capabilities;
-  auto* window=dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
+  auto* window=dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(CServiceBroker::GetWinSystem());
   const auto available=window ? window->GetDVOutputCapabilities(nullptr, true) : DVBRIDGE::OutputCapabilities{};
   // Global preferences use hardware capabilities, not the current or previous film.
   if ((!menu && !hdr10Menu && !hlgMenu) ||

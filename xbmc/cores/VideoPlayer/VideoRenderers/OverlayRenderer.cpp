@@ -26,7 +26,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 #ifdef HAVE_DVBRIDGE
-#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#include "windowing/gbm/WinSystemGbmDVContext.h"
 #endif
 
 #include <algorithm>
@@ -178,7 +178,7 @@ void CRenderer::Render(int idx, float depth)
       if (!(hdrComposite && o->m_isHDROverlay))
         Render(o.get());
 #ifdef HAVE_DVBRIDGE
-      else if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      else if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
                    CServiceBroker::GetWinSystem()); window && window->BeginDVPQSubtitle())
       {
         Render(o.get());
@@ -200,7 +200,7 @@ void CRenderer::RenderHDROverlays(int idx)
   if (!CServiceBroker::GetWinSystem()->IsHdrComposite() || ShouldConvertPQPaletteToSRGB(true))
     return;
 #ifdef HAVE_DVBRIDGE
-  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
           CServiceBroker::GetWinSystem()); window && window->HasDVBridgeScreenshot() &&
       window->DVPQSubtitlesReady())
     return;
