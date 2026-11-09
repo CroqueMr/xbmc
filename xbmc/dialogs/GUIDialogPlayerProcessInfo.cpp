@@ -12,9 +12,6 @@
 #include "input/actions/ActionIDs.h"
 #ifdef HAVE_DVBRIDGE
 #include "DVPlaybackModes.h"
-#include "GUIDialogTextViewer.h"
-#include "guilib/GUIComponent.h"
-#include "guilib/GUIWindowManager.h"
 #include "DVPixelFormat.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackInfo.h"
@@ -31,6 +28,7 @@
 #include "filesystem/File.h"
 #include "guilib/GUIControlGroupList.h"
 #include "guilib/GUIFont.h"
+#include "guilib/GUITextLayout.h"
 #include "guilib/GUIFontManager.h"
 #include "windowing/WinSystem.h"
 #include "windowing/GraphicContext.h"
@@ -140,6 +138,26 @@ std::string DVContentType(unsigned type)
   return type < std::size(names) ? names[type] : StringUtils::Format("Type {}", type);
 }
 
+// Use the real panel font and its original 284-pixel value column, not a byte limit.
+bool InfoValueFits(const std::string& text)
+{
+  auto* font = g_fontManager.GetFont("CB1.InfoBody", false);
+  if (!font)
+    return text.size() <= 28;
+  CGUITextLayout label(font, false);
+  label.Update(text);
+  return label.GetTextWidth() <= 284.0f;
+}
+
+std::string PolicyText(std::string text)
+{
+  if (text.starts_with("Dolby Vision "))
+    text.replace(0, 13, "DV ");
+  if (const auto at = text.find("Adaptive HDR Mapping"); at != std::string::npos)
+    text.replace(at, 20, "Adaptive");
+  return text;
+}
+
 std::string TargetList(std::vector<long> nits, const std::vector<unsigned>& unknown)
 {
   std::sort(nits.begin(), nits.end());
@@ -151,6 +169,16 @@ std::string TargetList(std::vector<long> nits, const std::vector<unsigned>& unkn
     text += " nits";
   for (const unsigned index : unknown)
     text += (text.empty() ? "#" : " · #") + std::to_string(index);
+  if (text.empty() || InfoValueFits(text))
+    return text;
+  // State a count with the bounds; this does not invent intermediate authored targets.
+  if (nits.empty())
+    return StringUtils::Format("{} custom targets · #{}–#{}", unknown.size(),
+        *std::min_element(unknown.begin(), unknown.end()), *std::max_element(unknown.begin(), unknown.end()));
+  text = nits.size() == 1 ? StringUtils::Format("1 target · {} nits", nits.front()) :
+      StringUtils::Format("{} targets · {}–{} nits", nits.size(), nits.front(), nits.back());
+  if (!unknown.empty())
+    text += StringUtils::Format(" · {} custom", unknown.size());
   return text;
 }
 
@@ -202,10 +230,21 @@ std::string L8Targets(const VideoDVLevels& levels)
 std::string L10Displays(const VideoDVLevels& levels)
 {
   std::string text;
+  long minimum = 0, maximum = 0;
+  bool mixed = false;
   for (unsigned i = 0; i < levels.l10Count; ++i)
+  {
+    const long target = TargetNits(levels.l10[i].maxPQ);
+    minimum = i ? std::min(minimum, target) : target;
+    maximum = i ? std::max(maximum, target) : target;
+    mixed = mixed || levels.l10[i].primaries != levels.l10[0].primaries;
     text += StringUtils::Format("{}{} nits {}", text.empty() ? "" : " · ",
-        TargetNits(levels.l10[i].maxPQ), RPUPrimaries(levels.l10[i].primaries));
-  return text;
+        target, RPUPrimaries(levels.l10[i].primaries));
+  }
+  if (text.empty() || InfoValueFits(text))
+    return text;
+  return StringUtils::Format("{} displays · {}–{} nits · {}", levels.l10Count, minimum, maximum,
+      mixed ? std::string("mixed") : RPUPrimaries(levels.l10[0].primaries));
 }
 
 // White points step by 375 K from D65; index 8 is D93.
@@ -218,20 +257,6 @@ std::string L11Content(const VideoDVLevels& levels)
       levels.referenceMode ? " · reference mode" : "");
 }
 
-// The panel grows with its tallest column but keeps its bottom margin at the top too; past
-// that, the columns are cut above the meter strip instead of the headings leaving the screen.
-struct PanelFit
-{
-  float top, height, columns;
-};
-
-PanelFit FitPanel(float content, float screen)
-{
-  // Heading block, bottom padding and the meter strip DVColumnEnd reserves, as in the XML.
-  constexpr float margin = 24.0f, heading = 108.0f, padding = 16.0f, meters = 130.0f;
-  const float height = std::min(heading + content + padding, screen - 2 * margin);
-  return {screen - margin - height, height, height - heading - padding - meters};
-}
 } // namespace
 
 void CGUIDialogPlayerProcessInfo::RefreshInfo()
@@ -284,7 +309,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         StringUtils::Format("{} / {} nits", data.sourceCLL, data.sourceFALL) : "N/A");
     SetProperty("DV.Profile", data.profile ? StringUtils::Format("{}", data.profile) : "N/A");
     // Profile 8 is named with its base-layer compatibility: 8.1 HDR10, 8.2 SDR, 8.4 HLG.
-    SetProperty("DV.ProfileDetail", data.profile == 8 ? StringUtils::Format("8.{}", data.compatibility) :
+    SetProperty("DV.ProfileDetail", (data.profile == 8 || data.profile == 10) ? StringUtils::Format("{}.{}", data.profile, data.compatibility) :
         data.profile ? StringUtils::Format("{}", data.profile) : "N/A");
     // Kodi's decoder tells FEL from MEL by the RPU's NLQ parameters (strDVELType).
     const std::string base = data.compatibility == 1 || data.compatibility == 6 ? "HDR10 BL" :
@@ -360,7 +385,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     };
     SetProperty("DV.Fallback", active && data.output.fallback ? reasonText(data.output.reason) : "");
     SetProperty("DV.MinimumLinkBits", active && data.output.minimumLinkBits ?
-        StringUtils::Format(localizer.Get(40852),data.output.minimumLinkBits) : "");
+        StringUtils::Format("{}-bit",data.output.minimumLinkBits) : "");
     SetProperty("DV.Transport", active ? CDVPlaybackInfo::Transport(data.output.format) : "");
     SetProperty("DV.SignalIntent", active & CDVPlaybackInfo::HDMI ?
         (data.output.iptTransport ? "TV-Led / IPT-PQc2 tunnel" : "TV-Led / YCbCr tunnel") :
@@ -382,18 +407,18 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
           data.transaction.reason!=data.output.reason) :
           (data.transaction.requested || data.transaction.reason!=VideoProcessingReason::None)));
     SetProperty("DV.ProcessingVisible", bool(active) || transaction);
-    SetProperty("DV.RequestedPolicy", transaction ? std::string(CDVPlaybackInfo::RequestedPolicy(data.transaction.requested,
+    SetProperty("DV.RequestedPolicy", transaction ? PolicyText(CDVPlaybackInfo::RequestedPolicy(data.transaction.requested,
         data.transaction.hdr10AI)) :
-        active ? CDVPlaybackInfo::RequestedPolicy(data.output.requested,data.output.hdr10AI) : "");
+        active ? PolicyText(CDVPlaybackInfo::RequestedPolicy(data.output.requested,data.output.hdr10AI)) : "");
     SetProperty("DV.AdmissionReason", transaction ? reasonText(data.transaction.reason) : "");
     SetProperty("DV.AtomicResult", transaction && data.transaction.atomicError ?
-        StringUtils::Format("errno={} / failures={} / restored={}",data.transaction.atomicError,
+        StringUtils::Format("{} / {} / {}",data.transaction.atomicError,
             data.transaction.retryCount,yesno(data.transaction.restored)) : "");
     SetProperty("DV.OutputStage", transaction ?
-        std::string(data.transaction.stage)+" (not committed)" : "");
+        std::string(data.transaction.stage) : "");
     SetProperty("DV.ReferenceWarning", data.referenceWarning ? "Consider Reference" : "");
     SetProperty("DV.TVProfile", active && data.output.effective==8 ?
-        StringUtils::Format("BT.709 / {:g} nits / gamma {:g}", data.output.target,data.output.sdrGamma) :
+        StringUtils::Format("BT.709 / {:g} nits / {:g}", data.output.target,data.output.sdrGamma) :
         active && (data.output.effective==3 || data.output.effective==4 || data.output.effective==6) ?
         StringUtils::Format("{}{} / {:g} nits",
             data.output.panel==1 || data.output.panel==2 ? localizer.Get(40833+data.output.panel)+" · " : "",
@@ -408,7 +433,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     // Basic takes its reference from L6 max_luminance, else the RPU's source_max_pq (dvbridge_hdr10_target).
     SetProperty("DV.HDR10TargetOrigin", hdr10 && data.output.effective==2 ?
         (data.output.level6 ? "L6 max" : "RPU source max") : "");
-    SetProperty("DV.CreativeTrims", active ? (data.output.creativeKnown ?
+    SetProperty("DV.CreativeTrims", active && data.output.effective != 8 ? (data.output.creativeKnown ?
         (data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Invalid) ||
          data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Unsupported) ?
             "Treatment unavailable" :
@@ -424,10 +449,15 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
           data.output.creativeEdited & (1u<<8) ? "HDR10+ curve from L8" :
           data.output.creativeEdited & (1u<<2) ? "HDR10+ curve from L2" :
           data.output.creativeEdited & (1u<<1) ? "HDR10+ scene curve" : "Statistics only");
-    SetProperty("DV.Precision", active ? StringUtils::Format("{}-bit framebuffer", data.output.bits) : "N/A");
+    SetProperty("DV.Precision", active ? StringUtils::Format("{}-bit", data.output.bits) : "N/A");
     SetProperty("DV.L1PQ", metadata && data.l1 ? StringUtils::Format("{} | {} | {}", data.pq[0], data.pq[1], data.pq[2]) : "N/A");
     SetProperty("DV.L1Nits", metadata && data.l1 ? StringUtils::Format("{:.1f} | {:.1f} | {:.1f} nits",
         PQNits(data.pq[0]), PQNits(data.pq[1]), PQNits(data.pq[2])) : "N/A");
+    // SDR uses L1 max/avg; the original source minimum remains a source fact, not an applied component.
+    const bool sdrL1 = metadata && data.l1 && active && data.output.effective == 8 && applied[1];
+    SetProperty("DV.SDRL1PQ", sdrL1 ? StringUtils::Format("{} | {}", data.pq[1], data.pq[2]) : "");
+    SetProperty("DV.SDRL1Nits", sdrL1 ? StringUtils::Format("{:.1f} | {:.1f} nits",
+        PQNits(data.pq[1]), PQNits(data.pq[2])) : "");
     SetProperty("DV.L5", metadata && data.l5 ? StringUtils::Format("{} | {} | {} | {}",
         data.area[0], data.area[1], data.area[2], data.area[3]) : "N/A");
     SetProperty("DV.Mastering", metadata && data.l6 ? StringUtils::Format("{} | {:.4f} nits",
@@ -455,6 +485,12 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     const auto side = CServiceBroker::GetDataCacheCore().GetVideoSourceSideDataSnapshot();
     const AVDynamicHDRPlus* plus = side ? side->HDR10Plus() : nullptr;
     const auto scaled = [](AVRational value) { return 10000.0 * av_q2d(value); };
+    const bool plainHDRSDR = active && data.output.effective == 8 && !data.profile;
+    const unsigned plusUsed = plainHDRSDR && plus ? 6u :
+        active && data.output.hdr10PlusDV ? data.output.guidedSourceFields : 0u;
+    SetProperty("DV.UsedHDRStatic", plainHDRSDR);
+    SetProperty("DV.UsedHDR10PlusMax", bool(plusUsed & 2u));
+    SetProperty("DV.UsedHDR10PlusAvg", bool(plusUsed & 4u));
     const double display = plus ? av_q2d(plus->targeted_system_display_maximum_luminance) : 0.0;
     SetProperty("DV.HDR10PlusTarget", plus ? StringUtils::Format("{} · version {}",
         display > 0 ? StringUtils::Format("{:.0f} nits", display) : std::string("Unset"),
@@ -493,21 +529,16 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
       if (!panel || !surface)
         continue;
       float content = 0.0f;
-      std::vector<CGUIControlGroupList*> columns;
       for (int column = 0; column < 3; ++column)
-        if (auto* list = dynamic_cast<CGUIControlGroupList*>(GetControl(9620 + layout * 10 + column)))
-        {
+        if (const auto* list = dynamic_cast<const CGUIControlGroupList*>(
+                GetControl(9620 + layout * 10 + column)))
           content = std::max(content, list->GetTotalSize());
-          columns.push_back(list);
-        }
       if (content <= 0.0f)
         continue;
-      const auto fit = FitPanel(content, static_cast<float>(GetCoordsRes().iHeight));
-      panel->SetHeight(fit.height);
-      panel->SetPosition(panel->GetXPosition(), fit.top);
-      surface->SetHeight(fit.height + 40.0f);
-      for (auto* list : columns)
-        list->SetHeight(fit.columns);
+      const float height = 108.0f + content + 16.0f;
+      panel->SetHeight(height);
+      panel->SetPosition(panel->GetXPosition(), GetCoordsRes().iHeight - 24.0f - height);
+      surface->SetHeight(height + 40.0f);
     }
   }
 #endif
@@ -515,60 +546,6 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
 
 bool CGUIDialogPlayerProcessInfo::OnAction(const CAction &action)
 {
-#ifdef HAVE_DVBRIDGE
-  if (DVBRIDGE::EnhancedInfoEnabled() && action.GetID() == ACTION_SELECT_ITEM)
-  {
-    // Labels retain their full info expression even when the static panel ellipsizes it.
-    // Reuse the native text reader on request; keep a frozen snapshot while it is open.
-    std::string snapshot;
-    const auto [first, last] = GetLookupControls(9690);
-    for (int column = 0; column < 3; ++column)
-    {
-      for (auto it = first; it != last; ++it)
-      {
-        const auto* control = it->second;
-        bool visible = true, belongs = false;
-        for (auto* parent = control; parent; parent = parent->GetParentControl())
-        {
-          visible = visible && parent->IsVisible();
-          belongs = belongs || parent->GetID() == 9620 + column ||
-              parent->GetID() == 9630 + column || parent->GetID() == 9640 + column;
-        }
-        if (visible && belongs)
-        {
-          const auto text = control->GetDescription();
-          if (!text.empty())
-            snapshot += text + "\n";
-        }
-      }
-      snapshot += "\n";
-    }
-    if (auto* viewer = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogTextViewer>(
-            WINDOW_DIALOG_TEXT_VIEWER))
-    {
-      viewer->SetHeading("Player information");
-      viewer->SetText(snapshot);
-      viewer->Open();
-    }
-    return true;
-  }
-  if (DVBRIDGE::EnhancedInfoEnabled() &&
-      (action.GetID() == ACTION_MOVE_UP || action.GetID() == ACTION_MOVE_DOWN ||
-       action.GetID() == ACTION_PAGE_UP || action.GetID() == ACTION_PAGE_DOWN))
-  {
-    const bool down = action.GetID() == ACTION_MOVE_DOWN || action.GetID() == ACTION_PAGE_DOWN;
-    const bool page = action.GetID() == ACTION_PAGE_UP || action.GetID() == ACTION_PAGE_DOWN;
-    for (int layout = 0; layout < 2; ++layout)
-      for (int column = 0; column < 3; ++column)
-        if (auto* list = dynamic_cast<CGUIControlGroupList*>(GetControl(9620 + layout * 10 + column)))
-        {
-          const float step = page ? list->GetHeight() * 0.8f : 56.0f;
-          list->SetScrollOffset(std::clamp(list->GetScrollOffset() + (down ? step : -step),
-              0.0f, std::max(0.0f, list->GetTotalSize() - list->GetHeight())));
-        }
-    return true;
-  }
-#endif
   if (action.GetID() == ACTION_PLAYER_PROCESS_INFO)
   {
 #ifdef HAVE_DVBRIDGE

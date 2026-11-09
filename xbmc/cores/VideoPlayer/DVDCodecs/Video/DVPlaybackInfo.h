@@ -11,7 +11,7 @@ namespace DVBRIDGE
 {
 enum class OutputReason { None, NoDVTransport, NoHDR10Transport,
   NoGPUProcessing, SourceIneligible, TVProfileRequired, ActivationFailed, RestoreFailed,
-  NoHDR10PlusTransport };
+  NoHDR10PlusTransport, SDRTargetInvalid, ProcessingPending };
 struct ModeAdmission { bool usable{}; OutputReason reason{OutputReason::None}; };
 struct OutputCapabilities
 {
@@ -45,7 +45,9 @@ struct CDVPlaybackInfo
   enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4, HDR10 = 8, HDR10PLUS = 16, SDR = 32 };
   inline static std::atomic<unsigned> presented{0};
   static int ReasonLabel(DVBRIDGE::OutputReason reason)
-  { return reason == DVBRIDGE::OutputReason::NoHDR10PlusTransport ? 40923 :
+  { return reason == DVBRIDGE::OutputReason::ProcessingPending ? 41142 :
+      reason == DVBRIDGE::OutputReason::SDRTargetInvalid ? 41141 :
+      reason == DVBRIDGE::OutputReason::NoHDR10PlusTransport ? 40923 :
       reason == DVBRIDGE::OutputReason::None ? 0 : 40840 + static_cast<int>(reason); }
 
   static const char* Reason(DVBRIDGE::OutputReason reason)
@@ -57,6 +59,8 @@ struct CDVPlaybackInfo
       case DVBRIDGE::OutputReason::NoGPUProcessing: return "gpu-processing-unavailable";
       case DVBRIDGE::OutputReason::SourceIneligible: return "source-ineligible";
       case DVBRIDGE::OutputReason::TVProfileRequired: return "tv-profile-required";
+      case DVBRIDGE::OutputReason::SDRTargetInvalid: return "sdr-target-invalid";
+      case DVBRIDGE::OutputReason::ProcessingPending: return "processing-pending";
       case DVBRIDGE::OutputReason::ActivationFailed: return "activation-failed";
       case DVBRIDGE::OutputReason::RestoreFailed: return "restoration-failed";
       case DVBRIDGE::OutputReason::NoHDR10PlusTransport: return "no-hdr10plus-transport";
@@ -147,7 +151,8 @@ struct CDVPlaybackInfo
   {
     if (!output.flags) return source;
     if ((output.flags & FEL) && source.find("FEL") == std::string::npos) source += " FEL";
-    source += output.flags & CM4 ? " · CM4 metadata" : " · CM2.9 metadata";
+    if (!(output.flags & SDR))
+      source += output.flags & CM4 ? " · CM4 metadata" : " · CM2.9 metadata";
     source += " · " + Mode(output);
     return source;
   }
