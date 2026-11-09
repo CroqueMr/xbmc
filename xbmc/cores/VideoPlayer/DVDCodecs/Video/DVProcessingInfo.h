@@ -17,6 +17,8 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   accepted.panel=output.panel;
   accepted.gamut=output.gamut; accepted.manualPeak=output.manualPeak;
   accepted.displayBlack=output.displayBlack; accepted.sdrGamma=output.sdrGamma;
+  accepted.sdrHDRInputUsed=output.sdrHDRInputUsed;
+  accepted.sdrHDRInputValues=output.sdrHDRInputValues;
   accepted.revision=output.revision; accepted.stream=output.stream; accepted.picture=output.picture;
   accepted.format=output.format; accepted.width=output.width; accepted.height=output.height;
   accepted.refresh=output.refresh; accepted.fallback=output.fallback;

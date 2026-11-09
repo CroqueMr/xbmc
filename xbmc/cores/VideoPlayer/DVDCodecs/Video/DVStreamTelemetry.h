@@ -49,6 +49,8 @@ struct StreamSnapshot
     bool level6{};
     int requested{}, effective{1}, method{}, panel{}, gamut{};
     double manualPeak{}, displayBlack{}, sdrGamma{};
+    unsigned sdrHDRInputUsed{}; // MDCV min/max, MaxCLL fallback, HDR10+ max/avg: bits 1/2/4/8/16.
+    std::array<float,4> sdrHDRInputValues{}; // Imported scene_max RGB and scene_avg, in nits.
     uint64_t revision{};
     bool fallback{};
     uint64_t stream{}, picture{};

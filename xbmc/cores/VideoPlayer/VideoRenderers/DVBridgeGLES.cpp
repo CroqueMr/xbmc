@@ -64,8 +64,10 @@ pl_chroma_location SourceChroma(AVChromaLocation source, unsigned profile)
   return location == PL_CHROMA_UNKNOWN ? PL_CHROMA_LEFT : location;
 }
 
-bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::Layer& layer)
+bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::Layer& layer,
+                   unsigned* hdrInputUsed = nullptr)
 {
+  if (hdrInputUsed) *hdrInputUsed = 0;
   if (!dvbridge_gl_frame_import(frame,gpu,layer.layout,layer.width,layer.height,layer.planes))
     return false;
   dvbridge_gl_frame_set_chroma(frame,SourceChroma(layer.chromaLocation,layer.sourceInfo.profile));
@@ -96,6 +98,22 @@ bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::La
         }
         frame->frame.color.hdr.scene_avg=10000*av_q2d(statistics.average_maxrgb);
       }
+    }
+    if (hdrInputUsed)
+    {
+      // Attest the same nominal input selection the SDR tone mapper consumes.
+      const auto& hdr=frame->frame.color.hdr;
+      float minimum=0, maximum=0;
+      struct pl_nominal_luma_params params{};
+      params.color=&frame->frame.color; params.metadata=PL_HDR_METADATA_ANY;
+      params.scaling=PL_HDR_NITS; params.out_min=&minimum; params.out_max=&maximum;
+      pl_color_space_nominal_luma_ex(&params);
+      const bool suppliedRange=hdr.min_luma<=minimum;
+      const bool dynamic=pl_hdr_metadata_contains(&hdr,PL_HDR_METADATA_HDR10PLUS);
+      if (hdr.min_luma>0 && suppliedRange) *hdrInputUsed |= 1u;
+      if (dynamic && suppliedRange) *hdrInputUsed |= 24u;
+      else if (!dynamic && hdr.max_luma>0 && maximum==hdr.max_luma) *hdrInputUsed |= 2u;
+      else if (!dynamic && !hdr.max_luma && hdr.max_cll>0 && maximum==hdr.max_cll) *hdrInputUsed |= 4u;
     }
     frame->frame.repr.levels=layer.fullRange ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
   }
@@ -1594,6 +1612,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   if (policy.mode == DVBRIDGE_MODE_DISABLED) return FrameStatus::Unsupported;
   m_pendingBinding = base.binding;
   m_pendingSourceInfo = base.sourceInfo;
+  m_pendingSDRHDRInputUsed = 0;
+  m_pendingSDRHDRInputValues = {};
   m_pendingIdentity = {base.binding.stream,base.binding.picture,revision};
   DVBRIDGE::StreamTelemetry::NativeRequest({base.binding.stream,base.binding.picture,revision},
       DVBRIDGE::PolicyCode(preferences.Policy()),DVBRIDGE::PolicyCode(policy),
@@ -1644,8 +1664,11 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   if (!base.lease || (enhancement && !enhancement->lease))
   { Failure("policy-source-lease"); return FrameStatus::Failed; }
   dvbridge_gl_frame bl{}, el{};
-  if (!ImportDVLayer(&bl,m_gl->gpu,base))
+  if (!ImportDVLayer(&bl,m_gl->gpu,base,&m_pendingSDRHDRInputUsed))
   { Failure("policy-base-import"); return FrameStatus::Failed; }
+  const auto& importedHDR=bl.frame.color.hdr;
+  m_pendingSDRHDRInputValues={importedHDR.scene_max[0],importedHDR.scene_max[1],
+      importedHDR.scene_max[2],importedHDR.scene_avg};
   if (enhancement)
   {
     if (!ImportDVLayer(&el,m_gl->gpu,*enhancement))
@@ -2453,6 +2476,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   if (m_effectiveMode == DVBRIDGE_MODE_SDR)
   {
     output.effective=8;
+    output.sdrHDRInputUsed=m_pendingSourceInfo.profile ? 0 : m_pendingSDRHDRInputUsed;
+    if (!m_pendingSourceInfo.profile) output.sdrHDRInputValues=m_pendingSDRHDRInputValues;
     if (!m_pendingSourceInfo.profile) output.requested=DVBRIDGE::PolicyCode(m_requested.HDR10Policy());
     output.flags &= ~(CDVPlaybackInfo::HDR10 | CDVPlaybackInfo::HDR10PLUS | CDVPlaybackInfo::HDMI | CDVPlaybackInfo::CM4);
     output.flags |= CDVPlaybackInfo::SDR;
