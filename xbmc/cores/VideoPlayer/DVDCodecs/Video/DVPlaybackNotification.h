@@ -76,7 +76,7 @@ public:
         m_masterRecovery.exchange(false))
       EmitMasterRecovery();
     if (!Pending()) return;
-    if (!(output.flags & (CDVPlaybackInfo::HDMI | CDVPlaybackInfo::HDR10))) return;
+    if (!(output.flags & (CDVPlaybackInfo::HDMI | CDVPlaybackInfo::HDR10 | CDVPlaybackInfo::SDR))) return;
     {
       std::lock_guard lock(m_mutex);
       if (!output.picture || output.stream<=m_nativeFloor) return;
