@@ -25,7 +25,7 @@ struct VideoSourceTags
 // Presence is the matching bit of the parsed block set.
 struct VideoDVLevels
 {
-  static constexpr unsigned MaxTrims = 8;
+  static constexpr unsigned MaxTrims = 32;
   struct Target
   {
     uint8_t index{}, primaries{};
