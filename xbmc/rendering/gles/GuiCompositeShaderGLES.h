@@ -23,7 +23,7 @@ public:
   void SetInputPQ(bool value) { m_inputPQ = value; }
   void SetOutputRange(float scale, float offset) { m_outputScale = scale; m_outputOffset = offset; }
 
-  bool CreateLUTs(int colorTransfer);
+  bool CreateLUTs(int colorTransfer, float sdrGamma = 2.4f);
 
   GLint GetPosLoc() { return m_hPos; }
   GLint GetTexLoc() { return m_hTex; }
