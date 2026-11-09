@@ -1761,12 +1761,21 @@ bool CWinSystemGbmGLESContext::RecoverDVActivation()
   if (!PollRejectedDVSurface()) return false;
   // Retire the rejected GPU work before restoring properties with clean pixels.
   if (!m_dvContext || m_dvContext->Poll() != DVBRIDGE_DV_IDLE) return false;
+  const bool superseded = m_dvSuperseded;
   if (!EndDVBridge())
   {
     m_dvRollbackFailed = true;
     std::lock_guard lock(m_dvCapabilityMutex);
     m_dvActivationReason = DVBRIDGE::OutputReason::RestoreFailed;
     return false;
+  }
+  // Supersession retired the candidate and restored connector/session state,
+  // but it was not an activation failure of either the old or the new target.
+  if (superseded)
+  {
+    m_dvConfiguredOutput.reset();
+    m_dvRecoveryPending = false;
+    return true;
   }
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   bool fallback;
@@ -2277,10 +2286,22 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
         capabilities.isDV && preferences.output==DVBRIDGE::OutputMode::MasterReference &&
         preferences.allowMasterFallback);
   }
-  m_dvSelection = SelectedDVOutput(&picture, preferences, selectionCapabilities);
-  // Retained renderer facts belong to this render-side phase, never Configure.
+  const auto selection = SelectedDVOutput(&picture, preferences, selectionCapabilities);
   const auto binding = picture.doviSourceBinding.Valid() ?
       picture.doviSourceBinding : picture.doviMetadata.Binding();
+  if (HasPendingDVOutputSurface() &&
+      (m_dvPendingStream != binding.stream || m_dvPendingPolicy != preferences.revision ||
+       m_dvSelection.route != selection.route || m_dvSelection.policy.mode != selection.policy.mode))
+  {
+    // A pending drawable and renderer belong to their original target. Retire
+    // and unwind that transaction before selecting any successor, even at the
+    // same bit depth. Preserve real retirement/restoration failures.
+    m_dvSuperseded = true;
+    if (!RejectDVOutputSurface() || !RecoverDVActivation())
+      return deferred("output-await-superseded-scanout");
+  }
+  m_dvSelection = selection;
+  // Retained renderer facts belong to this render-side phase, never Configure.
   if (capabilities.sourceKnown)
   {
     auto identity = m_dvBridge ? m_dvBridge->SelectionIdentity(binding, preferences, m_dvSelection.policy.mode) :
@@ -2412,10 +2433,13 @@ bool CWinSystemGbmGLESContext::RejectDVOutputSurface()
   if (!m_dvStopPending && !m_dvRecoveryPending)
   {
     m_dvRecoveryPending = true;
-    m_dvRejectedRoute = m_dvSelection.route;
-    if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-        drm && drm->DVActivationFailures() == m_dvAttemptFailures)
-      drm->FailDVActivation(EINVAL);
+    if (!m_dvSuperseded)
+    {
+      m_dvRejectedRoute = m_dvSelection.route;
+      if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+          drm && drm->DVActivationFailures() == m_dvAttemptFailures)
+        drm->FailDVActivation(EINVAL);
+    }
   }
   if (!HasPendingDVOutputSurface())
   {
@@ -2438,8 +2462,13 @@ bool CWinSystemGbmGLESContext::RejectDVOutputSurface()
 bool CWinSystemGbmGLESContext::PollRejectedDVSurface()
 {
   if (!m_dvRejectedSurface) return true;
-  if (m_dvRollbackFailed || !m_dvContext ||
-      m_dvContext->Poll() != DVBRIDGE_DV_IDLE) return false;
+  if (m_dvRollbackFailed || !m_dvContext) return false;
+  const auto retired = m_dvContext->Poll();
+  if (retired != DVBRIDGE_DV_IDLE)
+  {
+    if (retired == DVBRIDGE_DV_FAILED) m_dvRollbackFailed = true;
+    return false;
+  }
   if (!CompleteDVOutputSurface(false))
   {
     m_dvRollbackFailed = true;
@@ -3082,6 +3111,7 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
   // Never reset Kodi's ordinary HDR GUI compositor unless we owned DV output.
   if (!m_dvState.Captured() && !m_hdrConversion)
   {
+    m_dvSuperseded = false;
     m_dvEndPending = false;
     return true;
   }
@@ -3123,6 +3153,7 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
       m_dvSetupFailures.Recovered(DVBRIDGE::DiagnosticNowMs()))
     DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge: normal display restored after failures={}", m_dvSetupFailures.Count());
   SetGuiCompositing(0);
+  m_dvSuperseded = false;
   m_dvEndPending = false;
   return true;
 }

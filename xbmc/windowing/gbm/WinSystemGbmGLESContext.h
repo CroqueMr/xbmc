@@ -232,6 +232,7 @@ private:
   bool StageOrdinaryDVOutput(const VideoPicture* picture);
   bool RecoverDVActivation();
   void ResetDVActivation(const VideoPicture* picture);
+  bool m_dvSuperseded{}; // Benign cancellation still uses the complete recovery owner.
   bool m_dvRecoveryPending{}, m_dvNativeFailed{}, m_dvHDR10Failed{}, m_dvSDRFailed{}, m_dvFallbackActive{};
   bool m_dvActivating{};
   uint64_t m_dvActivationStream{}, m_dvActivationPolicy{};
