@@ -1803,6 +1803,10 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int frame
         GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &componentType);
   glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, attachment,
       GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+  // Mesa gives desktop default framebuffers sRGB formats; writes stay linear until
+  // GL_FRAMEBUFFER_SRGB is enabled.
+  if (encoding == GL_SRGB && !glIsEnabled(GL_FRAMEBUFFER_SRGB))
+    encoding = GL_LINEAR;
 #else
   glGetIntegerv(GL_RED_BITS, &red);
   glGetIntegerv(GL_GREEN_BITS, &green);
