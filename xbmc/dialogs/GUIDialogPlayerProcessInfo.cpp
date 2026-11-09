@@ -564,7 +564,7 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
       const float height = 108.0f + content + 16.0f;
       panel->SetHeight(height);
       panel->SetPosition(panel->GetXPosition(), GetCoordsRes().iHeight - 24.0f - height);
-      surface->SetHeight(height + 40.0f);
+      surface->SetHeight(height);
     }
   }
 #endif
