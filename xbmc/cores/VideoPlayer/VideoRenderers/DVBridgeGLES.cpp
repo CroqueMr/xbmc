@@ -112,8 +112,8 @@ bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::La
       const bool dynamic=pl_hdr_metadata_contains(&hdr,PL_HDR_METADATA_HDR10PLUS);
       if (hdr.min_luma>0 && suppliedRange) *hdrInputUsed |= 1u;
       if (dynamic && suppliedRange) *hdrInputUsed |= 24u;
-      else if (!dynamic && hdr.max_luma>0 && maximum==hdr.max_luma) *hdrInputUsed |= 2u;
-      else if (!dynamic && !hdr.max_luma && hdr.max_cll>0 && maximum==hdr.max_cll) *hdrInputUsed |= 4u;
+      else if (suppliedRange && !dynamic && hdr.max_luma>0 && maximum==hdr.max_luma) *hdrInputUsed |= 2u;
+      else if (suppliedRange && !dynamic && !hdr.max_luma && hdr.max_cll>0 && maximum==hdr.max_cll) *hdrInputUsed |= 4u;
     }
     frame->frame.repr.levels=layer.fullRange ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
   }
