@@ -1200,7 +1200,7 @@ bool CDVBridgeGLES::SetNativeOverlay(unsigned texture, unsigned degamma, unsigne
   return true;
 }
 
-bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<Context> context)
+bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<Context> context, bool sdr)
 {
   if (m_gl)
     return m_renderer && m_packer;
@@ -1215,10 +1215,10 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<C
     return Failure("float-blend-or-linear-unavailable");
   m_renderer = m_context->Attach();
   m_packer = dvbridge_gl_packer_create(DVBRIDGE_VERTEX, DVBRIDGE_FRAGMENT);
-  return m_renderer && m_packer && RebindOutputSurface(hdr10);
+  return m_renderer && m_packer && RebindOutputSurface(hdr10,sdr);
 }
 
-bool CDVBridgeGLES::RebindOutputSurface(bool hdr10)
+bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr)
 {
   if (!m_gl || m_pending || m_prepared) return false;
   pl_opengl_wrap_params output{};
@@ -1241,8 +1241,9 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10)
       GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
   pl_tex candidate{};
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
-      ((hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
-       (!hdr10 && red == 8 && green == 8 && blue == 8)) &&
+      ((sdr && hdr10 && red >= 8 && green >= 8 && blue >= 8 && red <= 16 && green <= 16 && blue <= 16) ||
+       (!sdr && hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
+       (!sdr && !hdr10 && red == 8 && green == 8 && blue == 8)) &&
       samples <= 1 && encoding == GL_LINEAR)
     candidate = pl_opengl_wrap(m_gl->gpu, &output);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
