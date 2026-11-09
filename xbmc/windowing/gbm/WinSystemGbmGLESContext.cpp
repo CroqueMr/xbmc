@@ -2066,7 +2066,7 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
   if (!m_dvBridge)
   {
     m_dvBridge = std::make_unique<CDVBridgeGLES>();
-    if (!m_dvBridge->Initialize(false, hdr10,m_dvContext))
+    if (!m_dvBridge->Initialize(false, hdr10,m_dvContext,sdr))
       return failure("renderer-init");
     m_dvBridge->SetHDR10PlusVersion(hdr10plusVersion);
   }
@@ -2183,7 +2183,7 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
     const bool requested = DVBridgeRequested(picture);
     const bool hdr10 = m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10 ||
         m_dvSelection.route == DVBRIDGE::OutputRoute::SDR;
-    if (requested && m_dvBridge && !m_dvBridge->RebindOutputSurface(hdr10))
+    if (requested && m_dvBridge && !m_dvBridge->RebindOutputSurface(hdr10, m_dvSelection.route == DVBRIDGE::OutputRoute::SDR))
     {
       RejectDVOutputSurface();
       return false;
@@ -2431,7 +2431,7 @@ bool CWinSystemGbmGLESContext::PollRejectedDVSurface()
   }
   // Ordinary restoration may retain a 10-bit drawable without CB1 processing.
   if (m_dvBridge && m_dvPriorConfiguredOutput &&
-      !m_dvBridge->RebindOutputSurface(m_dvPriorHDRConversion))
+      !m_dvBridge->RebindOutputSurface(m_dvPriorHDRConversion, m_dvPriorSDRConversion))
   {
     m_dvRollbackFailed = true;
     return false;
