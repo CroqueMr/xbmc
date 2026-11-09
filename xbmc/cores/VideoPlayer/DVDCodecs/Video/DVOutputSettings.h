@@ -17,17 +17,20 @@
 
 namespace DVBRIDGE
 {
-enum class OutputMode : int { Standard = 0, HDR10 = 1, Disabled = 2, EnhancedDV = 3, MasterReference = 4, AdaptiveB = 5 };
-enum class HDR10SourceMode : int { Native = 0, ReferenceDV = 1, EnhancedDV = 2, HDR10PlusDV = 3 };
+enum class OutputMode : int { Standard = 0, HDR10 = 1, Disabled = 2, EnhancedDV = 3, MasterReference = 4, AdaptiveB = 5, SDR = 6 };
+enum class HDR10SourceMode : int { Native = 0, ReferenceDV = 1, EnhancedDV = 2, HDR10PlusDV = 3, SDR = 4 };
+enum class HLGSourceMode : int { Native = 0, ReferenceDV = 1 };
 
 // Decoder ingress sees the last complete frame-boundary preference snapshot.
 inline std::atomic<OutputMode> playbackMode{OutputMode::Standard};
 inline std::atomic<HDR10SourceMode> hdr10PlaybackMode{HDR10SourceMode::Native};
 inline std::atomic<HDR10SourceMode> hdr10PlusPlaybackMode{HDR10SourceMode::Native};
+inline std::atomic<HDR10SourceMode> hlgPlaybackMode{HDR10SourceMode::Native};
 
 #ifdef HAVE_DVBRIDGE
 inline int PolicyCode(const dvbridge_policy& policy)
 {
+  if (policy.mode==DVBRIDGE_MODE_SDR) return 8;
   if (policy.mode==DVBRIDGE_MODE_HDR10PLUS) return 7;
   return policy.mode==DVBRIDGE_MODE_ENHANCED_DV && policy.adaptive!=DVBRIDGE_ADAPTIVE_A ? 6 : int(policy.mode);
 }
@@ -38,6 +41,9 @@ struct OutputPreferences
   OutputMode output{OutputMode::Standard};
   HDR10SourceMode hdr10Source{HDR10SourceMode::Native};
   HDR10SourceMode hdr10PlusSource{HDR10SourceMode::Native};
+  HLGSourceMode hlgSource{HLGSourceMode::Native};
+  int sdrPreset{0};
+  double sdrPeak{100}, sdrGamma{2.4}, sdrBlack{0};
   int method{0}, panel{0}, gamut{0};
   double peak{0};
   double expertPeak{}, expertBlack{};
@@ -68,7 +74,11 @@ struct OutputPreferences
   bool SameValues(const OutputPreferences& other) const
   {
     return output == other.output && hdr10Source == other.hdr10Source &&
-        hdr10PlusSource == other.hdr10PlusSource && method == other.method &&
+        hdr10PlusSource == other.hdr10PlusSource && hlgSource == other.hlgSource &&
+        sdrPreset == other.sdrPreset &&
+        std::bit_cast<uint64_t>(sdrPeak) == std::bit_cast<uint64_t>(other.sdrPeak) &&
+        std::bit_cast<uint64_t>(sdrGamma) == std::bit_cast<uint64_t>(other.sdrGamma) &&
+        std::bit_cast<uint64_t>(sdrBlack) == std::bit_cast<uint64_t>(other.sdrBlack) && method == other.method &&
         panel == other.panel && gamut == other.gamut && optimizedDV == other.optimizedDV &&
         optimizedGUI == other.optimizedGUI &&
         masterIPT == other.masterIPT && allowMasterFallback == other.allowMasterFallback &&
@@ -85,6 +95,13 @@ struct OutputPreferences
 #ifdef HAVE_DVBRIDGE
   bool ProfileValid(dvbridge_mode mode) const
   {
+    if (mode==DVBRIDGE_MODE_SDR)
+    {
+      if (sdrPreset==0 || sdrPreset==1) return true;
+      return sdrPreset==2 && std::isfinite(sdrPeak) && sdrPeak>=20 && sdrPeak<=500 &&
+          std::isfinite(sdrGamma) && sdrGamma>=1.8 && sdrGamma<=2.8 &&
+          std::isfinite(sdrBlack) && sdrBlack>=0 && sdrBlack<=5 && sdrBlack<sdrPeak;
+    }
     return mode==DVBRIDGE_MODE_HDR10_EXPERT ? ExpertProfileValid() : ProfileValid();
   }
   bool L2TrimsDisabled(dvbridge_mode mode, bool hdr10AI = false) const
@@ -102,8 +119,10 @@ struct OutputPreferences
   {
     dvbridge_policy result{};
     result.revision = revision;
+    result.sdr={static_cast<dvbridge_sdr_preset>(sdrPreset),sdrPeak,sdrGamma,sdrBlack};
     switch (output)
     {
+      case OutputMode::SDR: result.mode = DVBRIDGE_MODE_SDR; break;
       case OutputMode::Disabled: result.mode = DVBRIDGE_MODE_DISABLED; break;
       case OutputMode::Standard: result.mode = DVBRIDGE_MODE_STANDARD; break;
       case OutputMode::EnhancedDV:
@@ -141,7 +160,8 @@ struct OutputPreferences
     const auto source = HDR10Mode(hdr10Plus);
     result.mode = source == HDR10SourceMode::ReferenceDV ||
         source == HDR10SourceMode::HDR10PlusDV ? DVBRIDGE_MODE_STANDARD :
-        source == HDR10SourceMode::EnhancedDV ? DVBRIDGE_MODE_ENHANCED_DV : DVBRIDGE_MODE_DISABLED;
+        source == HDR10SourceMode::EnhancedDV ? DVBRIDGE_MODE_ENHANCED_DV :
+        source == HDR10SourceMode::SDR ? DVBRIDGE_MODE_SDR : DVBRIDGE_MODE_DISABLED;
     // Same scene expansion as Adaptive DV, with predicted rather than authored guidance.
     result.adaptive = result.mode == DVBRIDGE_MODE_ENHANCED_DV ?
         DVBRIDGE_ADAPTIVE_B_FP16 : DVBRIDGE_ADAPTIVE_A;
@@ -163,7 +183,7 @@ inline std::mutex& OutputSettingsMutex()
 inline uint64_t hdr10Reselection{};
 #endif
 
-inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false)
+inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = false)
 {
   static OutputPreferences previous;
 #ifdef CB1_HAS_HDR10_AI
@@ -175,14 +195,20 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false)
   const int mode = settings ? settings->GetInt("dvbridge.outputmode") : 0;
   OutputPreferences next;
   next.output = mode == 3 ? OutputMode::AdaptiveB :
-      mode >= 0 && mode <= 5 ? static_cast<OutputMode>(mode) : OutputMode::Standard;
+      mode >= 0 && mode <= 6 ? static_cast<OutputMode>(mode) : OutputMode::Standard;
   if (settings)
   {
     const int hdr10 = settings->GetInt("dvbridge.hdr10source");
-    next.hdr10Source = hdr10 >= 0 && hdr10 <= 2 ?
+    next.hdr10Source = (hdr10 >= 0 && hdr10 <= 2) || hdr10 == 4 ?
         static_cast<HDR10SourceMode>(hdr10) : HDR10SourceMode::Native;
-    next.hdr10PlusSource = settings->GetInt("dvbridge.hdr10plussource") == 3 ?
-        HDR10SourceMode::HDR10PlusDV : HDR10SourceMode::Native;
+    const int plus=settings->GetInt("dvbridge.hdr10plussource");
+    next.hdr10PlusSource = plus==3 ? HDR10SourceMode::HDR10PlusDV :
+        plus==4 ? HDR10SourceMode::SDR : HDR10SourceMode::Native;
+    next.hlgSource=settings->GetInt("dvbridge.hlgsource")==1 ? HLGSourceMode::ReferenceDV : HLGSourceMode::Native;
+    next.sdrPreset=settings->GetInt("dvbridge.sdrpreset");
+    next.sdrPeak=settings->GetNumber("dvbridge.sdrpeak");
+    next.sdrGamma=settings->GetNumber("dvbridge.sdrgamma");
+    next.sdrBlack=settings->GetNumber("dvbridge.sdrblack");
     next.method = settings->GetInt("dvbridge.hdr10method");
     {
       next.expertPeak=settings->GetNumber("dvbridge.expertpeak");
@@ -221,8 +247,11 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false)
   playbackMode.store(next.output);
   hdr10PlaybackMode.store(next.hdr10Source);
   hdr10PlusPlaybackMode.store(next.hdr10PlusSource);
+  hlgPlaybackMode.store(next.hlgSource==HLGSourceMode::ReferenceDV ? HDR10SourceMode::ReferenceDV : HDR10SourceMode::Native);
   // Resolve only the returned copy; alternating inputs must not churn revisions.
   if (hdr10Plus) next.hdr10Source = next.hdr10PlusSource;
+  if (hlg) next.hdr10Source = next.hlgSource == HLGSourceMode::ReferenceDV ?
+      HDR10SourceMode::ReferenceDV : HDR10SourceMode::Native;
   return next;
 }
 

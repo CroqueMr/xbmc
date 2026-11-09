@@ -7,7 +7,7 @@
 
 namespace DVBRIDGE
 {
-enum class OutputRoute { Vanilla, NativeDV, HDR10 };
+enum class OutputRoute { Vanilla, NativeDV, HDR10, SDR };
 struct OutputSelection
 {
   OutputRoute route{OutputRoute::Vanilla};
@@ -21,17 +21,35 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
   OutputSelection result;
   if (caps.stereoSource)
     return {OutputRoute::Vanilla, {}, OutputReason::SourceIneligible};
+  if (caps.sourceKnown && caps.isHLG && !caps.isDV)
+  {
+    if (preferences.hlgSource == HLGSourceMode::Native) return result;
+    auto policy=preferences.Policy();
+    policy.mode=DVBRIDGE_MODE_STANDARD; policy.master_ipt=false; policy.tv={};
+    policy.adaptive=DVBRIDGE_ADAPTIVE_A; policy.expert_black_nits=0;
+    if (!caps.nativeDV) return {OutputRoute::Vanilla,{},OutputReason::NoDVTransport};
+    if (!caps.processingKnown || !caps.hdr10Processing[DVBRIDGE_MODE_STANDARD].usable)
+      return {OutputRoute::Vanilla,{},OutputReason::NoGPUProcessing};
+    return {OutputRoute::NativeDV,policy,OutputReason::None};
+  }
   if (caps.sourceKnown && caps.isHDR10 && !caps.isDV)
   {
     const auto source = preferences.HDR10Mode(caps.hdr10PlusSource);
     if (source == HDR10SourceMode::Native) return result;
-    if (caps.hdr10PlusSource && source != HDR10SourceMode::HDR10PlusDV)
+    if (caps.hdr10PlusSource && source != HDR10SourceMode::HDR10PlusDV && source != HDR10SourceMode::SDR)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
     if (source == HDR10SourceMode::HDR10PlusDV && !caps.isHDR10Plus)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
     auto policy = preferences.HDR10Policy(caps.hdr10PlusSource);
     if (policy.mode == DVBRIDGE_MODE_DISABLED)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
+    if (policy.mode == DVBRIDGE_MODE_SDR)
+    {
+      if (!preferences.ProfileValid(policy.mode)) return {OutputRoute::Vanilla,{},OutputReason::TVProfileRequired};
+      if (!caps.processingKnown || !caps.processing[policy.mode].usable)
+        return {OutputRoute::Vanilla,{},OutputReason::NoGPUProcessing};
+      return {OutputRoute::SDR,policy,OutputReason::None};
+    }
     if (policy.mode != DVBRIDGE_MODE_STANDARD && !preferences.ProfileValid(policy.mode))
       return {OutputRoute::Vanilla,{},OutputReason::TVProfileRequired};
     if (!caps.nativeDV)
@@ -43,6 +61,13 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
   if (!caps.sourceKnown || !caps.isDV || preferences.output == OutputMode::Disabled)
     return result;
   auto policy = preferences.Policy();
+  if (policy.mode == DVBRIDGE_MODE_SDR)
+  {
+    if (!preferences.ProfileValid(policy.mode)) return {OutputRoute::Vanilla,{},OutputReason::TVProfileRequired};
+    if (!caps.processingKnown || !caps.processing[policy.mode].usable)
+      return {OutputRoute::Vanilla,{},OutputReason::NoGPUProcessing};
+    return {OutputRoute::SDR,policy,OutputReason::None};
+  }
   // Display configuration is known before the first GPU import.
   if (preferences.output == OutputMode::HDR10 && policy.mode == DVBRIDGE_MODE_HDR10_EXPERT &&
       !preferences.ProfileValid(policy.mode))

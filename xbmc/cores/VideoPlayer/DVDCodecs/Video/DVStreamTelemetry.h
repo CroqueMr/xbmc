@@ -48,7 +48,7 @@ struct StreamSnapshot
     float target{};
     bool level6{};
     int requested{}, effective{1}, method{}, panel{}, gamut{};
-    double manualPeak{}, displayBlack{};
+    double manualPeak{}, displayBlack{}, sdrGamma{};
     uint64_t revision{};
     bool fallback{};
     uint64_t stream{}, picture{};
@@ -70,6 +70,7 @@ struct StreamSnapshot
     int felUpscaling{-1};
 #ifdef CB1_HAS_HDR10_AI
     bool hdr10AI{};
+    bool hlgAI{}, sdrHDRSource{};
     bool hdr10PlusDV{}, untranslatedCurve{}, untranslatedSaturation{};
     unsigned guidedSourceFields{}, guidedEstimatedFields{};
     std::array<unsigned,6> aiL1L3{};
@@ -80,8 +81,10 @@ struct StreamSnapshot
     const char* Circuit() const
     {
       if (!flags) return "";
+      if (effective==8) return cb1_circuit_version(sdrHDRSource ? CB1_HDR10_SDR : CB1_DV_SDR);
       if (hdr10AI)
       {
+        if (hlgAI) return cb1_circuit_version(CB1_HLG_DV_REFERENCE);
         if (hdr10PlusDV) return cb1_circuit_version(CB1_HDR10PLUS_DV_REFERENCE);
         if (effective==1) return cb1_circuit_version(CB1_HDR10_DV_REFERENCE);
         if (effective==4) return cb1_circuit_version(CB1_HDR10_DV_ADAPTIVE);
@@ -124,10 +127,12 @@ struct StreamSnapshot
     result[5]=blocks[5]; // Active-picture geometry, not a creative trim.
     for(unsigned level=0;level<32;++level)
       if (output.creativeApplied & (1u<<level)) result[level]=blocks[level];
-    if (((output.flags & CDVPlaybackInfo::HDR10) && output.effective!=7) || output.authoredLegacy)
+    if ((((output.flags & CDVPlaybackInfo::HDR10) && output.effective!=7) ||
+         (output.flags & CDVPlaybackInfo::SDR)) || output.authoredLegacy)
     {
       result[1]=blocks[1] && pq[0]<=pq[2] && pq[2]<=pq[1] && pq[1]>0 && pq[1]<=4095;
-      result[6]=blocks[6] && (output.effective>=3 || output.level6);
+      result[6]=blocks[6] && !(output.flags & CDVPlaybackInfo::SDR) &&
+          (output.effective>=3 || output.level6);
     }
     return result;
   }

@@ -68,7 +68,7 @@ struct VideoProcessingInfo
     float target{};
     bool level6{};
     int requested{}, effective{1}, method{}, panel{}, gamut{};
-    double manualPeak{}, displayBlack{};
+    double manualPeak{}, displayBlack{}, sdrGamma{};
     uint64_t revision{}, stream{}, picture{};
     uint32_t format{};
     unsigned width{}, height{};
