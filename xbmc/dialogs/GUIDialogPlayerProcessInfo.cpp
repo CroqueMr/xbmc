@@ -173,12 +173,13 @@ std::string TargetList(std::vector<long> nits, const std::vector<unsigned>& unkn
     return text;
   // State a count with the bounds; this does not invent intermediate authored targets.
   if (nits.empty())
-    return StringUtils::Format("{} custom targets · #{}–#{}", unknown.size(),
+    return StringUtils::Format("{} custom · #{}–#{}", unknown.size(),
         *std::min_element(unknown.begin(), unknown.end()), *std::max_element(unknown.begin(), unknown.end()));
   text = nits.size() == 1 ? StringUtils::Format("1 target · {} nits", nits.front()) :
       StringUtils::Format("{} targets · {}–{} nits", nits.size(), nits.front(), nits.back());
   if (!unknown.empty())
-    text += StringUtils::Format(" · {} custom", unknown.size());
+    text = nits.size() == 1 ? StringUtils::Format("1: {} nits · {} custom", nits.front(), unknown.size()) :
+        StringUtils::Format("{}: {}–{} nits · {} custom", nits.size(), nits.front(), nits.back(), unknown.size());
   return text;
 }
 
@@ -361,11 +362,9 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
       }
       if (data.output.hdr10PlusDV)
         SetProperty("DV.Reconstruction", std::string(data.output.guidedSourceFields & 4u ?
-            "Max/avg: HDR10+; min: estimated" : data.output.guidedSourceFields & 2u ?
-            (ai ? "Max: HDR10+; min/avg: AI" : "Max: HDR10+; min/avg: estimated") :
-            (ai ? "Min/max/avg: AI" : "Min/max/avg: estimated")) +
-            (data.output.untranslatedCurve ? "; authored curve not translated" : "") +
-            (data.output.untranslatedSaturation ? "; authored saturation not translated" : ""));
+            "HDR10+ max/avg · min est." : data.output.guidedSourceFields & 2u ?
+            (ai ? "HDR10+ max · min/avg AI" : "HDR10+ max · min/avg est.") :
+            (ai ? "Min/max/avg: AI" : "Min/max/avg: estimated")));
       SetProperty("DV.Profile", "");
       SetProperty("DV.ProfileDetail", "");
       SetProperty("DV.Layers", "");
@@ -453,11 +452,17 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.L1PQ", metadata && data.l1 ? StringUtils::Format("{} | {} | {}", data.pq[0], data.pq[1], data.pq[2]) : "N/A");
     SetProperty("DV.L1Nits", metadata && data.l1 ? StringUtils::Format("{:.1f} | {:.1f} | {:.1f} nits",
         PQNits(data.pq[0]), PQNits(data.pq[1]), PQNits(data.pq[2])) : "N/A");
-    // SDR uses L1 max/avg; the original source minimum remains a source fact, not an applied component.
-    const bool sdrL1 = metadata && data.l1 && active && data.output.effective == 8 && applied[1];
-    SetProperty("DV.SDRL1PQ", sdrL1 ? StringUtils::Format("{} | {}", data.pq[1], data.pq[2]) : "");
-    SetProperty("DV.SDRL1Nits", sdrL1 ? StringUtils::Format("{:.1f} | {:.1f} nits",
-        PQNits(data.pq[1]), PQNits(data.pq[2])) : "");
+    // Use the accepted route's partial components, without changing the original source values.
+    const bool partialL1 = metadata && data.l1 && applied[1] &&
+        (data.output.effective == 8 || (hdr10 && data.output.effective == 3));
+    SetProperty("DV.UsedL1PQ", partialL1 ? StringUtils::Format("{} | {}", data.pq[1], data.pq[2]) : "");
+    std::string usedL1Nits = metadata && data.l1 && applied[1] ?
+        (partialL1 ? StringUtils::Format("{:.1f} | {:.1f} nits", PQNits(data.pq[1]), PQNits(data.pq[2])) :
+            StringUtils::Format("{:.1f} | {:.1f} | {:.1f} nits",
+                PQNits(data.pq[0]), PQNits(data.pq[1]), PQNits(data.pq[2]))) : "";
+    if (!InfoValueFits(usedL1Nits) && usedL1Nits.ends_with(" nits"))
+      usedL1Nits.resize(usedL1Nits.size() - 5); // The row caption already states nits.
+    SetProperty("DV.UsedL1Nits", usedL1Nits);
     SetProperty("DV.L5", metadata && data.l5 ? StringUtils::Format("{} | {} | {} | {}",
         data.area[0], data.area[1], data.area[2], data.area[3]) : "N/A");
     SetProperty("DV.Mastering", metadata && data.l6 ? StringUtils::Format("{} | {:.4f} nits",
@@ -474,6 +479,8 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.OutputL8Targets", active && forwarded[8] ? L8Targets(levels) : "");
     SetProperty("DV.L3", carried(3) ? StringUtils::Format("{} | {} | {}",
         levels.l3[0], levels.l3[1], levels.l3[2]) : "");
+    SetProperty("DV.UsedL3", carried(3) && applied[3] && hdr10 && data.output.effective == 3 ?
+        StringUtils::Format("{} | {}", levels.l3[1], levels.l3[2]) : "");
     SetProperty("DV.L4", carried(4) ? StringUtils::Format("{} | {}", levels.l4[0], levels.l4[1]) : "");
     SetProperty("DV.L8Targets", carried(8) ? L8Targets(levels) : "");
     SetProperty("DV.L9", carried(9) ? RPUPrimaries(levels.l9) : "");
@@ -486,12 +493,26 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     const AVDynamicHDRPlus* plus = side ? side->HDR10Plus() : nullptr;
     const auto scaled = [](AVRational value) { return 10000.0 * av_q2d(value); };
     const bool plainHDRSDR = active && data.output.effective == 8 && !data.profile;
-    const unsigned plusUsed = plainHDRSDR && plus ? 6u :
+    // These bits and values belong to the accepted import; pointer presence is not proof of use.
+    const unsigned imported = plainHDRSDR ? data.output.sdrHDRInputUsed : 0u;
+    const unsigned plusUsed = plainHDRSDR ? ((imported & 8u ? 2u : 0u) | (imported & 16u ? 4u : 0u)) :
         active && data.output.hdr10PlusDV ? data.output.guidedSourceFields : 0u;
-    SetProperty("DV.UsedHDRStatic", plainHDRSDR);
+    SetProperty("DV.UsedHDRStatic", bool(imported & 7u));
+    SetProperty("DV.UsedHDRMin", imported & 1u ? StringUtils::Format("{:.4f} nits", data.sourceMin) : "");
+    SetProperty("DV.UsedHDRMax", imported & 2u ? StringUtils::Format("{:.0f} nits", data.sourceMax) : "");
+    SetProperty("DV.UsedHDRCLL", imported & 4u ? StringUtils::Format("{} nits", data.sourceCLL) : "");
     SetProperty("DV.UsedHDR10PlusMax", bool(plusUsed & 2u));
     SetProperty("DV.UsedHDR10PlusAvg", bool(plusUsed & 4u));
+    const auto& importedValues = data.output.sdrHDRInputValues;
+    SetProperty("DV.UsedHDR10PlusMaxRGB", imported & 8u ? StringUtils::Format("{:.0f} | {:.0f} | {:.0f} nits",
+        importedValues[0], importedValues[1], importedValues[2]) : "");
+    SetProperty("DV.UsedHDR10PlusAverage", imported & 16u ? StringUtils::Format("{:.1f} nits", importedValues[3]) : "");
     const double display = plus ? av_q2d(plus->targeted_system_display_maximum_luminance) : 0.0;
+    SetProperty("DV.HDR10PlusCarried", plus ? StringUtils::Format("HDR10+ v{} / {} windows",
+        plus->application_version, plus->num_windows) :
+        side && (side->RejectedSections() & 4u) ? std::string("HDR10+ · unavailable") : "");
+    SetProperty("DV.HDR10PlusSection", plus ? (plus->num_windows > 1 ?
+        StringUtils::Format("HDR10+ · window 1/{}", plus->num_windows) : std::string("HDR10+ metadata")) : "");
     SetProperty("DV.HDR10PlusTarget", plus ? StringUtils::Format("{} · version {}",
         display > 0 ? StringUtils::Format("{:.0f} nits", display) : std::string("Unset"),
         plus->application_version) : "");
@@ -504,6 +525,8 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         StringUtils::Format("{} anchors · knee {:.3f} / {:.3f}", plus->params[0].num_bezier_curve_anchors,
             av_q2d(plus->params[0].knee_point_x), av_q2d(plus->params[0].knee_point_y)) :
         std::string("None"));
+    SetProperty("DV.HDR10PlusSaturation", !plus ? "" : plus->params[0].color_saturation_mapping_flag ?
+        StringUtils::Format("{:.3f}×", av_q2d(plus->params[0].color_saturation_weight)) : std::string("None"));
 }
 #endif
 
