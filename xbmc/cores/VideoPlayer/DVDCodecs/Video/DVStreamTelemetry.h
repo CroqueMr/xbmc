@@ -68,6 +68,7 @@ struct StreamSnapshot
     int creativeStatus{}, creativeReason{};
     bool iptTransport{};
     bool l2TrimsDisabled{};
+    bool ignoreL5{}; // Actual accepted frame geometry, independent of later preferences.
     bool cmv40Appended{};
     int felUpscaling{-1};
 #ifdef CB1_HAS_HDR10_AI
@@ -132,10 +133,14 @@ struct StreamSnapshot
     if ((((output.flags & CDVPlaybackInfo::HDR10) && output.effective!=7) ||
          (output.flags & CDVPlaybackInfo::SDR)) || output.authoredLegacy)
     {
-      result[1]=blocks[1] && pq[0]<=pq[2] && pq[2]<=pq[1] && pq[1]>0 && pq[1]<=4095;
+      const bool cieY = (output.flags & CDVPlaybackInfo::SDR) ||
+          ((output.flags & CDVPlaybackInfo::HDR10) && output.effective==2);
+      result[1]=blocks[1] && pq[0]<=pq[2] && pq[2]<=pq[1] && pq[1]>0 && pq[1]<=4095 &&
+          (!cieY || pq[2]>0);
       result[6]=blocks[6] && !(output.flags & CDVPlaybackInfo::SDR) &&
           (output.effective>=3 || output.level6);
     }
+    if (output.ignoreL5) result[5]=false;
     return result;
   }
   std::bitset<256> TransmittedBlocks() const

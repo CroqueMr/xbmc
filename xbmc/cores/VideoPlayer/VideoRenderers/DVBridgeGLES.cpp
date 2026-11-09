@@ -2492,6 +2492,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
       !output.hdr10AI &&
 #endif
       m_requested.output==DVBRIDGE::OutputMode::AdaptiveB)output.effective=6;
+  output.ignoreL5 = m_sourceGeometry.ignore_l5;
   output.method = m_requested.method;
   output.cmv40Appended = submission.cmv40Status == CB1_CMV40_APPEND;
   if (output.cmv40Appended) output.flags |= CDVPlaybackInfo::CM4;

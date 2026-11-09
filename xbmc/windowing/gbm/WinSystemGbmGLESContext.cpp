@@ -793,6 +793,24 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus(bool overlay)
 
 bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
 {
+  float gamma = 2.4f;
+#ifdef HAVE_DVBRIDGE
+  if (colorTransfer && m_sdrConversion)
+  {
+    double peak = 0, targetGamma = 0, black = 0;
+    if (!dvbridge_sdr_target(&m_dvSelection.policy.sdr, &peak, &targetGamma, &black)) return false;
+    gamma = static_cast<float>(targetGamma);
+  }
+#endif
+  return ConfigureGuiCompositing(colorTransfer, gamma);
+}
+
+bool CWinSystemGbmGLESContext::ConfigureGuiCompositing(int colorTransfer, float gamma)
+{
+  if (colorTransfer == AVCOL_TRC_GAMMA22 && m_guiColorTransfer == colorTransfer &&
+      m_guiCompositing && m_compositeShader && m_guiSDRGamma == gamma)
+    return true;
+
   m_guiCacheValid = false;
   m_guiColorTransfer = colorTransfer;
   m_guiCompositing = (colorTransfer != 0);
@@ -819,15 +837,6 @@ bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
       }
     }
 
-    float gamma = 2.4f;
-#ifdef HAVE_DVBRIDGE
-    if (m_sdrConversion)
-    {
-      double peak = 0, targetGamma = 0, black = 0;
-      if (!dvbridge_sdr_target(&m_dvSelection.policy.sdr, &peak, &targetGamma, &black)) return false;
-      gamma = static_cast<float>(targetGamma);
-    }
-#endif
     if (!m_compositeShader->CreateLUTs(colorTransfer, gamma))
     {
       CLog::Log(LOGERROR, "CWinSystemGbmGLESContext: failed to create LUTs");
@@ -835,6 +844,7 @@ bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
       m_guiCompositing = false;
       return false;
     }
+    m_guiSDRGamma = gamma;
   }
   else
   {
@@ -2054,7 +2064,8 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
   if (m_renderableType != EGL_OPENGL_ES3_BIT) return failure("output-format", "egl-renderable");
   if (m_dvBridge && m_dvConfiguredOutput == m_dvSelection.policy.mode &&
       (m_dvState.Captured() || m_hdrConversion))
-    return m_dvBridge && m_guiCompositing && m_compositeShader;
+    return (!sdr || SetGuiCompositing(AVCOL_TRC_GAMMA22)) &&
+        m_guiCompositing && m_compositeShader;
   if (!CompleteDVBridgePage())
   { DVBRIDGE::DiagnosticStage("display-pending"); return false; }
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
@@ -2153,6 +2164,7 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
       m_dvPriorHDRConversion = m_hdrConversion;
       m_dvPriorSDRConversion = m_sdrConversion;
       m_dvPriorGuiCompositing = m_guiCompositing;
+      m_dvPriorGuiSDRGamma = m_guiSDRGamma;
       m_dvPendingStream = picture ? (picture->doviSourceBinding.Valid() ?
           picture->doviSourceBinding.stream : picture->doviMetadata.Binding().stream) : 0;
       m_dvPendingPolicy = preferences.revision;
@@ -2333,7 +2345,8 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
   }
   if (m_dvConfiguredOutput == m_dvSelection.policy.mode && !m_dvOutputRetiring &&
       (m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla || m_dvState.Captured() || m_hdrConversion))
-    return true;
+    return m_dvSelection.route != DVBRIDGE::OutputRoute::SDR ||
+        SetGuiCompositing(AVCOL_TRC_GAMMA22);
   const bool requested = DVBridgeRequested(&picture);
   if (requested && m_dvBridge && !HasPendingDVOutputSurface() &&
       (m_dvState.Captured() || m_hdrConversion) &&
@@ -2443,8 +2456,14 @@ bool CWinSystemGbmGLESContext::PollRejectedDVSurface()
   m_sdrConversion = m_dvPriorSDRConversion;
   m_hdr10Signal.reset();
   m_dvConfiguredOutput = m_dvPriorConfiguredOutput;
-  SetGuiCompositing(m_dvPriorGuiCompositing ?
-      (m_dvPriorSDRConversion ? AVCOL_TRC_GAMMA22 : AVCOL_TRC_SMPTE2084) : 0);
+  const bool guiReady = ConfigureGuiCompositing(m_dvPriorGuiCompositing ?
+      (m_dvPriorSDRConversion ? AVCOL_TRC_GAMMA22 : AVCOL_TRC_SMPTE2084) : 0,
+      m_dvPriorGuiSDRGamma);
+  if (m_dvPriorGuiCompositing && !guiReady)
+  {
+    m_dvRollbackFailed = true;
+    return false;
+  }
   m_dvRejectedSurface = false;
   return true;
 }
@@ -2548,12 +2567,9 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
       m_previousSourceStream == layer.binding.stream &&
       DVBRIDGE::ContinuousPresentationPicture(layer.pts, m_previousSourcePts) &&
       m_dvSelection.reason == DVBRIDGE::OutputReason::None;
-#ifdef CB1_HAS_HDR10_AI
   const auto preferences = DVBRIDGE::FrameOutputSettings(
-      !metadata.Data() && m_dvContext && m_dvContext->HDR10AI().HDR10Plus());
-#else
-  const auto preferences = DVBRIDGE::FrameOutputSettings();
-#endif
+      !layer.sourceInfo.profile && layer.hdr10PlusSource,
+      !layer.sourceInfo.profile && layer.hlg);
   m_masterFramePeriodNs=m_continuousFrameEligible && preferences.allowMasterFallback &&
       m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE ?
       DVBRIDGE::MasterFramePeriodNs(CServiceBroker::GetDataCacheCore().GetVideoFps()) : 0;

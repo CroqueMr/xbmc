@@ -1364,6 +1364,7 @@ bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& lay
   layer.sourceInfo=buffer.doviSourcePicture->doviSourceInfo;
   layer.sourceSideData=buffer.doviSourcePicture->sourceSideData;
   layer.sourceSerial=layer.sourceSideData ? layer.sourceSideData->Serial() : 0;
+  layer.hdr10PlusSource = source.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS;
   layer.chromaLocation=buffer.doviSourcePicture->chroma_position;
   for (int p=0;p<3;++p)
   {
