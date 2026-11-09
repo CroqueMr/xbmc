@@ -35,6 +35,7 @@ class CDVBridgeGLES
 {
 public:
   void InvalidateScreenshot() { ++m_nativeOverlayRevision; }
+  bool ScreenshotSDR() const { return m_prepared && m_direct && m_effectiveMode==DVBRIDGE_MODE_SDR; }
   bool ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out);
   static constexpr bool CanComposeSDRGUI(bool enabled, bool hdr10, bool capture,
                                          int width, int height, unsigned pqDraws)

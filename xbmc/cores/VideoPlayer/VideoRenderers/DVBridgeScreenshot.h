@@ -8,6 +8,43 @@
 
 namespace DVBRIDGE
 {
+enum class SDRScreenshotFormat { RGBA8, BGRA8, RGBA16, RGB10 };
+// Capture the final SDR target (movie and GUI), normalized to full-range sRGB.
+// ReadFramebufferRegion supplies contiguous rows; preserve their GL order here.
+inline bool DecodeSDRScreenshot(const uint8_t* pixels,unsigned width,unsigned height,
+    SDRScreenshotFormat format,unsigned bits,bool limited,double gamma,uint16_t* out)
+{
+  if (!pixels || !out || !width || !height || bits<8 || bits>16 ||
+      !std::isfinite(gamma) || gamma<1.8 || gamma>2.8) return false;
+  if (format<SDRScreenshotFormat::RGBA8 || format>SDRScreenshotFormat::RGB10) return false;
+  const double maximum=(1u<<bits)-1;
+  const double offset=limited ? double(16u<<(bits-8))/maximum : 0;
+  const double scale=limited ? double(219u<<(bits-8))/maximum : 1;
+  const size_t step=format==SDRScreenshotFormat::RGBA16 ? 8 : 4;
+  for (size_t i=0;i<size_t(width)*height;++i)
+  {
+    const auto* p=pixels+i*step;
+    const uint32_t packed=uint32_t(p[0]) | uint32_t(p[1])<<8 | uint32_t(p[2])<<16 | uint32_t(p[3])<<24;
+    for (unsigned c=0;c<4;++c)
+    {
+      double value;
+      if (format==SDRScreenshotFormat::RGBA16)
+        value=double(unsigned(p[2*c]) | unsigned(p[2*c+1])<<8)/65535;
+      else if (format==SDRScreenshotFormat::RGB10)
+        value=c==3 ? 1 : double((packed>>(10*c))&1023)/1023; // X2BGR has no alpha.
+      else
+        value=double(p[format==SDRScreenshotFormat::BGRA8 && c<3 ? 2-c : c])/255;
+      if (c<3)
+      {
+        const double linear=std::pow(std::clamp((value-offset)/scale,0.0,1.0),gamma);
+        value=linear<=0.0031308 ? 12.92*linear : 1.055*std::pow(linear,1.0/2.4)-0.055;
+      }
+      out[4*i+c]=static_cast<uint16_t>(std::lround(std::clamp(value,0.0,1.0)*65535));
+    }
+  }
+  return true;
+}
+
 // Readback only: decode the completed source-YCC carrier, including its GUI.
 // Rows retain their GL order; the screenshot buffer supplies the signed stride.
 inline bool DecodeReferenceScreenshot(const uint8_t* carrier, unsigned width, unsigned height,
