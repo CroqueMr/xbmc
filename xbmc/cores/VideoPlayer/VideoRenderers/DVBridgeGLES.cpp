@@ -71,6 +71,14 @@ namespace DVFilterShaders = Shaders::GLES;
 
 namespace
 {
+// Kodi's ordinary drawing can leave GL errors pending (seen on desktop GL). libplacebo takes
+// any pending error as its own failure and marks its GPU failed, so clear them first.
+void ClearInheritedGLErrors()
+{
+  for (int i = 0; i < 64 && glGetError() != GL_NO_ERROR; ++i)
+    ;
+}
+
 void BackendLog(void*, pl_log_level level, const char* message)
 {
   try
@@ -596,6 +604,7 @@ CDVBridgeGLES::Context::~Context()
 
 bool CDVBridgeGLES::Context::Initialize(bool allowSoftware)
 {
+  ClearInheritedGLErrors();
   if (m_state->gl) return !m_state->quarantined;
   if (NewContextBlocked()) return false;
   pl_opengl_params params{};
@@ -651,6 +660,7 @@ const char* CDVBridgeGLES::Context::AttachRefusal() const
 
 dvbridge_renderer* CDVBridgeGLES::Context::Attach()
 {
+  ClearInheritedGLErrors();
   if (m_state->quarantined || !m_state->inFlight.empty()) return nullptr;
   auto* renderer = dvbridge_renderer_create_with_owner(m_state->owner);
   if (renderer)
@@ -664,6 +674,7 @@ dvbridge_renderer* CDVBridgeGLES::Context::Attach()
 
 void CDVBridgeGLES::Context::Detach(dvbridge_renderer* renderer)
 {
+  ClearInheritedGLErrors();
 #ifdef CB1_HAS_HDR10_AI
   ClearNextHDR10AI();
 #endif
@@ -1677,6 +1688,7 @@ CDVBridgeGLES::CDVBridgeGLES(bool playerLed) : m_playerLed(playerLed)
 
 CDVBridgeGLES::~CDVBridgeGLES()
 {
+  ClearInheritedGLErrors();
   m_playerLedCpu.reset();
   cb1_hdr10plus_analysis_destroy(&m_hdr10plusAnalysis);
   ClearFELPrefetch();
@@ -1787,6 +1799,7 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<C
 
 bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int framebuffer)
 {
+  ClearInheritedGLErrors();
   if (!m_gl || m_pending || m_prepared) return false;
   m_playerLedCpu.reset();
   pl_opengl_wrap_params output{};
@@ -1893,6 +1906,7 @@ bool CDVBridgeGLES::SetSDROutputRange(bool limited)
 
 void CDVBridgeGLES::Reset()
 {
+  ClearInheritedGLErrors();
   Summary("reset");
   Cancel();
   cb1_hdr10plus_analysis_clear_scene(m_hdr10plusAnalysis);
@@ -1911,6 +1925,7 @@ void CDVBridgeGLES::Reset()
 bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
                           const CDVMetadataBuffer& metadata, dvbridge_geometry geometry, bool allowPacked)
 {
+  ClearInheritedGLErrors();
   m_prepared = m_packed = false;
   m_direct = false;
   if (!m_renderer)
@@ -2612,6 +2627,7 @@ bool CDVBridgeGLES::UsesMasterSourceCarrier(dvbridge_mode mode, bool masterIPT,
 
 bool CDVBridgeGLES::ReadPlayerLedScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
 {
+  ClearInheritedGLErrors();
   if (!m_playerLedPicture || m_playerLedPicture->params.w != m_scanout->params.w ||
       m_playerLedPicture->params.h != m_scanout->params.h)
     return false;
@@ -2776,6 +2792,7 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
 bool CDVBridgeGLES::PrepareHardware(const Layer& base, const AVFrame* enhancement,
                                   const CDVMetadataBuffer& metadata, dvbridge_geometry geometry, bool allowPacked)
 {
+  ClearInheritedGLErrors();
   m_prepared = m_packed = false;
   if (!enhancement)
     return Prepare(base, nullptr, metadata, geometry, allowPacked);
