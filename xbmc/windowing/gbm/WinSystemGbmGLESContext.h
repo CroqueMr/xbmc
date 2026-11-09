@@ -138,6 +138,10 @@ public:
   void EndDVPQSubtitle();
   bool DVPQSubtitlesReady() const { return m_dvPQSubtitleDraws != 0; }
   bool HasDVBridgeScreenshot() const { return m_dvState.Captured() || m_hdrConversion; }
+  bool IsDVBridgeScreenshotSDR() const
+  {
+    return HasDVBridgeScreenshot() && m_sdrConversion;
+  }
   bool ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
   {
     return m_dvFrame && m_dvBridge && m_dvBridge->ReadScreenshot(out);

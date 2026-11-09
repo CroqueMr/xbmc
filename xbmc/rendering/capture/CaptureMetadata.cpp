@@ -36,6 +36,14 @@ ImageColorMetadata GetOutputColorMetadata(CWinSystemBase& winSystem)
 #ifdef HAVE_DVBRIDGE
   if (KODI::WINDOWING::GBM::HasDVBridgeScreenshot(winSystem))
   {
+    if (KODI::WINDOWING::GBM::IsDVBridgeScreenshotSDR(winSystem))
+    {
+      // SDR readback has already normalized the actual target gamma/range to sRGB.
+      color.primaries = AVCOL_PRI_BT709;
+      color.transfer = AVCOL_TRC_IEC61966_2_1;
+      color.range = AVCOL_RANGE_JPEG;
+      return color;
+    }
     color.primaries = AVCOL_PRI_BT2020;
     color.transfer = AVCOL_TRC_SMPTE2084;
     color.range = AVCOL_RANGE_JPEG;

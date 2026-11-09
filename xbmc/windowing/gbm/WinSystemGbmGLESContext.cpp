@@ -1806,7 +1806,7 @@ bool CWinSystemGbmGLESContext::SupportsSDRConversion() const
 {
   const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   const auto* mode = drm ? drm->GetSelectedMode() : nullptr;
-  const auto* connector = drm ? drm->GetConnector() : nullptr;
+  auto* connector = drm ? drm->GetConnector() : nullptr;
   return connector && connector->IsConnected() && mode && mode->hdisplay && mode->vdisplay &&
       mode->hdisplay <= 3840 && mode->vdisplay <= 2160 &&
       !(mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN));
@@ -2450,6 +2450,12 @@ bool KODI::WINDOWING::GBM::HasDVBridgeScreenshot(CWinSystemBase& window)
 {
   auto* gbm = dynamic_cast<CWinSystemGbmGLESContext*>(&window);
   return gbm && gbm->HasDVBridgeScreenshot();
+}
+
+bool KODI::WINDOWING::GBM::IsDVBridgeScreenshotSDR(CWinSystemBase& window)
+{
+  auto* gbm = dynamic_cast<CWinSystemGbmGLESContext*>(&window);
+  return gbm && gbm->IsDVBridgeScreenshotSDR();
 }
 
 bool KODI::WINDOWING::GBM::ReadDVBridgeScreenshot(CWinSystemBase& window, KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
