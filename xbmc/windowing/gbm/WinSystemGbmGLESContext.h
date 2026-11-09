@@ -142,10 +142,7 @@ public:
   {
     return HasDVBridgeScreenshot() && m_sdrConversion;
   }
-  bool ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
-  {
-    return m_dvFrame && m_dvBridge && m_dvBridge->ReadScreenshot(out);
-  }
+  bool ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out);
   bool RenderDVBridge(const CDVBridgeGLES::Layer& layer, std::shared_ptr<AVFrame> enhancement,
                        DVBRIDGE::SourceBinding enhancementBinding,
                        const CDVMetadataBuffer& metadata,
@@ -268,6 +265,7 @@ private:
   bool m_cb1RestoringPreferences{};
   std::optional<bool> m_cb1LimitedRange, m_cb1OrdinaryLimitedRange;
   DVBRIDGE::DiagnosticFailures m_dvSetupFailures;
+  DVBRIDGE::DiagnosticFailures m_dvScreenshotFailures;
   DVBRIDGE::DiagnosticInterval m_dvGuiDiagnostic;
   bool m_dvFrame = false;
   bool m_cb1FramePending{};
