@@ -28,9 +28,9 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     policy.mode=DVBRIDGE_MODE_STANDARD; policy.master_ipt=false; policy.tv={};
     policy.adaptive=DVBRIDGE_ADAPTIVE_A; policy.expert_black_nits=0;
     if (!caps.nativeDV) return {OutputRoute::Vanilla,{},OutputReason::NoDVTransport};
-    if (!caps.processingKnown || !caps.hdr10Processing[DVBRIDGE_MODE_STANDARD].usable)
-      return {OutputRoute::Vanilla,{},!caps.processingKnown ? OutputReason::ProcessingPending : caps.hdr10Processing[policy.mode].reason!=OutputReason::None ?
-          caps.hdr10Processing[policy.mode].reason : OutputReason::NoGPUProcessing};
+    if (!caps.processingKnown || !caps.processing[DVBRIDGE_MODE_STANDARD].usable)
+      return {OutputRoute::Vanilla,{},!caps.processingKnown ? OutputReason::ProcessingPending : caps.processing[policy.mode].reason!=OutputReason::None ?
+          caps.processing[policy.mode].reason : OutputReason::NoGPUProcessing};
     return {OutputRoute::NativeDV,policy,OutputReason::None};
   }
   if (caps.sourceKnown && caps.isHDR10 && !caps.isDV)

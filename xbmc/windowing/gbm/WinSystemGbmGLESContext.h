@@ -206,6 +206,8 @@ private:
   unsigned m_guiCachedElementCount{0};
 
   std::unique_ptr<CGuiCompositeShaderGLES> m_compositeShader;
+  float m_guiSDRGamma{2.4f};
+  bool ConfigureGuiCompositing(int colorTransfer, float gamma);
 #ifdef HAVE_DVBRIDGE
   DVBRIDGE::OutputCapabilities GetDVOutputCapabilities(const VideoPicture* picture,
       const DVBRIDGE::OutputPreferences& preferences, bool allowModeSwitch = false) const;
@@ -274,6 +276,7 @@ private:
   bool m_hdrConversion = false;
   bool m_sdrConversion = false;
   bool m_dvPriorSDRConversion = false;
+  float m_dvPriorGuiSDRGamma{2.4f};
   std::optional<dvbridge_hdr10_session> m_hdr10Session;
   std::unique_ptr<VideoPicture> m_hdr10BasicSignal;
   std::optional<std::array<unsigned, 5>> m_hdr10Signal;

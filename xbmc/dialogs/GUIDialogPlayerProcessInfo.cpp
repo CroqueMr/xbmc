@@ -454,7 +454,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         PQNits(data.pq[0]), PQNits(data.pq[1]), PQNits(data.pq[2])) : "N/A");
     // Use the accepted route's partial components, without changing the original source values.
     const bool partialL1 = metadata && data.l1 && applied[1] &&
-        (data.output.effective == 8 || (hdr10 && data.output.effective == 3));
+        (data.output.effective == 8 || (hdr10 && (data.output.effective == 2 || data.output.effective == 3)));
     SetProperty("DV.UsedL1PQ", partialL1 ? StringUtils::Format("{} | {}", data.pq[1], data.pq[2]) : "");
     std::string usedL1Nits = metadata && data.l1 && applied[1] ?
         (partialL1 ? StringUtils::Format("{:.1f} | {:.1f} nits", PQNits(data.pq[1]), PQNits(data.pq[2])) :
@@ -467,6 +467,9 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         data.area[0], data.area[1], data.area[2], data.area[3]) : "N/A");
     SetProperty("DV.Mastering", metadata && data.l6 ? StringUtils::Format("{} | {:.4f} nits",
         data.maxMaster, data.minMaster / 10000.0) : "N/A");
+    SetProperty("DV.UsedL6Max", metadata && hdr10 && applied[6] &&
+        (data.output.effective == 2 || data.output.effective == 3) ?
+        StringUtils::Format("{} nits", data.maxMaster) : "");
     SetProperty("DV.CLL", metadata && data.l6 ? StringUtils::Format("{} | {} nits", data.maxCLL, data.maxFALL) : "N/A");
     // The other levels' values; the parsed chips say which levels the file carries.
     const auto& levels = data.levels;

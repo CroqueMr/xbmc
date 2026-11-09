@@ -102,6 +102,7 @@ public:
     uint64_t sourceSerial{};
     bool fullRange{};
     bool hlg{};
+    bool hdr10PlusSource{};
     pl_hdr_metadata hdr{};
     AVChromaLocation chromaLocation{AVCHROMA_LOC_UNSPECIFIED};
   };
