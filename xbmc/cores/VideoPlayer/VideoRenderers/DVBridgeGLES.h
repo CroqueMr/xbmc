@@ -296,6 +296,7 @@ private:
   void Summary(const char* event);
   void CountPresentation(bool committed);
   DVBRIDGE::DiagnosticFailures m_failures;
+  DVBRIDGE::DiagnosticFailures m_captureFailures;
   DVBRIDGE::DiagnosticFailures m_auditRequested,m_auditPrepared,m_auditCommitted;
   DVBRIDGE::DiagnosticFailures m_auditCreative;
   DVBRIDGE::DiagnosticFailures m_auditCMv40;
