@@ -43,8 +43,10 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   else if (output.flags & CDVPlaybackInfo::HDR10PLUS) info.outputType=VideoOutputType::HDR10Plus;
   else if (output.flags & CDVPlaybackInfo::HDR10) info.outputType=VideoOutputType::HDR10;
   info.profile=source.profile; info.level=source.level; info.major=source.major; info.minor=source.minor;
+  info.compatibility=source.compatibility;
   info.bl=source.bl; info.el=source.el; info.rpu=source.rpu; info.fel=source.fel;
   info.sourceBits=source.sourceBits; info.sourceFormat=static_cast<int>(source.sourceFormat);
+  info.tags=source.tags;
   info.sourceMastering=source.sourceMastering; info.sourceLight=source.sourceLight;
   info.sourceMax=source.sourceMax; info.sourceMin=source.sourceMin;
   info.sourceCLL=source.sourceCLL; info.sourceFALL=source.sourceFALL;
@@ -58,7 +60,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
     info.pq=source.pq; info.area=source.area; info.maxMaster=source.maxMaster;
     info.minMaster=source.minMaster; info.maxCLL=source.maxCLL; info.maxFALL=source.maxFALL;
     info.framebufferBits=source.framebufferBits; info.blocks=source.blocks;
-    info.appliedBlocks=source.AppliedBlocks();
+    info.appliedBlocks=source.AppliedBlocks(); info.levels=source.levels;
   }
   const auto& pending=source.transaction;
   info.transaction.identity={pending.identity.stream,pending.identity.picture,pending.identity.revision};
