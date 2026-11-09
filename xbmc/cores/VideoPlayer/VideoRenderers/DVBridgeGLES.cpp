@@ -1913,17 +1913,38 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
 {
   using namespace KODI::RENDERING::CAPTURE;
   const bool master=m_effectiveMode==DVBRIDGE_MODE_MASTER_REFERENCE;
-  if (!m_prepared || !m_scanout || (master && !m_direct)) return false;
-  const auto framebuffer=master ? m_scanoutFramebuffer : GetPQFramebuffer();
-  if (!master && !framebuffer) return false;
+  const bool sdr=m_effectiveMode==DVBRIDGE_MODE_SDR;
+  if (!m_prepared || !m_scanout || ((master || sdr) && !m_direct)) return false;
+  const auto framebuffer=master || sdr ? m_scanoutFramebuffer : GetPQFramebuffer();
+  if (!master && !sdr && !framebuffer) return false;
   GLint previous=0;
   glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&previous);
   glBindFramebuffer(GL_READ_FRAMEBUFFER,framebuffer);
   ReadbackBuffer pixels;
-  const bool read=ReadFramebufferRegion(0,0,m_scanout->params.w,m_scanout->params.h,master ? 8 : 16,master,pixels);
+  const bool read=ReadFramebufferRegion(0,0,m_scanout->params.w,m_scanout->params.h,
+      master ? 8 : sdr ? m_outputBits : 16,master || sdr,pixels);
   glBindFramebuffer(GL_READ_FRAMEBUFFER,previous);
   if (!read) return false;
-  if (master)
+  if (sdr)
+  {
+    DVBRIDGE::SDRScreenshotFormat format;
+    switch (pixels.format)
+    {
+      case AV_PIX_FMT_RGBA: format=DVBRIDGE::SDRScreenshotFormat::RGBA8; break;
+      case AV_PIX_FMT_BGRA: format=DVBRIDGE::SDRScreenshotFormat::BGRA8; break;
+      case AV_PIX_FMT_RGBA64LE: format=DVBRIDGE::SDRScreenshotFormat::RGBA16; break;
+      case AV_PIX_FMT_X2BGR10LE: format=DVBRIDGE::SDRScreenshotFormat::RGB10; break;
+      default: return false;
+    }
+    const double gamma=m_requested.sdrPreset==0 ? 2.4 : m_requested.sdrPreset==1 ? 2.2 : m_requested.sdrGamma;
+    auto rgb=std::make_unique<uint8_t[]>(size_t(pixels.width)*pixels.height*8);
+    if (!DVBRIDGE::DecodeSDRScreenshot(pixels.pixels.get(),pixels.width,pixels.height,
+        format,m_outputBits,m_hdr10Limited,gamma,reinterpret_cast<uint16_t*>(rgb.get()))) return false;
+    pixels.pixels=std::move(rgb);
+    pixels.stride=-int(pixels.width*8);
+    pixels.format=AV_PIX_FMT_RGBA64LE;
+  }
+  else if (master)
   {
     dvbridge_color mapped{};
     if (pixels.format!=AV_PIX_FMT_RGBA || !dvbridge_map_color(&mapped,
