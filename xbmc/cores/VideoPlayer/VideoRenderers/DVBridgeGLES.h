@@ -62,6 +62,8 @@ public:
     ~Context();
     bool Initialize(bool allowSoftware);
     dvbridge_renderer* Attach();
+    // Why Attach() returned null.
+    const char* AttachRefusal() const;
     void Detach(dvbridge_renderer* renderer);
     dvbridge_dv_policy_status Poll(bool allowAhead = false);
     bool Close();

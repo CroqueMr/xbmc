@@ -641,6 +641,14 @@ bool CDVBridgeGLES::Context::Initialize(bool allowSoftware)
   return m_state->owner != nullptr;
 }
 
+const char* CDVBridgeGLES::Context::AttachRefusal() const
+{
+  if (m_state->quarantined) return "context-quarantined";
+  if (!m_state->inFlight.empty()) return "context-in-flight";
+  if (m_state->gl && pl_gpu_is_failed(m_state->gl->gpu)) return "context-gpu-failed";
+  return "renderer-create";
+}
+
 dvbridge_renderer* CDVBridgeGLES::Context::Attach()
 {
   if (m_state->quarantined || !m_state->inFlight.empty()) return nullptr;
@@ -1768,7 +1776,13 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<C
 #endif
   m_renderer = m_context->Attach();
   m_packer = dvbridge_gl_packer_create(DVBRIDGE_VERTEX, DVBRIDGE_FRAGMENT);
-  return m_renderer && m_packer && RebindOutputSurface(hdr10, sdr, framebuffer);
+  if (!m_renderer)
+    return Failure(m_context->AttachRefusal());
+  if (!m_packer)
+    return Failure("packer-create");
+  if (!RebindOutputSurface(hdr10, sdr, framebuffer))
+    return Failure("scanout-wrap");
+  return true;
 }
 
 bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int framebuffer)
