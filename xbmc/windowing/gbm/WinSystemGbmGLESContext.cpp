@@ -2458,6 +2458,22 @@ bool KODI::WINDOWING::GBM::IsDVBridgeScreenshotSDR(CWinSystemBase& window)
   return gbm && gbm->IsDVBridgeScreenshotSDR();
 }
 
+bool CWinSystemGbmGLESContext::ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
+{
+  if (!m_dvFrame || !m_dvBridge)
+  {
+    const char* stage = !m_dvBridge ? "renderer-unavailable" : "video-frame-unprepared";
+    if (DVBRIDGE::DiagnosticsEnabled() &&
+        m_dvScreenshotFailures.Record(DVBRIDGE::DiagnosticNowMs(), stage))
+      DVBRIDGE::DiagnosticLog(LOGWARNING,
+          "DVBridge screenshot: stage={} frame={} bridge={} sdr={} hdr_conversion={} gui={} gui_render={} size={}x{}",
+          stage, m_dvFrame, m_dvBridge != nullptr, m_sdrConversion, m_hdrConversion,
+          m_guiCompositing, m_guiWillRender, m_nWidth, m_nHeight);
+    return false;
+  }
+  return m_dvBridge->ReadScreenshot(out);
+}
+
 bool KODI::WINDOWING::GBM::ReadDVBridgeScreenshot(CWinSystemBase& window, KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
 {
   auto* gbm = dynamic_cast<CWinSystemGbmGLESContext*>(&window);
