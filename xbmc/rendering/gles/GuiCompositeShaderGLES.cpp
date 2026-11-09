@@ -168,12 +168,14 @@ std::vector<float> CGuiCompositeShaderGLES::GeneratePQLUT(float sdrPeak)
   return lut;
 }
 
-bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
+bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer, float sdrGamma)
 {
   if (m_lutDegammaTexId)
     glDeleteTextures(1, &m_lutDegammaTexId);
   if (m_lutTFTexId)
     glDeleteTextures(1, &m_lutTFTexId);
+  m_lutTFTexId = 0;
+  m_lutDegammaTexId = 0;
 
   m_lutDegammaTexId = CreateLUTTexture(GenerateDegammaLUT());
   if (!m_lutDegammaTexId)
@@ -182,7 +184,13 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
     return false;
   }
 
-  if (colorTransfer == AVCOL_TRC_SMPTE2084)
+  if (colorTransfer == AVCOL_TRC_GAMMA22)
+  {
+    if (!std::isfinite(sdrGamma) || sdrGamma < 1.8f || sdrGamma > 2.8f) return false;
+    // Negative selects BT.709 SDR in the shared compositor; no PQ/HLG LUT.
+    m_ootfGamma = -sdrGamma;
+  }
+  else if (colorTransfer == AVCOL_TRC_SMPTE2084)
   {
     m_lutTFTexId = CreateLUTTexture(GeneratePQLUT(m_sdrPeak));
     if (!m_lutTFTexId)
