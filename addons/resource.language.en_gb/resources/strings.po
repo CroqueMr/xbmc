@@ -26127,7 +26127,7 @@ msgid "Remember playback for HDR10 sources: Dolby Vision Rendering with AI, Adap
 msgstr ""
 
 msgctxt "#40875"
-msgid "HDR10 conversion unavailable. Using native HDR10."
+msgid "Rendering unavailable. Using native Kodi playback."
 msgstr ""
 
 msgctxt "#40876"

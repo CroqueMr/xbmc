@@ -18,7 +18,6 @@ extern "C"
 #include <libavutil/dovi_meta.h>
 #include <libavutil/avutil.h>
 #include <libavutil/hwcontext.h>
-#include <libplacebo/utils/libav.h>
 #include "dvbridge_placebo.h"
 #include "dvbridge_cache.h"
 #include "cb1_hdr10plus_dovi.h"
@@ -85,8 +84,17 @@ bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::La
       cb1_hdr10plus_dovi_result described{};
       if (cb1_hdr10plus_dovi_describe(&described,side->HDR10Plus(),nullptr)==CB1_HDR10PLUS_DOVI_OK)
       {
-        const pl_av_hdr_metadata metadata{nullptr,nullptr,side->HDR10Plus()};
-        pl_map_hdr_metadata(&frame->frame.color.hdr,&metadata);
+        // ST 2094-40 statistics use fractions of 10000 nits (FFmpeg rationals).
+        // Match libplacebo's libav adapter without its optional FFmpeg dependency.
+        const auto& statistics=side->HDR10Plus()->params[0];
+        const unsigned count=statistics.num_distribution_maxrgb_percentiles;
+        const double fallback=count ? 10000*av_q2d(statistics.distribution_maxrgb[count-1].percentile) : 0;
+        for (unsigned c=0;c<3;++c)
+        {
+          const double maximum=10000*av_q2d(statistics.maxscl[c]);
+          frame->frame.color.hdr.scene_max[c]=maximum>0 ? maximum : fallback;
+        }
+        frame->frame.color.hdr.scene_avg=10000*av_q2d(statistics.average_maxrgb);
       }
     }
     frame->frame.repr.levels=layer.fullRange ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
