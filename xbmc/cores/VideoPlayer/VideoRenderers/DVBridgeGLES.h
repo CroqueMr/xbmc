@@ -254,6 +254,8 @@ private:
   std::shared_ptr<Context> m_context;
   CDVMetadataBuffer m_pendingMetadata;
   DVBRIDGE::SourceInfo m_pendingSourceInfo{};
+  unsigned m_pendingSDRHDRInputUsed{};
+  std::array<float,4> m_pendingSDRHDRInputValues{};
   std::shared_ptr<void> m_hardwareLease;
   std::weak_ptr<AVFrame> m_hardwareFrame;
   std::vector<std::shared_ptr<void>> m_rawELCache;
