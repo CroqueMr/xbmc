@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #ifdef HAVE_DVBRIDGE
 #include "dvbridge_policy.h"
 #include "cb1_cmv40.h"
@@ -49,10 +50,8 @@ struct OutputPreferences
   double expertPeak{}, expertBlack{};
   int expertGamut{};
   bool optimizedDV{true};
-  bool optimizedGUI{false};
-  bool masterIPT{false}, allowMasterFallback{false};
+  bool masterIPT{false};
   bool disableL2Trims{false};
-  bool encodedActiveArea{false};
   int cmv40Mode{}, cmv40Trigger{}, cmv40Headroom{20};
   int felUpscaling{0};
   bool processingOptimizations{false};
@@ -80,9 +79,8 @@ struct OutputPreferences
         std::bit_cast<uint64_t>(sdrGamma) == std::bit_cast<uint64_t>(other.sdrGamma) &&
         std::bit_cast<uint64_t>(sdrBlack) == std::bit_cast<uint64_t>(other.sdrBlack) && method == other.method &&
         panel == other.panel && gamut == other.gamut && optimizedDV == other.optimizedDV &&
-        optimizedGUI == other.optimizedGUI &&
-        masterIPT == other.masterIPT && allowMasterFallback == other.allowMasterFallback &&
-        disableL2Trims == other.disableL2Trims && encodedActiveArea == other.encodedActiveArea &&
+        masterIPT == other.masterIPT &&
+        disableL2Trims == other.disableL2Trims &&
         cmv40Mode == other.cmv40Mode && cmv40Trigger == other.cmv40Trigger &&
         cmv40Headroom == other.cmv40Headroom &&
         felUpscaling == other.felUpscaling &&
@@ -178,6 +176,46 @@ inline std::mutex& OutputSettingsMutex()
   return mutex;
 }
 
+// Protected by OutputSettingsMutex. The settings store remains the sole default owner.
+struct OutputSelectors
+{
+  OutputMode output{OutputMode::Standard};
+  HDR10SourceMode hdr10Source{HDR10SourceMode::Native}, hdr10PlusSource{HDR10SourceMode::Native};
+  HLGSourceMode hlgSource{HLGSourceMode::Native};
+  int method{};
+  void Apply(OutputPreferences& preferences) const
+  {
+    preferences.output=output;
+    preferences.method=method;
+    preferences.hdr10Source=hdr10Source;
+    preferences.hdr10PlusSource=hdr10PlusSource;
+    preferences.hlgSource=hlgSource;
+  }
+};
+inline std::optional<OutputSelectors> activeOutputSelectors;
+
+// Caller holds OutputSettingsMutex; no selector-setting callbacks take this lock.
+inline OutputSelectors ReadDefaultOutputSelectors()
+{
+  OutputSelectors result;
+  const auto component=CServiceBroker::GetSettingsComponent();
+  const auto settings=component ? component->GetSettings() : nullptr;
+  if (!settings) return result;
+  const int output=settings->GetInt("dvbridge.outputmode");
+  result.output=output==3 ? OutputMode::AdaptiveB :
+      output>=0 && output<=6 ? static_cast<OutputMode>(output) : OutputMode::Standard;
+  const int method=settings->GetInt("dvbridge.hdr10method");
+  result.method=method>=0 && method<=2 ? method : 0;
+  const int hdr10=settings->GetInt("dvbridge.hdr10source");
+  result.hdr10Source=(hdr10>=0 && hdr10<=2) || hdr10==4 ?
+      static_cast<HDR10SourceMode>(hdr10) : HDR10SourceMode::Native;
+  const int plus=settings->GetInt("dvbridge.hdr10plussource");
+  result.hdr10PlusSource=plus==3 ? HDR10SourceMode::HDR10PlusDV :
+      plus==4 ? HDR10SourceMode::SDR : HDR10SourceMode::Native;
+  result.hlgSource=settings->GetInt("dvbridge.hlgsource")==1 ? HLGSourceMode::ReferenceDV : HLGSourceMode::Native;
+  return result;
+}
+
 #ifdef CB1_HAS_HDR10_AI
 // Protected by OutputSettingsMutex; confirmation retries without changing settings.
 inline uint64_t hdr10Reselection{};
@@ -192,24 +230,13 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = 
   std::lock_guard<std::mutex> lock(OutputSettingsMutex());
   const auto component = CServiceBroker::GetSettingsComponent();
   const auto settings = component ? component->GetSettings() : nullptr;
-  const int mode = settings ? settings->GetInt("dvbridge.outputmode") : 0;
   OutputPreferences next;
-  next.output = mode == 3 ? OutputMode::AdaptiveB :
-      mode >= 0 && mode <= 6 ? static_cast<OutputMode>(mode) : OutputMode::Standard;
   if (settings)
   {
-    const int hdr10 = settings->GetInt("dvbridge.hdr10source");
-    next.hdr10Source = (hdr10 >= 0 && hdr10 <= 2) || hdr10 == 4 ?
-        static_cast<HDR10SourceMode>(hdr10) : HDR10SourceMode::Native;
-    const int plus=settings->GetInt("dvbridge.hdr10plussource");
-    next.hdr10PlusSource = plus==3 ? HDR10SourceMode::HDR10PlusDV :
-        plus==4 ? HDR10SourceMode::SDR : HDR10SourceMode::Native;
-    next.hlgSource=settings->GetInt("dvbridge.hlgsource")==1 ? HLGSourceMode::ReferenceDV : HLGSourceMode::Native;
     next.sdrPreset=settings->GetInt("dvbridge.sdrpreset");
     next.sdrPeak=settings->GetNumber("dvbridge.sdrpeak");
     next.sdrGamma=settings->GetNumber("dvbridge.sdrgamma");
     next.sdrBlack=settings->GetNumber("dvbridge.sdrblack");
-    next.method = settings->GetInt("dvbridge.hdr10method");
     {
       next.expertPeak=settings->GetNumber("dvbridge.expertpeak");
       next.expertGamut=settings->GetInt("dvbridge.expertgamut");
@@ -222,10 +249,7 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = 
     next.gamut = settings->GetInt("dvbridge.tvgamut");
     next.felUpscaling = settings->GetInt("dvbridge.felupscaling");
     next.masterIPT = settings->GetInt("dvbridge.masteroutput")==1;
-    next.allowMasterFallback = settings->GetBool("dvbridge.masterfallback");
     next.disableL2Trims = settings->GetBool("dvbridge.disablel2");
-    next.encodedActiveArea = settings->GetBool("dvbridge.encodedactivearea");
-    next.optimizedGUI = settings->GetBool("dvbridge.optimizedgui");
     next.cmv40Mode = settings->GetInt("dvbridge.cmv40");
     next.cmv40Trigger = settings->GetInt("dvbridge.cmv40trigger");
     next.cmv40Headroom = settings->GetInt("dvbridge.cmv40headroom");
@@ -234,8 +258,9 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = 
   if (next.cmv40Trigger != 1000 && next.cmv40Trigger != 2000 &&
       next.cmv40Trigger != 4000 && next.cmv40Trigger != 10000) next.cmv40Trigger = 0;
   if (next.cmv40Headroom < 0 || next.cmv40Headroom > 50) next.cmv40Headroom = 20;
-  if (next.method < 0 || next.method > 2) next.method = 0;
   if (next.felUpscaling < 0 || next.felUpscaling > 2) next.felUpscaling = 0;
+  // Only selectors belong to the file. Calibration and tuning stay live.
+  (activeOutputSelectors ? *activeOutputSelectors : ReadDefaultOutputSelectors()).Apply(next);
   next.revision = previous.revision;
   bool changed = !next.SameValues(previous);
 #ifdef CB1_HAS_HDR10_AI
@@ -257,6 +282,10 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = 
 
 inline void SelectOutputSettings()
 {
+  {
+    std::lock_guard lock(OutputSettingsMutex());
+    activeOutputSelectors=ReadDefaultOutputSelectors();
+  }
   FrameOutputSettings();
 }
 

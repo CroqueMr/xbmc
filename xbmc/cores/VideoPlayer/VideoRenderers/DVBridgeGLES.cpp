@@ -1572,18 +1572,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     return FrameStatus::Busy;
   }
   // A selected policy already passed output admission, including compatibility routes.
-  const bool fallback = !selected &&
-      (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid(policy.mode);
-  if (fallback)
-  {
-    policy.mode = preferences.output == DVBRIDGE::OutputMode::HDR10 ?
-        DVBRIDGE_MODE_HDR10_BASIC : DVBRIDGE_MODE_STANDARD;
-    policy.tv = {};
-    policy.adaptive = DVBRIDGE_ADAPTIVE_A;
-  }
+  if (!selected &&
+      (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid(policy.mode))
+    return FrameStatus::Unsupported;
   // Capture the proven observation key before geometry or refresh rekeys work.
   dvbridge_renderer_set_l2_trims_disabled(m_renderer, preferences.L2TrimsDisabled(policy.mode));
-  const auto cmv40 = preferences.CMv40Options(fallback ? DVBRIDGE_MODE_DISABLED : policy.mode);
+  const auto cmv40 = preferences.CMv40Options(policy.mode);
   dvbridge_renderer_set_cmv40(m_renderer, &cmv40);
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
       policy.mode);
@@ -1637,7 +1631,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       return PollReady() ? FrameStatus::Ready : FrameStatus::Pending;
     Cancel();
   }
-  const bool eligible = allowAsync && asyncSetting && !fallback && !m_fallback && !m_pendingHDR10Fallback &&
+  const bool eligible = allowAsync && asyncSetting && !m_fallback && !m_pendingHDR10Fallback &&
       policy.mode != DVBRIDGE_MODE_DISABLED && m_hasCommitted && sameGeometry &&
       base.lease && (!enhancement || enhancement->lease) &&
       (m_directUsable || policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE) &&
@@ -1675,7 +1669,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   dvbridge_renderer_set_fel_filter(m_renderer, preferences.felUpscaling == 2 ? DVBRIDGE_FEL_REFERENCE : preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416) ? DVBRIDGE_FEL_BILINEAR : DVBRIDGE_FEL_DEFAULT);
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
-  m_fallback = fallback;
+  m_fallback = false;
   m_asyncEligible = eligible;
   const auto previousMode=m_effectiveMode;
   m_effectiveMode = policy.mode;
