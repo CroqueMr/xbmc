@@ -785,6 +785,7 @@ void CDVBridgeGLES::Context::Retain(std::shared_ptr<void> base, std::shared_ptr<
 void CDVBridgeGLES::Context::SourceReadComplete() { m_state->foreign.clear(); }
 bool CDVBridgeGLES::Context::FenceLastUse()
 {
+  ClearInheritedGLErrors();
   if (m_state->quarantined) return false;
   auto fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE,0);
   glFlush();
@@ -819,6 +820,7 @@ HDR10AISource& CDVBridgeGLES::Context::HDR10AI()
 
 bool CDVBridgeGLES::Context::FenceHDR10AIUse()
 {
+  ClearInheritedGLErrors();
   if (m_state->quarantined) return false;
   const auto submission = HDR10AI().Metrics().gpu_submissions;
   if (!submission || submission == m_state->aiFencedSubmission) return true;
