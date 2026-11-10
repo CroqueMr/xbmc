@@ -9,4 +9,7 @@ void main()
 {
   fragColor = texture(img, m_cord);
   fragColor.a = m_alpha;
+#if defined(KODI_CLAMP_OUTPUT)
+  fragColor = clamp(fragColor, 0.0, 1.0);
+#endif
 }

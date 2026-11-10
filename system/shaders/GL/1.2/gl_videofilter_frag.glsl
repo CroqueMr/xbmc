@@ -27,4 +27,7 @@ void main()
 {
   gl_FragColor.rgb = texture2D(img, m_cord).rgb;
   gl_FragColor.a = gl_Color.a;
+#if defined(KODI_CLAMP_OUTPUT)
+  gl_FragColor = clamp(gl_FragColor, 0.0, 1.0);
+#endif
 }

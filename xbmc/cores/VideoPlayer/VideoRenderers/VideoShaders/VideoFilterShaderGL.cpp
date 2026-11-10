@@ -15,6 +15,7 @@
 #include "rendering/RenderSystem.h"
 #include "utils/GLUtils.h"
 #include "utils/log.h"
+#include "windowing/WinSystem.h"
 
 #include <math.h>
 #include <string>
@@ -22,6 +23,17 @@
 #define TEXTARGET GL_TEXTURE_1D
 
 using namespace Shaders::GL;
+
+namespace
+{
+// A floating-point output keeps what a fixed-point one clamps away: values outside [0, 1] (the
+// overshoot of a scaling kernel) and results that are no number.
+std::string OutputDefines()
+{
+  const auto* winSystem = CServiceBroker::GetWinSystem();
+  return winSystem && winSystem->HasFloatOutput() ? "#define KODI_CLAMP_OUTPUT\n" : "";
+}
+} // unnamed namespace
 
 //////////////////////////////////////////////////////////////////////
 // BaseVideoFilterShader - base class for video filter shaders
@@ -37,7 +49,7 @@ BaseVideoFilterShader::BaseVideoFilterShader()
 
   VertexShader()->LoadSource("gl_videofilter_vertex.glsl");
 
-  PixelShader()->LoadSource("gl_videofilter_frag.glsl");
+  PixelShader()->LoadSource("gl_videofilter_frag.glsl", OutputDefines());
 }
 
 BaseVideoFilterShader::~BaseVideoFilterShader()
@@ -57,7 +69,7 @@ ConvolutionFilterShader::ConvolutionFilterShader(ESCALINGMETHOD method,
   m_method = method;
 
   std::string shadername;
-  std::string defines;
+  std::string defines = OutputDefines();
 
   m_floattex = CGLExtensions::IsExtensionSupported(CGLExtensions::ARB_texture_float);
 
@@ -89,7 +101,7 @@ ConvolutionFilterShader::ConvolutionFilterShader(ESCALINGMETHOD method,
   }
 
   if (m_floattex)
-    defines = "#define HAS_FLOAT_TEXTURE\n";
+    defines += "#define HAS_FLOAT_TEXTURE\n";
 
   //don't compile in stretch support when it's not needed
   if (stretch)
