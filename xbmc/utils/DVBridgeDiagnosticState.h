@@ -39,7 +39,7 @@ struct DiagnosticProperty
   bool operator==(const DiagnosticProperty&) const = default;
 };
 
-enum class DiagnosticEvent { Normal, Failure, Final, Connection, Progress };
+enum class DiagnosticEvent { Normal, Failure, Final, Connection, Progress, RendererCounter };
 
 // One active native stream, shared by every producer. Pure observation: none of
 // these facts are consumed by output selection, retry, or GPU synchronization.
@@ -77,6 +77,8 @@ public:
   }
   bool Admit(uint64_t now, DiagnosticEvent event)
   {
+    // The renderer owner bounds these observations independently of Normal.
+    if (event == DiagnosticEvent::RendererCounter) return true;
     if (event == DiagnosticEvent::Final)
     {
       if ((!m_stream && !m_requested) || m_ended) return false;

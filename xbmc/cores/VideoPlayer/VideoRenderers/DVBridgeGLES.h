@@ -8,6 +8,7 @@
 #include "cores/VideoSettings.h"
 #include <optional>
 #include <span>
+#include <tuple>
 #include <vector>
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #ifdef CB1_HAS_HDR10_AI
@@ -299,6 +300,10 @@ private:
   void PreparedAudit();
   void Summary(const char* event);
   void CountPresentation(bool committed);
+  using ResetDiagnosticSnapshot = std::tuple<
+      uint64_t,uint64_t,uint64_t,uint64_t,int,bool,
+      uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t>;
+  std::optional<ResetDiagnosticSnapshot> m_lastResetReported;
   DVBRIDGE::DiagnosticFailures m_failures;
   DVBRIDGE::DiagnosticFailures m_captureFailures;
   DVBRIDGE::DiagnosticFailures m_auditRequested,m_auditPrepared,m_auditCommitted;
