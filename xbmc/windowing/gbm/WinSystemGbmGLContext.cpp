@@ -1903,8 +1903,8 @@ void CWinSystemGbmGLContext::RefreshDVOutputCapabilities()
     {
       if (auto* renderer = context->Attach())
       {
-        const bool common = pl_opengl_has_ext(context->GL(), "GL_EXT_float_blend") &&
-            pl_opengl_has_ext(context->GL(), "GL_OES_texture_float_linear");
+        // Desktop OpenGL has float blending and linear float filtering in core.
+        const bool common = true;
         caps.processingKnown = true;
         for (unsigned mode = 1; mode < caps.processing.size(); ++mode)
         {
@@ -4320,5 +4320,18 @@ bool CWinSystemGbmGLContext::CreateContext()
     }
   }
 
+#ifdef HAVE_DVBRIDGE
+  {
+    std::lock_guard lock(m_dvCapabilityMutex);
+    const auto generation = m_dvCapabilities.generation + 1;
+    m_dvCapabilities = {};
+    m_dvAvailableNativeDV = m_dvAvailableHDR10 = false;
+    m_dvOutputTimings.clear();
+    m_dvLldvStatus = {};
+    m_dvCapabilities.generation = generation;
+    m_dvImportBinding = {};
+    m_dvImportUsable = false;
+  }
+#endif
   return true;
 }
