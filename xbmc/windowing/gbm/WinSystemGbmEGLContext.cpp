@@ -45,14 +45,16 @@ bool CWinSystemGbmEGLContext::InitWindowSystemEGL(EGLint renderableType, EGLint 
 
   m_renderableType = renderableType;
   m_lldvRgb10Visuals.clear();
-  if (renderableType == EGL_OPENGL_ES3_BIT)
+  // The DV bridge draws on GLES 3 and desktop GL
+  const bool dvBridgeApi = renderableType == EGL_OPENGL_ES3_BIT || renderableType == EGL_OPENGL_BIT;
+  if (dvBridgeApi)
   {
     for (const auto& format : m_DRM->GetOutputFormats())
       if (format.bpp == 10 &&
           m_eglContext.ChooseConfig(renderableType, format.drm, false, format.alpha, false, true))
         m_lldvRgb10Visuals.push_back(format.drm);
   }
-  m_lldvRgb16Visual = renderableType == EGL_OPENGL_ES3_BIT &&
+  m_lldvRgb16Visual = dvBridgeApi &&
       m_eglContext.ChooseConfig(renderableType, DRM_FORMAT_ABGR16161616, false, 16, false, true);
 
   if (!ChooseEGLConfig(renderableType))

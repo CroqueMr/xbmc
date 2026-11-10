@@ -3,7 +3,11 @@
 #include "UpscalerSettings.h"
 #include "ShaderUpscalerPresets.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlayerLedOutput.h"
+#if defined(HAS_GL)
+#include "VideoShaders/VideoFilterShaderGL.h"
+#else
 #include "VideoShaders/VideoFilterShaderGLES.h"
+#endif
 #include "utils/DVBridgeDiagnosticLog.h"
 #include "DVBridgeShaders.h"
 #include "DVBridgeScreenshot.h"
@@ -38,7 +42,13 @@ extern "C"
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
-#include <GLES3/gl3.h>
+#include "system_gl.h"
+
+#if defined(HAS_GL)
+namespace DVFilterShaders = Shaders::GL;
+#else
+namespace DVFilterShaders = Shaders::GLES;
+#endif
 #include <limits>
 #include <mutex>
 #include <string_view>
@@ -369,7 +379,7 @@ private:
     return true;
   }
 
-  bool Draw(Shaders::GLES::BaseVideoFilterShader& shader, GLuint source, GLuint target,
+  bool Draw(DVFilterShaders::BaseVideoFilterShader& shader, GLuint source, GLuint target,
             int width, int height, int inputWidth, int inputHeight, GLint filter,
             const GLfloat (&vertices)[20])
   {
@@ -394,7 +404,11 @@ private:
     glBindVertexArray(m_vao);
     glBindBuffer(GL_ARRAY_BUFFER, m_vertices);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
+#if defined(HAS_GL)
+    const auto position = shader.GetVertexLoc(), coord = shader.GetCoordLoc();
+#else
     const auto position = shader.GetVertexLoc(), coord = shader.GetcoordLoc();
+#endif
     glVertexAttribPointer(position, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), nullptr);
     glVertexAttribPointer(coord, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat),
         reinterpret_cast<const void*>(3 * sizeof(GLfloat)));
@@ -440,13 +454,17 @@ private:
     const auto method = m_method == VS_SCALINGMETHOD_FSR1_RCAS ? VS_SCALINGMETHOD_FSR1 : m_method;
     if (!m_shader || m_compiledMethod != method)
     {
-      std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> shader;
+      std::unique_ptr<DVFilterShaders::BaseVideoFilterShader> shader;
       if (method == VS_SCALINGMETHOD_NEAREST || method == VS_SCALINGMETHOD_LINEAR)
-        shader = std::make_unique<Shaders::GLES::DefaultFilterShader>();
+        shader = std::make_unique<DVFilterShaders::DefaultFilterShader>();
       else if (method == VS_SCALINGMETHOD_FSR1)
-        shader = std::make_unique<Shaders::GLES::FSR1FilterShader>();
+        shader = std::make_unique<DVFilterShaders::FSR1FilterShader>();
       else
-        shader = std::make_unique<Shaders::GLES::ConvolutionFilterShader>(method, false);
+#if defined(HAS_GL)
+        shader = std::make_unique<DVFilterShaders::ConvolutionFilterShader>(method, false, false);
+#else
+        shader = std::make_unique<DVFilterShaders::ConvolutionFilterShader>(method, false);
+#endif
       if (!shader->CompileAndLink())
         return false;
       m_shader = std::move(shader);
@@ -477,13 +495,13 @@ private:
     const float bottom = 2 * target.crop.y1 / height - 1;
     const float u0 = image.crop.x0 / sw, u1 = image.crop.x1 / sw;
     if (method == VS_SCALINGMETHOD_FSR1)
-      static_cast<Shaders::GLES::FSR1FilterShader*>(m_shader.get())->SetInputSize(sw, sh);
+      static_cast<DVFilterShaders::FSR1FilterShader*>(m_shader.get())->SetInputSize(sw, sh);
 
     if (rcas)
     {
       if (!m_rcas)
       {
-        auto shader = std::make_unique<Shaders::GLES::FSR1FilterShader>(true);
+        auto shader = std::make_unique<DVFilterShaders::FSR1FilterShader>(true);
         if (!shader->CompileAndLink())
           return false;
         m_rcas = std::move(shader);
@@ -522,10 +540,10 @@ private:
   pl_renderer m_hookRenderer{};
   std::vector<const pl_hook*> m_hooks;
   ESCALINGMETHOD m_hookMethod{VS_SCALINGMETHOD_MAX};
-  std::unique_ptr<Shaders::GLES::FSR1FilterShader> m_rcas;
+  std::unique_ptr<DVFilterShaders::FSR1FilterShader> m_rcas;
   GLuint m_vao{}, m_vertices{}, m_sampler{};
   ESCALINGMETHOD m_method{VS_SCALINGMETHOD_LINEAR}, m_compiledMethod{VS_SCALINGMETHOD_MAX};
-  std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> m_shader;
+  std::unique_ptr<DVFilterShaders::BaseVideoFilterShader> m_shader;
 };
 
 struct CDVBridgeGLES::Context::State
@@ -1742,9 +1760,12 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<C
     return Failure("opengl-create");
   m_gl = m_context->GL(); m_log = m_context->Log();
   // GUI alpha blending takes place in the 32F PQ target, before transport packing.
+#if !defined(HAS_GL)
+  // Desktop OpenGL has both in core.
   if (!pl_opengl_has_ext(m_gl, "GL_EXT_float_blend") ||
       !pl_opengl_has_ext(m_gl, "GL_OES_texture_float_linear"))
     return Failure("float-blend-or-linear-unavailable");
+#endif
   m_renderer = m_context->Attach();
   m_packer = dvbridge_gl_packer_create(DVBRIDGE_VERTEX, DVBRIDGE_FRAGMENT);
   return m_renderer && m_packer && RebindOutputSurface(hdr10, sdr, framebuffer);

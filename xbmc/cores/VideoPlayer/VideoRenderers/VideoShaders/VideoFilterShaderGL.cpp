@@ -272,3 +272,36 @@ bool DefaultFilterShader::OnEnabled()
   VerifyGLState();
   return true;
 }
+
+//////////////////////////////////////////////////////////////////////
+// FSR1FilterShader - FidelityFX Super Resolution 1, EASU or RCAS
+//////////////////////////////////////////////////////////////////////
+
+FSR1FilterShader::FSR1FilterShader(bool rcas)
+{
+  PixelShader()->LoadSource(rcas ? "gl_fsr1_rcas.glsl" : "gl_fsr1_easu.glsl", OutputDefines());
+}
+
+void FSR1FilterShader::OnCompiledAndLinked()
+{
+  m_hSourceTex = glGetUniformLocation(ProgramHandle(), "img");
+  m_hStepXY = glGetUniformLocation(ProgramHandle(), "stepxy");
+  m_hInputSize = glGetUniformLocation(ProgramHandle(), "input_size");
+  m_hProj = glGetUniformLocation(ProgramHandle(), "m_proj");
+  m_hModel = glGetUniformLocation(ProgramHandle(), "m_model");
+  m_hVertex = glGetAttribLocation(ProgramHandle(), "m_attrpos");
+  m_hCoord = glGetAttribLocation(ProgramHandle(), "m_attrcord");
+  m_hAlpha = glGetUniformLocation(ProgramHandle(), "m_alpha");
+}
+
+bool FSR1FilterShader::OnEnabled()
+{
+  glUniform1i(m_hSourceTex, m_sourceTexUnit);
+  glUniform2f(m_hStepXY, m_stepX, m_stepY);
+  glUniform2f(m_hInputSize, m_inputWidth, m_inputHeight);
+  glUniform1f(m_hAlpha, m_alpha);
+  glUniformMatrix4fv(m_hProj, 1, GL_FALSE, m_proj);
+  glUniformMatrix4fv(m_hModel, 1, GL_FALSE, m_model);
+  VerifyGLState();
+  return true;
+}

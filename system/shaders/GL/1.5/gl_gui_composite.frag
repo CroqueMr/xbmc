@@ -10,17 +10,17 @@
 
 in vec2 v_tex;
 out vec4 fragColor;
-uniform sampler2D u_samp;
+uniform sampler2D u_samp;       // GUI FBO texture (sRGB, rendered by GUI shaders)
+uniform sampler2D u_lutDegamma; // sRGB -> linear LUT (IEC 61966-2-1)
 uniform bool u_sdrBT2020;
-uniform vec2 u_sdrRange;
-uniform float u_sdrPeak; // SDR peak in normalized PQ (e.g. 100/10000 = 0.01)
-
-// ST2084 (PQ) constants
-const float ST2084_m1 = 0.1593017578125;   // 2610/16384
-const float ST2084_m2 = 78.84375;           // 2523/4096 * 128
-const float ST2084_c1 = 0.8359375;          // 3424/4096
-const float ST2084_c2 = 18.8515625;         // 2413/4096 * 32
-const float ST2084_c3 = 18.6875;            // 2392/4096 * 32
+uniform bool u_unpremultiplyGui;
+uniform sampler2D u_lutTF;      // linear -> PQ LUT (1024 entries, sdrPeak baked in)
+uniform float u_ootfGamma;      // HLG OOTF or negative SDR target gamma
+                                // PQ: 0.0 (use LUT path instead)
+uniform bool u_inputPQ;         // CB1 subtitle layer already contains BT.2020 PQ.
+uniform vec2 u_outputRange; // CB1 exact bit-depth scale and black code.
+uniform float u_playerLedScale;
+uniform mat3 u_playerLedGui, u_playerLedSubtitles;
 
 // BT.709 -> BT.2020 color space conversion matrix (applied in linear light)
 const mat3 bt709_to_bt2020 = mat3(
@@ -28,12 +28,6 @@ const mat3 bt709_to_bt2020 = mat3(
   0.3293,  0.9195,  0.0880,
   0.0433,  0.0114,  0.8956
 );
-
-vec3 forwardPQ(vec3 L)
-{
-  vec3 Lm1 = pow(L, vec3(ST2084_m1));
-  return pow((ST2084_c1 + ST2084_c2 * Lm1) / (1.0 + ST2084_c3 * Lm1), vec3(ST2084_m2));
-}
 
 void main()
 {
@@ -45,25 +39,93 @@ void main()
   if (gui.a == 0.0)
     discard;
 
-  // Native SDR stores true coverage and premultiplied sRGB in its GUI FBO.
-  // Convert straight colors and pass coverage to the final SRC_ALPHA blend.
-  vec3 rgb = u_sdrBT2020 ? clamp(gui.rgb / gui.a, 0.0, 1.0) : gui.rgb;
-  vec3 linear = mix(rgb / 12.92,
-                    pow((rgb + 0.055) / 1.055, vec3(2.4)),
-                    step(0.04045, rgb));
+  if (u_inputPQ)
+  {
+    if (u_playerLedScale > 0.0)
+    {
+      vec3 q = pow(clamp(gui.rgb / gui.a, 0.0, 1.0), vec3(32.0 / 2523.0));
+      vec3 l = pow(max(q - 3424.0 / 4096.0, 0.0) /
+                   (2413.0 / 128.0 - (2392.0 / 128.0) * q), vec3(16384.0 / 2610.0));
+      fragColor = vec4(clamp(u_playerLedSubtitles * l * u_playerLedScale, 0.0, 1.0) * gui.a,
+                       gui.a);
+      return;
+    }
+    fragColor = vec4(gui.rgb * u_outputRange.x + gui.a * u_outputRange.y, gui.a);
+    return;
+  }
+
+  // Convert the native SDR GUI's straight colors before the final SRC_ALPHA blend.
+  vec3 rgb = u_unpremultiplyGui ? clamp(gui.rgb / gui.a, 0.0, 1.0) : gui.rgb;
+  // sRGB -> linear via LUT (IEC 61966-2-1 EOTF, replaces inline pow)
+  vec3 linear = vec3(
+    texture(u_lutDegamma, vec2(rgb.r, 0.5)).r,
+    texture(u_lutDegamma, vec2(rgb.g, 0.5)).r,
+    texture(u_lutDegamma, vec2(rgb.b, 0.5)).r
+  );
+
+  if (u_playerLedScale > 0.0)
+  {
+    fragColor = vec4(clamp(u_playerLedGui * linear * (0.0203 * u_playerLedScale), 0.0, 1.0),
+                     gui.a);
+    return;
+  }
+
+  // SDR overlays follow the film's gamut before encoding its target gamma.
+  if (u_ootfGamma < 0.0)
+  {
+    if (u_sdrBT2020) linear = bt709_to_bt2020 * linear;
+    vec3 result = pow(max(linear, vec3(0.0)), vec3(-1.0 / u_ootfGamma));
+#if defined(KODI_LIMITED_RANGE)
+    if (!u_unpremultiplyGui) result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
+#endif
+    fragColor = vec4(result * u_outputRange.x + u_outputRange.y, gui.a);
+    return;
+  }
 
   // BT.709 -> BT.2020 gamut mapping
   linear = bt709_to_bt2020 * linear;
 
-  vec3 result = u_sdrBT2020 ? pow(max(linear, vec3(0.0)), vec3(1.0 / 2.4)) :
-                             forwardPQ(linear * u_sdrPeak);
+  vec3 result;
 
-  if (u_sdrBT2020)
-    result = result * u_sdrRange.x + u_sdrRange.y;
-#ifdef KODI_LIMITED_RANGE
+  if (u_ootfGamma > 0.0)
+  {
+    // HLG path: direct computation following libplacebo pl_color_delinearize.
+    // BT.2100 reference display: 1000 nits. GUI white (linear 1.0) = 203 nits
+    // (BT.2408 reference white) should map to 75% HLG signal.
+    //
+    // Step 1: normalize to display-peak-relative units
+    // Step 2: inverse OOTF with 12x prescale for OETF input domain
+    // Step 3: HLG OETF (ARIB STD-B67) piecewise: sqrt for <=1, log for >1
+    const float csp_max = 1000.0 / 203.0; // display peak in ref-white units
+    const float HLG_A = 0.17883277;
+    const float HLG_B = 0.28466892;
+    const float HLG_C = 0.55991073;
+
+    vec3 scene = linear / csp_max;
+    float Y = dot(scene, vec3(0.2627, 0.6780, 0.0593));
+    scene *= 12.0 * pow(max(1e-6, Y), (1.0 - u_ootfGamma) / u_ootfGamma);
+
+    // HLG OETF piecewise (threshold at scene-light 1.0)
+    vec3 lo = vec3(0.5) * sqrt(max(scene, vec3(0.0)));
+    vec3 hi = vec3(HLG_A) * log(max(scene - vec3(HLG_B), vec3(1e-6))) + vec3(HLG_C);
+    result = mix(lo, hi, step(vec3(1.0), scene));
+  }
   else
-    result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
+  {
+    // PQ path: LUT lookup (sdrPeak baked into LUT range)
+    result = vec3(
+      texture(u_lutTF, vec2(linear.r, 0.5)).r,
+      texture(u_lutTF, vec2(linear.g, 0.5)).r,
+      texture(u_lutTF, vec2(linear.b, 0.5)).r
+    );
+  }
+
+  // Limited-range encoding at the BO write boundary. Canonical normalized
+  // ratios (bit-depth-agnostic in float space; BO write quantizes to the
+  // active surface bit depth).
+#ifdef KODI_LIMITED_RANGE
+  result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
 #endif
 
-  fragColor = vec4(result, gui.a);
+  fragColor = vec4(result * u_outputRange.x + u_outputRange.y, gui.a);
 }
