@@ -107,7 +107,7 @@ public:
   {
     return m_dvBridge && m_dvContext &&
         m_dvContext->HDR10AI().Current(m_aiActivation,
-            DVBRIDGE::FrameOutputSettings(m_dvContext->HDR10AI().HDR10Plus())) &&
+            DVBRIDGE::FrameOutputSettings(m_dvContext->HDR10AI().HDR10Plus(), m_dvBridge->HDR10AISourceHLG())) &&
         m_dvBridge->CommittedHDR10AI().has_value();
   }
   bool PrepareHDR10AIQueue(const VideoPicture& picture,
