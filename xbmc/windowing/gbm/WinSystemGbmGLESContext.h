@@ -71,6 +71,16 @@ public:
   void EndGuiComposite() override;
   void CompositeGui() override;
   bool IsHdrComposite() const override { return m_guiCompositing; }
+  bool UseGuiCoverageAlpha() const override
+  {
+#ifdef HAVE_DVBRIDGE
+    // Captured DV state survives until ordinary restoration is acknowledged.
+    if (!m_cb1RestoringPreferences && !m_dvOrdinaryFrame &&
+        (m_dvState.Captured() || m_hdrConversion))
+      return true;
+#endif
+    return CWinSystemBase::UseGuiCoverageAlpha();
+  }
 #ifdef HAVE_DVBRIDGE
   static bool DVBridgeRequested(const VideoPicture* picture);
   bool CreateNewWindow(const std::string& name, bool fullScreen, RESOLUTION_INFO& res) override;
