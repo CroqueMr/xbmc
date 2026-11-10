@@ -467,8 +467,14 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
   if (m_dvOrdinaryFrame)
   {
     if (!rendered || !m_eglContext.TrySwapBuffers()) return;
-    if (m_dvStopPending && !StageOrdinaryDVOutput(nullptr)) return;
+    if (m_dvStopPending && !PrepareOrdinaryDVOutput(nullptr)) return;
     auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+    // Rejection discards the atomic request. Reassemble the complete native
+    // intent for both live handoffs and stops before every real attempt.
+    if (!drm || (m_dvState.Captured() && !m_dvState.Stage(*drm,true)) ||
+        (m_hdrDeepColorPrevious && !drm->AddProperty(drm->GetConnector(),
+            "DVBRIDGE_HDR10_DEEP_COLOR",*m_hdrDeepColorPrevious)) ||
+        !StageCB1ConnectorPreferences(true) || !RequeueOutputProperties()) return;
     auto& surface = m_GBM->GetDevice().GetSurface();
     auto* bo = surface.LockTransactionalBuffer();
     AnnounceCB1Mode(false);
@@ -1764,7 +1770,6 @@ bool CWinSystemGbmGLESContext::RecoverDVActivation()
   const bool superseded = m_dvSuperseded;
   if (!EndDVBridge())
   {
-    m_dvRollbackFailed = true;
     std::lock_guard lock(m_dvCapabilityMutex);
     m_dvActivationReason = DVBRIDGE::OutputReason::RestoreFailed;
     return false;
@@ -2215,7 +2220,7 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
     m_hdrConversion = false;
     m_sdrConversion = false;
     m_dvConfiguredOutput.reset();
-    if (!requested && !StageOrdinaryDVOutput(picture)) return false;
+    if (!requested && !PrepareOrdinaryDVOutput(picture)) return false;
     return true;
   }
   // Restore with the current surface before EGL replaces its buffers.
@@ -2393,25 +2398,20 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
     if (!ready) { RejectDVOutputSurface(); return false; }
   }
   else if ((HasPendingDVOutputSurface() || m_dvOrdinaryFrame) &&
-           !StageOrdinaryDVOutput(&picture)) return false;
+           !PrepareOrdinaryDVOutput(&picture)) return false;
   m_dvConfiguredOutput = m_dvSelection.policy.mode;
   return true;
 }
 
-bool CWinSystemGbmGLESContext::StageOrdinaryDVOutput(const VideoPicture* picture)
+bool CWinSystemGbmGLESContext::PrepareOrdinaryDVOutput(const VideoPicture* picture)
 {
+  // Keep the current native metadata blob alive until its commit is accepted.
+  if (m_dvOrdinaryFrame && !m_dvStopPending) return true;
   if (m_dvStopPending)
   {
-    m_dvOrdinaryFrame = true;
     SetGuiCompositing(0);
     CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
   }
-  auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-  if (!drm || (m_dvState.Captured() && !m_dvState.Stage(*drm,true)) ||
-      (m_hdrDeepColorPrevious && !drm->AddProperty(drm->GetConnector(),
-          "DVBRIDGE_HDR10_DEEP_COLOR",*m_hdrDeepColorPrevious)))
-  { if (!m_dvStopPending) RejectDVOutputSurface(); return false; }
-  if (!StageCB1ConnectorPreferences(true)) return false;
   SetColorimetry(picture);
   const bool hdr = SetHDR(picture);
   SetGuiCompositing(hdr && picture ? picture->color_transfer : 0);
@@ -2422,13 +2422,8 @@ bool CWinSystemGbmGLESContext::StageOrdinaryDVOutput(const VideoPicture* picture
 bool CWinSystemGbmGLESContext::RejectDVOutputSurface()
 {
   m_hdr10Signal.reset();
-  if (m_dvOrdinaryFrame)
-  {
-    m_dvRollbackFailed = true;
-    std::lock_guard lock(m_dvCapabilityMutex);
-    m_dvActivationReason = DVBRIDGE::OutputReason::RestoreFailed;
-    return false;
-  }
+  // Ordinary commit rejection stays retryable through its pending frame owner.
+  if (m_dvOrdinaryFrame) return false;
   if (!m_dvActivating && !HasPendingDVOutputSurface()) return true;
   if (!m_dvStopPending && !m_dvRecoveryPending)
   {
