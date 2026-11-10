@@ -2407,6 +2407,7 @@ bool CWinSystemGbmGLESContext::PrepareOrdinaryDVOutput(const VideoPicture* pictu
 {
   // Keep the current native metadata blob alive until its commit is accepted.
   if (m_dvOrdinaryFrame && !m_dvStopPending) return true;
+  m_cb1RestoringPreferences = true;
   if (m_dvStopPending)
   {
     SetGuiCompositing(0);
