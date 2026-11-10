@@ -731,7 +731,7 @@ std::shared_ptr<COverlay> CRenderer::Convert(SElement& e)
       r = it->second;
   }
 
-#if defined(HAS_GLES)
+#if defined(HAS_GLES) || defined(HAS_GL)
   if (r && o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
       static_cast<CDVDOverlayImage&>(o).m_isHDROverlay &&
       r->m_paletteOutputState != BitmapPaletteOutputState())
