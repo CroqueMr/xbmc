@@ -8,6 +8,7 @@
 #include "cores/VideoSettings.h"
 #include <optional>
 #include <span>
+#include <string_view>
 #include <tuple>
 #include <vector>
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
@@ -297,7 +298,7 @@ private:
   uint64_t m_geometryRevision{1};
   bool m_geometryKnown{};
   bool Failure(const char* stage);
-  void PreparedAudit();
+  void PreparedAudit(std::string_view sdr = {});
   void Summary(const char* event);
   void CountPresentation(bool committed);
   using ResetDiagnosticSnapshot = std::tuple<
