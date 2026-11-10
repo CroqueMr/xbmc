@@ -229,7 +229,7 @@ private:
   bool m_dvShutdownFence{};
   bool m_dvRejectedSurface{}, m_dvRollbackFailed{};
   bool PollRejectedDVSurface();
-  bool StageOrdinaryDVOutput(const VideoPicture* picture);
+  bool PrepareOrdinaryDVOutput(const VideoPicture* picture);
   bool RecoverDVActivation();
   void ResetDVActivation(const VideoPicture* picture);
   bool m_dvSuperseded{}; // Benign cancellation still uses the complete recovery owner.
