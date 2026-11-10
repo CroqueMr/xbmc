@@ -40,6 +40,8 @@
 #include "guilib/WindowIDs.h"
 #if defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
 #include "HwDecRender/RendererVAAPIGLES.h"
+#elif defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GL)
+#include "HwDecRender/RendererVAAPIGL.h"
 #endif
 #endif
 #ifdef HAVE_DVBRIDGE
@@ -232,6 +234,11 @@ bool CRenderManager::Configure()
   using DVHandoff = CRendererVAAPIGLES::DVHandoff;
   const auto retained = vaapi ? vaapi->RetainDVOutput(*m_pConfigPicture, m_fps, m_orientation)
                               : DVHandoff::None;
+#elif defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GL)
+  auto* vaapi = dynamic_cast<CRendererVAAPIGL*>(m_pRenderer);
+  using DVHandoff = CRendererVAAPIGL::DVHandoff;
+  const auto retained = vaapi ? vaapi->RetainDVOutput(*m_pConfigPicture, m_fps, m_orientation)
+                              : DVHandoff::None;
 #endif
   if (m_pRenderer)
   {
@@ -242,7 +249,7 @@ bool CRenderManager::Configure()
     DeleteRenderer();
   }
 
-#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && defined(HAS_GLES)
+#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && (defined(HAS_GLES) || defined(HAS_GL))
   // The old renderer can request an asynchronous restore in its destructor.
   // Leave this picture queued until the GUI presents the restored output.
   if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
@@ -262,10 +269,19 @@ bool CRenderManager::Configure()
                                                           retained);
   }
   else
+#elif defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GL)
+  if (retained == DVHandoff::Native || retained == DVHandoff::HDR10)
+  {
+    auto* successor = dynamic_cast<CRendererVAAPIGL*>(m_pRenderer);
+    result = successor && successor->ConfigureWithHandoff(*m_pConfigPicture, m_fps, m_orientation,
+                                                          retained);
+  }
+  else
 #endif
     result = m_pRenderer && m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
 
-#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && \
+    (defined(HAS_GLES) || defined(HAS_GL))
   if (retained == DVHandoff::HDR10 && !result)
   {
     auto* window = CServiceBroker::GetWinSystem();
@@ -1190,7 +1206,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   if (presented)
   {
     ServiceVideoCaptures();
-#if defined(HAVE_GBM) && defined(HAS_GLES)
+#if defined(HAVE_GBM)
     if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
             CServiceBroker::GetWinSystem()))
       window->StageVideoSource(m_pRenderer->HasRenderedFrame() ?
