@@ -2,6 +2,7 @@
 #pragma once
 #ifdef HAVE_DVBRIDGE
 #include "settings/lib/ISettingCallback.h"
+#include <string>
 #include "settings/lib/ISettingsHandler.h"
 enum class StreamHdrType;
 
@@ -13,6 +14,7 @@ public:
   static StreamHdrType SourceType();
   static bool ShowMenu(bool settingsMenu = false);
   static bool ConfigureProfile();
+  static std::string DefaultPlaybackLabel();
   void OnSettingAction(const std::shared_ptr<const CSetting>& setting) override;
   void OnSettingsLoaded() override;
   void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;

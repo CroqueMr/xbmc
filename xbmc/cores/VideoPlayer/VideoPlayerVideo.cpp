@@ -1016,13 +1016,21 @@ bool CVideoPlayerVideo::HandleDVPlaybackFailure(const VideoPicture* picture)
 {
   auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
       CServiceBroker::GetWinSystem());
-  if (!window || DVBRIDGE::FrameOutputSettings().output == DVBRIDGE::OutputMode::Disabled)
+  if (!window || !picture || !picture->stereoMode.empty()) return false;
+  const bool authoredDV=picture->doviSourceInfo.profile || picture->hdrType==StreamHdrType::HDR_TYPE_DOLBYVISION;
+  if (!authoredDV && picture->hdrType!=StreamHdrType::HDR_TYPE_HDR10 &&
+      picture->hdrType!=StreamHdrType::HDR_TYPE_HDR10PLUS && picture->hdrType!=StreamHdrType::HDR_TYPE_HLG)
     return false;
+  const auto preferences=DVBRIDGE::FrameOutputSettings(!authoredDV && picture->hdrType==StreamHdrType::HDR_TYPE_HDR10PLUS,
+      !authoredDV && picture->hdrType==StreamHdrType::HDR_TYPE_HLG);
+  if (authoredDV ? preferences.output==DVBRIDGE::OutputMode::Disabled :
+      preferences.hdr10Source==DVBRIDGE::HDR10SourceMode::Native) return false;
   const auto reason = window->ConsumeDVPlaybackFailure(picture->doviSourceBinding);
   if (reason == DVBRIDGE::OutputReason::None) return false;
   CLog::Log(LOGERROR, "Dolby Vision playback unavailable: stream={} source_revision={} profile={} reason={}",
       picture->doviSourceBinding.stream, picture->doviSourceBinding.revision,
       picture->doviSourceInfo.profile, static_cast<int>(reason));
+  DVBRIDGE::PlaybackNotification::RenderingUnavailable(reason);
   m_messageParent.Put(std::make_shared<CDVDMsgBool>(CDVDMsg::PLAYER_ABORT, true));
   return true;
 }

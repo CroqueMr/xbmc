@@ -91,7 +91,11 @@ bool CDVPlaybackModes::ConfigureProfile()
   const auto settings=component ? component->GetSettings() : nullptr;
   auto* dialog=CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogSelect>(WINDOW_DIALOG_SELECT);
   if (!settings || !dialog) return false;
-  const auto preferences=DVBRIDGE::FrameOutputSettings();
+  auto preferences=DVBRIDGE::FrameOutputSettings();
+  {
+    std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
+    DVBRIDGE::ReadDefaultOutputSelectors().Apply(preferences);
+  }
   const bool expert=preferences.output==DVBRIDGE::OutputMode::HDR10 && preferences.method==1;
   const auto& strings=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
   std::string peak=StringUtils::Format("{:g}",expert?preferences.expertPeak:preferences.peak);
@@ -131,6 +135,17 @@ bool CDVPlaybackModes::ConfigureProfile()
   return true;
 }
 
+std::string CDVPlaybackModes::DefaultPlaybackLabel()
+{
+  std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
+  const auto defaults=DVBRIDGE::ReadDefaultOutputSelectors();
+  for (const auto& choice : dvChoices)
+    if (int(defaults.output)==choice.output &&
+        (choice.output!=1 || defaults.method==choice.method))
+      return CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(choice.label);
+  return {};
+}
+
 bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
 {
   if (!settingsMenu && !MenuEnabled()) return false;
@@ -159,7 +174,12 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
   const auto choiceSetting=std::make_shared<CSettingInt>(settingsMenu ? "dvbridge.playback" : hlgSource ? "dvbridge.hlgplaybackchoice" : hdr10PlusSource ? "dvbridge.hdr10plusplaybackchoice" :
       hdr10Source ? "dvbridge.hdr10playbackchoice" : "dvbridge.playbackchoice");
   {
-    const auto preferences=DVBRIDGE::FrameOutputSettings(hdr10PlusSource);
+    auto preferences=DVBRIDGE::FrameOutputSettings(hdr10PlusSource);
+    if (settingsMenu)
+    {
+      std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
+      DVBRIDGE::ReadDefaultOutputSelectors().Apply(preferences);
+    }
     std::vector<IntegerSettingOption> options;
     int current=-1;
     for(int i=0;i<count;++i)
@@ -205,23 +225,36 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
     const auto& choice=choices[selected];
     {
       std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
-      const int priorOutput=settings->GetInt("dvbridge.outputmode");
-      const int priorHDR10=settings->GetInt(sourceSetting);
-      const int priorMethod=settings->GetInt("dvbridge.hdr10method");
-      if (!((hdr10Source || hlgSource) ? settings->SetInt(sourceSetting,choice.output) :
-          (settings->SetInt("dvbridge.outputmode",choice.output) &&
-           settings->SetInt("dvbridge.hdr10method",choice.method))))
+      if (settingsMenu)
       {
-        settings->SetInt("dvbridge.outputmode",priorOutput);
-        settings->SetInt(sourceSetting,priorHDR10);
-        settings->SetInt("dvbridge.hdr10method",priorMethod);
-        return true;
+        const int priorOutput=settings->GetInt("dvbridge.outputmode");
+        const int priorHDR10=settings->GetInt(sourceSetting);
+        const int priorMethod=settings->GetInt("dvbridge.hdr10method");
+        if (!((hdr10Source || hlgSource) ? settings->SetInt(sourceSetting,choice.output) :
+            (settings->SetInt("dvbridge.outputmode",choice.output) &&
+             settings->SetInt("dvbridge.hdr10method",choice.method))))
+        {
+          settings->SetInt("dvbridge.outputmode",priorOutput);
+          settings->SetInt(sourceSetting,priorHDR10);
+          settings->SetInt("dvbridge.hdr10method",priorMethod);
+          return true;
+        }
+      }
+      else
+      {
+        if (!DVBRIDGE::activeOutputSelectors)
+          DVBRIDGE::activeOutputSelectors=DVBRIDGE::ReadDefaultOutputSelectors();
+        auto& active=*DVBRIDGE::activeOutputSelectors;
+        if (hlgSource) active.hlgSource=static_cast<DVBRIDGE::HLGSourceMode>(choice.output);
+        else if (hdr10PlusSource) active.hdr10PlusSource=static_cast<DVBRIDGE::HDR10SourceMode>(choice.output);
+        else if (hdr10Source) active.hdr10Source=static_cast<DVBRIDGE::HDR10SourceMode>(choice.output);
+        else {active.output=static_cast<DVBRIDGE::OutputMode>(choice.output);active.method=choice.method;}
       }
 #ifdef CB1_HAS_HDR10_AI
-      if (hdr10Source && choice.output != 0) ++DVBRIDGE::hdr10Reselection;
+      if (!settingsMenu && hdr10Source && choice.output != 0) ++DVBRIDGE::hdr10Reselection;
 #endif
     }
-    settings->Save();
+    if (settingsMenu) settings->Save();
     return true;
   }
 }
@@ -249,16 +282,11 @@ void DVBRIDGE::PlaybackNotification::EmitAI(int mode)
   const int label=mode==1 ? 40867 : 40868;
   Emit(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(label));
 }
-void DVBRIDGE::PlaybackNotification::HDR10Recovery()
+void DVBRIDGE::PlaybackNotification::RenderingUnavailable(OutputReason reason)
 {
   const auto& localizer=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
+  const int reasonId=CDVPlaybackInfo::ReasonLabel(reason);
   CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info,
-      localizer.Get(40863),localizer.Get(40875),3000,false);
-}
-void DVBRIDGE::PlaybackNotification::EmitMasterRecovery()
-{
-  const auto& localizer=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
-  CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info,
-      localizer.Get(40863),localizer.Get(40915),3000,false);
+      localizer.Get(40863),localizer.Get(40875)+(reasonId ? " "+localizer.Get(reasonId) : ""),3000,false);
 }
 #endif

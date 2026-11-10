@@ -881,7 +881,7 @@ bool CWinSystemGbmGLESContext::CanReuseGuiComposite() const
        dirtyAlgorithm != DIRTYREGION_SOLVER_FILL_VIEWPORT_ON_CHANGE))
     return false;
   if (!(m_dvState.Captured() || m_hdrConversion) || !GetGfxContext().IsFullScreenVideo() ||
-      !DVBRIDGE::FrameOutputSettings().optimizedGUI || !m_guiCompositing || !m_guiCacheValid ||
+      !m_guiCompositing || !m_guiCacheValid ||
       !m_guiFbo.IsValid() || !m_guiFbo.IsBound() || !m_compositeShader ||
       m_guiFboWidth != m_nWidth || m_guiFboHeight != m_nHeight ||
       m_dvOverlays || m_dvSubtitleDraws || m_dvPQSubtitleDraws)
@@ -1417,10 +1417,8 @@ bool CWinSystemGbmGLESContext::CanRetainDVSource() const
   if (!caps.nativeDV && !caps.hdr10) return false;
   if (!caps.processingKnown) return true;
   const auto mode = preferences.Policy().mode;
-  return (caps.processing[mode].usable &&
-      (preferences.output == DVBRIDGE::OutputMode::HDR10 ? caps.hdr10 : caps.nativeDV)) ||
-      (preferences.output != DVBRIDGE::OutputMode::HDR10 && caps.hdr10 &&
-       caps.processing[DVBRIDGE_MODE_HDR10_BASIC].usable);
+  return caps.processing[mode].usable &&
+      (preferences.output == DVBRIDGE::OutputMode::HDR10 ? caps.hdr10 : caps.nativeDV);
 }
 
 bool CWinSystemGbmGLESContext::CompleteDVModeSwitch(const VideoPicture& picture)
@@ -1513,7 +1511,7 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
   }
   const auto& metadata = picture->doviMetadata;
   auto importGeometry=m_dvImportGeometry;
-  importGeometry.ignore_l5=preferences.encodedActiveArea;
+  importGeometry.ignore_l5=false;
   const bool paired = picture->doviEnhancement && picture->doviEnhancementBinding.Valid() &&
       picture->doviEnhancementBinding == metadata.Binding() &&
       picture->doviEnhancement->pts == picture->doviSourcePts;
@@ -1596,26 +1594,16 @@ DVBRIDGE::OutputSelection CWinSystemGbmGLESContext::SelectedDVOutput(const Video
     }
   }
   auto result = DVBRIDGE::SelectOutput(preferences, caps);
-  if(result.route==DVBRIDGE::OutputRoute::NativeDV &&
-      result.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE && preferences.allowMasterFallback &&
-      caps.processing[DVBRIDGE_MODE_STANDARD].usable)
-  {
-    std::lock_guard lock(m_dvCapabilityMutex);
-    if(m_masterSafety.Active(binding.stream,preferences.revision,binding.revision))
-    {
-      result.policy.mode=DVBRIDGE_MODE_STANDARD;
-      result.policy.master_ipt=false;
-    }
-  }
 #ifdef CB1_HAS_HDR10_AI
   if ((caps.isHDR10 || caps.isHLG) && result.route == DVBRIDGE::OutputRoute::NativeDV)
   {
     std::lock_guard lock(m_dvCapabilityMutex);
-    if (!m_aiReady || m_aiFallback || binding.stream != m_aiActivation.stream ||
-        binding.revision != m_aiActivation.revision || preferences.revision != m_aiPolicy)
-      result = {DVBRIDGE::OutputRoute::Vanilla, {},
-          preferences.HDR10Mode(caps.hdr10PlusSource) == DVBRIDGE::HDR10SourceMode::HDR10PlusDV ?
-              result.reason : DVBRIDGE::OutputReason::None};
+    const bool current=binding.stream==m_aiActivation.stream &&
+        binding.revision==m_aiActivation.revision && preferences.revision==m_aiPolicy;
+    if (!current || !m_aiReady || m_aiFallback)
+      result = {DVBRIDGE::OutputRoute::Vanilla, result.policy,
+          current && m_aiFallback ? DVBRIDGE::OutputReason::ActivationFailed :
+                                    DVBRIDGE::OutputReason::ProcessingPending};
   }
 #endif
   if (reason != DVBRIDGE::OutputReason::None) result.reason = reason;
@@ -1640,35 +1628,32 @@ bool CWinSystemGbmGLESContext::PrepareHDR10AIQueue(const VideoPicture& picture,
       !picture.doviSourceInfo.profile && picture.hdrType == StreamHdrType::HDR_TYPE_HLG);
   const auto caps = GetDVOutputCapabilities(&picture, preferences);
   const auto binding = picture.doviSourceBinding;
-  if ((!caps.isHDR10 && !caps.isHLG) ||
-      DVBRIDGE::SelectOutput(preferences, caps).route != DVBRIDGE::OutputRoute::NativeDV)
+  const auto requested=DVBRIDGE::SelectOutput(preferences,caps);
+  if ((!caps.isHDR10 && !caps.isHLG) || requested.route!=DVBRIDGE::OutputRoute::NativeDV)
   {
-    bool latched = false;
+    const bool failed=caps.sourceKnown && !caps.stereoSource && (caps.isHDR10 || caps.isHLG) &&
+        preferences.hdr10Source!=DVBRIDGE::HDR10SourceMode::Native &&
+        requested.reason!=DVBRIDGE::OutputReason::None &&
+        requested.reason!=DVBRIDGE::OutputReason::ProcessingPending;
     {
       std::lock_guard lock(m_dvCapabilityMutex);
-      latched = caps.isHDR10 &&
-          preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV &&
-          binding.stream == m_aiActivation.stream && binding.revision == m_aiActivation.revision &&
-          preferences.revision == m_aiPolicy && (m_aiActive || m_aiReady || m_aiFallback);
-      m_aiActive=false;
-      m_aiReady=false;
-      m_aiFallback=latched;
-      if (!latched)
+      m_aiActive=m_aiReady=false;
+      if (failed && !m_dvFatalConsumed) m_dvFatalReason=requested.reason;
+      if (!failed)
       {
         m_aiActivation={};
         m_aiPolicy=0;
+        m_aiFallback=false;
       }
     }
-    const bool ready = !m_dvContext || m_dvContext->StopHDR10AI();
+    const bool ready=!m_dvContext || m_dvContext->StopHDR10AI();
+    const bool pending=requested.reason==DVBRIDGE::OutputReason::ProcessingPending;
     if (ready)
     {
       std::lock_guard lock(m_dvCapabilityMutex);
-      // Retry before activation; an active source keeps its latched native fallback.
-      m_aiSelectionPolicy=!latched && caps.hdr10PlusSource && caps.nativeDV &&
-          preferences.hdr10Source==DVBRIDGE::HDR10SourceMode::HDR10PlusDV ?
-          0 : preferences.revision;
+      m_aiSelectionPolicy=pending ? 0 : preferences.revision;
     }
-    return ready;
+    return ready && !failed && !pending;
   }
   // The ordinary commit retires the prior renderer before AI can prime it again.
   if (m_dvOrdinaryFrame || m_dvEndPending || m_dvStopPending) return false;
@@ -1683,7 +1668,7 @@ bool CWinSystemGbmGLESContext::PrepareHDR10AIQueue(const VideoPicture& picture,
       m_aiReady = m_aiFallback = false;
     }
     m_aiActive=!m_aiFallback;
-    if (m_aiFallback) return true;
+    if (m_aiFallback) return false;
   }
   if (!m_dvContext) m_dvContext = std::make_shared<CDVBridgeGLES::Context>();
   auto decision = HDR10AISource::Decision::Native;
@@ -1730,16 +1715,16 @@ bool CWinSystemGbmGLESContext::PrepareHDR10AIQueue(const VideoPicture& picture,
     const auto& source = m_dvContext->HDR10AI();
     const auto metrics = source.Metrics();
     DVBRIDGE::DiagnosticLog(LOGWARNING,
-        "CB1 HDR10 AI: native HDR10 fallback stream={} revision={} policy={} stage={} status={} queue={} coverage_s={} pictures={} gpu_submissions={} readback_bytes={} inferences={} prepared={} committed={} end={} paused={} head={} last_submitted={}",
+        "CB1 HDR10 AI: requested rendering failed stream={} revision={} policy={} stage={} status={} queue={} coverage_s={} pictures={} gpu_submissions={} readback_bytes={} inferences={} prepared={} committed={} end={} paused={} head={} last_submitted={}",
         binding.stream, binding.revision, preferences.revision,
         source.DiagnosticStage(),int(source.DiagnosticStatus()),queue.size(),
         queue.back().pts-queue.front().pts,metrics.pictures,metrics.gpu_submissions,
         metrics.readback_bytes,metrics.inferences,source.AwaitingPresentation(),bool(source.Committed()),
         end,paused,binding.picture,source.LastSubmitted());
-    DVBRIDGE::PlaybackNotification::HDR10Recovery();
+    std::lock_guard lock(m_dvCapabilityMutex);
+    if (!m_dvFatalConsumed) m_dvFatalReason=DVBRIDGE::OutputReason::ActivationFailed;
   }
-  return decision == HDR10AISource::Decision::Prepare ||
-      decision == HDR10AISource::Decision::Native;
+  return decision == HDR10AISource::Decision::Prepare;
 }
 #endif
 
@@ -2288,8 +2273,7 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
         picture.doviSourceBinding : picture.doviMetadata.Binding();
     std::lock_guard lock(m_dvCapabilityMutex);
     m_masterSafety.Begin(masterBinding.stream,preferences.revision,masterBinding.revision,picture.pts,
-        capabilities.isDV && preferences.output==DVBRIDGE::OutputMode::MasterReference &&
-        preferences.allowMasterFallback);
+        capabilities.isDV && preferences.output==DVBRIDGE::OutputMode::MasterReference);
   }
   const auto selection = SelectedDVOutput(&picture, preferences, selectionCapabilities);
   const auto binding = picture.doviSourceBinding.Valid() ?
@@ -2324,32 +2308,18 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
   }
   if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
     m_dvAttemptFailures = drm->DVActivationFailures();
-  // Every selected automatic HDR10 fallback owns a single attempt for this file.
-  if (capabilities.processingKnown && capabilities.isDV &&
-      (m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10 || !capabilities.nativeDV) &&
-      preferences.output != DVBRIDGE::OutputMode::HDR10 &&
-      preferences.output != DVBRIDGE::OutputMode::SDR &&
-      preferences.output != DVBRIDGE::OutputMode::Disabled)
-  {
-    std::lock_guard lock(m_dvCapabilityMutex);
-    m_dvNativeFailed = m_dvFallbackActive = true;
-    if (m_dvActivationReason == DVBRIDGE::OutputReason::None)
-      m_dvActivationReason = m_dvSelection.reason;
-  }
   const auto& source = picture.doviSourceInfo;
-  const bool ordinaryBL = !source.profile || source.profile == 7 ||
-      source.compatibility == 1 || source.compatibility == 2 || source.compatibility == 4;
-  const bool strictMaster=preferences.output==DVBRIDGE::OutputMode::MasterReference &&
-      !preferences.allowMasterFallback;
-  if (capabilities.isDV && m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla &&
-      capabilities.processingKnown && (!ordinaryBL || strictMaster) &&
-      preferences.output != DVBRIDGE::OutputMode::Disabled &&
+  const bool requestedCircuit=capabilities.isDV ? preferences.output!=DVBRIDGE::OutputMode::Disabled :
+      (capabilities.isHDR10 || capabilities.isHLG) &&
+      preferences.hdr10Source!=DVBRIDGE::HDR10SourceMode::Native;
+  if (capabilities.sourceKnown && !capabilities.stereoSource && requestedCircuit &&
+      m_dvSelection.route==DVBRIDGE::OutputRoute::Vanilla &&
+      m_dvSelection.reason!=DVBRIDGE::OutputReason::None &&
+      m_dvSelection.reason!=DVBRIDGE::OutputReason::ProcessingPending &&
       !(source.el && !picture.doviEnhancement))
   {
     std::lock_guard lock(m_dvCapabilityMutex);
-    if (!m_dvFatalConsumed)
-      m_dvFatalReason = m_dvSelection.reason == DVBRIDGE::OutputReason::None ?
-          DVBRIDGE::OutputReason::SourceIneligible : m_dvSelection.reason;
+    if (!m_dvFatalConsumed) m_dvFatalReason=m_dvSelection.reason;
     return false;
   }
   if (!PollRejectedDVSurface()) return deferred("output-await-rejected-scanout");
@@ -2595,7 +2565,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   const auto preferences = DVBRIDGE::FrameOutputSettings(
       !layer.sourceInfo.profile && layer.hdr10PlusSource,
       !layer.sourceInfo.profile && layer.hlg);
-  m_masterFramePeriodNs=m_continuousFrameEligible && preferences.allowMasterFallback &&
+  m_masterFramePeriodNs=m_continuousFrameEligible &&
       m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE ?
       DVBRIDGE::MasterFramePeriodNs(CServiceBroker::GetDataCacheCore().GetVideoFps()) : 0;
   if(auto drm=std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
@@ -2610,14 +2580,13 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
     if(switched)
     {
       CLog::Log(LOGWARNING,
-          "CB1 Master safety: sustained headroom below 2.5ms; next accepted mode is Reference");
-      DVBRIDGE::PlaybackNotification::ArmMasterRecovery();
+          "CB1 Master safety: sustained headroom below 2.5ms; requested Master circuit retained");
     }
     drm->SetCB1TimingPeriod(m_masterFramePeriodNs);
   }
   m_preparedSourceStream = layer.binding.stream;
   m_preparedSourcePts = layer.pts;
-  geometry.ignore_l5=metadata.Data() && preferences.encodedActiveArea;
+  geometry.ignore_l5=false;
   const bool mergedPQGUI = ComposeDVPQGUI();
   const bool subtitlesOnly = !capturing && guiAvailable && m_guiFbo.IsValid() &&
       m_guiFboWidth == m_nWidth && m_guiFboHeight == m_nHeight && m_compositeShader &&
@@ -2642,7 +2611,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
       nativeOverlay ? m_compositeShader->GetTransferTexture() : 0,
       fullGUI && !enhancedSubtitles ? CRect(0,0,m_nWidth,m_nHeight) : m_dvSubtitleBounds,
       fullGUI && !enhancedSubtitles ? m_dvGUIContentGeneration : m_dvSubtitleContent,
-      pqSubtitles, preferences.optimizedGUI);
+      pqSubtitles, true);
   if (std::getenv("CB1_PRESENTATION_AUDIT"))
   {
     static unsigned prior = ~0u;
@@ -2674,7 +2643,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
 #endif
     return m_dvBridge->PrepareHardwareFrame(layer, enhancement, enhancementBinding,
         metadata, geometry, preferences,
-        overlayFree || nativeSubtitles || (preferences.optimizedGUI && m_hdrConversion && !capturing), &policy, allowAsync);
+        overlayFree || nativeSubtitles || (m_hdrConversion && !capturing), &policy, allowAsync);
   };
   const double refresh = m_DRM->GetCurrentMode().fRefreshRate;
   const auto interval = std::chrono::duration<double>(refresh >= 10 ? 1.0 / refresh : 0.02);

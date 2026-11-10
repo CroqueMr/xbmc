@@ -64,6 +64,7 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
   if (!caps.sourceKnown || !caps.isDV || preferences.output == OutputMode::Disabled)
     return result;
   auto policy = preferences.Policy();
+  result.policy=policy;
   if (policy.mode == DVBRIDGE_MODE_SDR)
   {
     if (!preferences.ProfileValid(policy.mode)) return {OutputRoute::Vanilla,{},OutputReason::SDRTargetInvalid};
@@ -82,12 +83,7 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return result;
   }
   if (policy.mode == DVBRIDGE_MODE_HDR10PLUS && !caps.hdr10plus)
-  {
-    if (!caps.hdr10 || !caps.processing[DVBRIDGE_MODE_HDR10_BASIC].usable)
-      return {OutputRoute::Vanilla, {}, OutputReason::NoHDR10PlusTransport};
-    policy.mode = DVBRIDGE_MODE_HDR10_BASIC;
-    return {OutputRoute::HDR10, policy, OutputReason::NoHDR10PlusTransport};
-  }
+    return {OutputRoute::Vanilla, policy, OutputReason::NoHDR10PlusTransport};
   const auto admission = [&](dvbridge_mode mode) {
     if ((mode == DVBRIDGE_MODE_HDR10_EXPERT || mode == DVBRIDGE_MODE_ENHANCED_DV) &&
         !preferences.ProfileValid(mode))
@@ -103,25 +99,7 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return {requestedDV ? OutputRoute::NativeDV : OutputRoute::HDR10, policy, OutputReason::None};
   result.reason = !(requestedDV ? caps.nativeDV : caps.hdr10) ?
       (requestedDV ? OutputReason::NoDVTransport : OutputReason::NoHDR10Transport) : candidate.reason;
-  if (!requestedDV) return result;
-  if(policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE && !preferences.allowMasterFallback)
-    return {OutputRoute::Vanilla,policy,result.reason};
-  if (!caps.hdr10)
-  {
-    result.reason = OutputReason::NoHDR10Transport;
-    return result;
-  }
-  candidate = admission(DVBRIDGE_MODE_HDR10_BASIC);
-  if (!candidate.usable)
-  {
-    result.reason = candidate.reason;
-    return result;
-  }
-  policy.mode = DVBRIDGE_MODE_HDR10_BASIC;
-  policy.master_ipt = false;
-  policy.adaptive = DVBRIDGE_ADAPTIVE_A;
-  policy.tv = {};
-  return {OutputRoute::HDR10, policy, result.reason};
+  return {OutputRoute::Vanilla, policy, result.reason};
 }
 } // namespace DVBRIDGE
 #endif

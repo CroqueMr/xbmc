@@ -25902,7 +25902,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40811"
-msgid "Dolby Vision playback"
+msgid "Dolby Vision default playback"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25922,7 +25922,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40815"
-msgid "Choose playback for Dolby Vision sources: Reference, Master Reference, Adaptive HDR Mapping, HDR10 Rendering, HDR10 Rendering Reference, HDR10+ Rendering or Kodi default. Kodi default bypasses CB1 processing. Changes apply at a video frame boundary."
+msgid "Choose the default playback circuit for Dolby Vision sources, including HLG-based Dolby Vision. New files use this default. Playback-menu choices apply only to the current file. Kodi default uses native Kodi playback."
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25946,7 +25946,7 @@ msgid "Dolby Vision Adaptive HDR Mapping"
 msgstr ""
 
 msgctxt "#40820"
-msgid "HDR10 conversion method"
+msgid " - HDR10 conversion method"
 msgstr ""
 
 msgctxt "#40821"
@@ -25962,7 +25962,7 @@ msgid "No HDR10+ output"
 msgstr ""
 
 msgctxt "#40925"
-msgid "Disable L2 trims"
+msgid " - Disable L2 trims"
 msgstr ""
 
 msgctxt "#40926"
@@ -25978,7 +25978,7 @@ msgid "HDR10 Rendering Reference"
 msgstr ""
 
 msgctxt "#40829"
-msgid "TV peak luminance (nits)"
+msgid " - TV peak luminance (nits)"
 msgstr ""
 
 msgctxt "#40830"
@@ -25986,7 +25986,7 @@ msgid "Enter a known TV peak, 1 to 10000 nits. This is a processing reference, n
 msgstr ""
 
 msgctxt "#40831"
-msgid "TV panel type"
+msgid " - TV panel type"
 msgstr ""
 
 msgctxt "#40832"
@@ -26006,7 +26006,7 @@ msgid "LCD"
 msgstr ""
 
 msgctxt "#40836"
-msgid "TV color gamut"
+msgid " - TV color gamut"
 msgstr ""
 
 msgctxt "#40837"
@@ -26075,7 +26075,7 @@ msgid "{}-bit minimum"
 msgstr ""
 
 msgctxt "#40853"
-msgid "Configure TV profile"
+msgid " - Configure TV profile"
 msgstr ""
 
 msgctxt "#40854"
@@ -26107,7 +26107,7 @@ msgid "Disable TV dynamic tone mapping"
 msgstr ""
 
 msgctxt "#40865"
-msgid "HDR10 playback"
+msgid "HDR10 default playback"
 msgstr ""
 
 msgctxt "#40866"
@@ -26115,7 +26115,7 @@ msgid "Kodi default"
 msgstr ""
 
 msgctxt "#40867"
-msgid "Dolby Vision Rendering"
+msgid "Dolby Vision rendering (AI)"
 msgstr ""
 
 msgctxt "#40868"
@@ -26123,11 +26123,11 @@ msgid "Dolby Vision Adaptive HDR Mapping (AI)"
 msgstr ""
 
 msgctxt "#40870"
-msgid "Remember playback for HDR10 sources: Dolby Vision Rendering with AI, Adaptive HDR Mapping with AI or Kodi default. Kodi default bypasses CB1 processing. Adaptive requires a TV profile. Automatic fallback does not change this choice."
+msgid "Choose the default playback circuit for HDR10 sources. New files use this default. Playback-menu choices apply only to the current file. Adaptive requires a TV profile. Kodi default uses native Kodi playback."
 msgstr ""
 
 msgctxt "#40875"
-msgid "Rendering unavailable. Using native Kodi playback."
+msgid "Requested rendering is unavailable. Playback stopped."
 msgstr ""
 
 msgctxt "#40876"
@@ -26175,7 +26175,7 @@ msgid "Insufficient rendering headroom. Switching to Dolby Vision Reference."
 msgstr ""
 
 msgctxt "#40916"
-msgid "Master Reference output"
+msgid " - Master Reference output"
 msgstr ""
 
 msgctxt "#40917"
@@ -26203,11 +26203,11 @@ msgid "Source pixels unchanged. HDR10+ curve and saturation are not translated. 
 msgstr ""
 
 msgctxt "#41012"
-msgid "HDR10+ playback"
+msgid "HDR10+ default playback"
 msgstr ""
 
 msgctxt "#41013"
-msgid "Remember playback for HDR10+ sources: Dolby Vision Rendering or Kodi default. Kodi default bypasses CB1 processing. Automatic fallback does not change this choice."
+msgid "Choose the default playback circuit for HDR10+ sources. New files use this default. Playback-menu choices apply only to the current file. Kodi default uses native Kodi playback."
 msgstr ""
 
 msgctxt "#41014"
@@ -26311,7 +26311,7 @@ msgid "Adjust only bitmap subtitles in their authoring domain before composition
 msgstr ""
 
 msgctxt "#40980"
-msgid "Add CM4.0 metadata"
+msgid " - Add CM4.0 metadata"
 msgstr ""
 
 msgctxt "#40981"
@@ -26335,7 +26335,7 @@ msgid "Auto 2"
 msgstr ""
 
 msgctxt "#40986"
-msgid "CM4.0 Auto trigger"
+msgid " - CM4.0 Auto trigger"
 msgstr ""
 
 msgctxt "#40987"
@@ -26363,7 +26363,7 @@ msgid "10000 nits"
 msgstr ""
 
 msgctxt "#40993"
-msgid "CM4.0 Auto 2 headroom (%)"
+msgid " - CM4.0 Auto 2 headroom (%)"
 msgstr ""
 
 msgctxt "#40994"
@@ -26371,7 +26371,7 @@ msgid "Append while L1 peak fits the TV peak plus this margin. Requires TV peak 
 msgstr ""
 
 msgctxt "#41030"
-msgid "HDR10 Rendering Reference peak brightness (nits)"
+msgid " - HDR10 rendering peak brightness"
 msgstr ""
 
 msgctxt "#41031"
@@ -26379,7 +26379,7 @@ msgid "Enter the measured peak manually: 50 to 10000 nits, in 0.1-nit steps. Zer
 msgstr ""
 
 msgctxt "#41032"
-msgid "HDR10 Rendering Reference display black level"
+msgid " - HDR10 rendering display black level"
 msgstr ""
 
 msgctxt "#41033"
@@ -26403,7 +26403,7 @@ msgid "Custom"
 msgstr ""
 
 msgctxt "#41038"
-msgid "HDR10 Rendering Reference custom black level (nits)"
+msgid " - HDR10 rendering custom black level (nits)"
 msgstr ""
 
 msgctxt "#41039"
@@ -26411,7 +26411,7 @@ msgid "0 to 0.5 nit, in 0.0001-nit steps. This value is remembered independently
 msgstr ""
 
 msgctxt "#41040"
-msgid "HDR10 Rendering Reference target color gamut"
+msgid " - HDR10 rendering target color gamut"
 msgstr ""
 
 msgctxt "#41041"
@@ -26439,19 +26439,19 @@ msgid "SDR Rendering"
 msgstr ""
 
 msgctxt "#41131"
-msgid "HLG rendering"
+msgid "HLG default playback"
 msgstr ""
 
 msgctxt "#41132"
-msgid "Choose Dolby Vision Reference rendering or Kodi default for original HLG video."
+msgid "Choose the default playback circuit for original HLG video. New files use this default. Playback-menu choices apply only to the current file. Kodi default uses native Kodi playback."
 msgstr ""
 
 msgctxt "#41133"
-msgid "SDR rendering target"
+msgid "HDR/DV to SDR target"
 msgstr ""
 
 msgctxt "#41134"
-msgid "Independent BT.709 rendering target, not measured screen brightness. Custom values set peak luminance, gamma and black floor."
+msgid "BT.709 target for HDR10, HDR10+ and Dolby Vision to SDR conversion only. Native SDR playback is unchanged. Custom values set peak luminance, gamma and black floor."
 msgstr ""
 
 msgctxt "#41135"
@@ -26467,11 +26467,11 @@ msgid "Custom / Projector"
 msgstr ""
 
 msgctxt "#41138"
-msgid "SDR target peak (nits)"
+msgid " - SDR target peak (nits)"
 msgstr ""
 
 msgctxt "#41139"
-msgid "SDR target gamma"
+msgid " - SDR target gamma"
 msgstr ""
 
 msgctxt "#41142"
@@ -26483,5 +26483,5 @@ msgid "Check SDR target settings"
 msgstr ""
 
 msgctxt "#41140"
-msgid "SDR target black (nits)"
+msgid " - SDR target black (nits)"
 msgstr ""
