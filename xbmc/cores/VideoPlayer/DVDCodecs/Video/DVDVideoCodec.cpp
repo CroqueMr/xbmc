@@ -99,10 +99,12 @@ bool VideoPicture::CompareDisplayMetadata(const VideoPicture& pic) const
     return true;
 
   // both this and pic has display metadata
-  return this->displayMetadata.max_luminance.num == pic.displayMetadata.max_luminance.num &&
-         this->displayMetadata.max_luminance.den == pic.displayMetadata.max_luminance.den &&
-         this->displayMetadata.min_luminance.num == pic.displayMetadata.min_luminance.num &&
-         this->displayMetadata.min_luminance.den == pic.displayMetadata.min_luminance.den;
+  if (displayMetadata.has_luminance != pic.displayMetadata.has_luminance)
+    return false;
+
+  return !displayMetadata.has_luminance ||
+         (av_cmp_q(displayMetadata.max_luminance, pic.displayMetadata.max_luminance) == 0 &&
+          av_cmp_q(displayMetadata.min_luminance, pic.displayMetadata.min_luminance) == 0);
 }
 
 bool VideoPicture::IsSameParams(const VideoPicture& pic) const
