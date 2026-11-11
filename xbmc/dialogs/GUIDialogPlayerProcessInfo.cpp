@@ -274,6 +274,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     const auto data = CServiceBroker::GetDataCacheCore().GetVideoProcessingInfo();
     SetProperty("DV.SourcePixelFormat", DVBRIDGE::SourcePixelFormat(static_cast<AVPixelFormat>(data.sourceFormat)));
     SetProperty("DV.SourceBits", data.sourceBits ? StringUtils::Format("{}-bit", data.sourceBits) : "N/A");
+    SetProperty("DV.DecodedHLG", !data.profile && data.tags.transfer == AVCOL_TRC_ARIB_STD_B67);
     // Profiles 5 and 10.0 carry IPT-PQc2, which their colour tags leave unspecified and Kodi
     // would otherwise present as an assumed BT.709.
     SetProperty("DV.SourceColour", data.profile == 5 || (data.profile == 10 && !data.compatibility) ?
@@ -564,7 +565,7 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
       const float height = 108.0f + content + 16.0f;
       panel->SetHeight(height);
       panel->SetPosition(panel->GetXPosition(), GetCoordsRes().iHeight - 24.0f - height);
-      surface->SetHeight(height);
+      surface->SetHeight(height + 40.0f);
     }
   }
 #endif
