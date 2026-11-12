@@ -316,10 +316,16 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   // the surface only if that pick changed the native visual ID.
   uint32_t currentFormat = m_eglContext.GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
 
+  bool separateScanout = false;
   if (!ChooseEGLConfig(m_renderableType, bitDepth))
   {
-    CLog::LogF(LOGERROR, "failed to choose EGL config for {}-bit", bitDepth);
-    return reject();
+    separateScanout = m_dvOutputSurface && bitDepth >= 10 &&
+        ChooseEGLConfig(m_renderableType, 8) && PrepareHDR10Scanout();
+    if (!separateScanout)
+    {
+      CLog::LogF(LOGERROR, "failed to choose EGL config for {}-bit", bitDepth);
+      return reject();
+    }
   }
 
   uint32_t format = m_eglContext.GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
@@ -397,7 +403,8 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
       return reject();
   }
   // No new drawable exists when only a same-format policy value changes.
-  if (m_dvOutputSurface && format == currentFormat)
+  if (m_dvOutputSurface && format == currentFormat && !separateScanout &&
+      !RetainHDR10ScanoutOnTransition())
     return CompleteDVOutputSurface(true);
   return true;
 }

@@ -213,11 +213,12 @@ public:
   CDVBridgeGLES& operator=(const CDVBridgeGLES&) = delete;
 
   bool Initialize(bool allowSoftware = false, bool hdr10 = false,
-                  std::shared_ptr<Context> context = {}, bool sdr = false);
+                  std::shared_ptr<Context> context = {}, bool sdr = false,
+                  unsigned int framebuffer = 0);
   bool PlayerLed() const { return m_playerLed; }
   bool SetHDR10Session(const dvbridge_hdr10_session& session, uint64_t stream = 0,
                       bool limited = false);
-  bool RebindOutputSurface(bool hdr10, bool sdr = false);
+  bool RebindOutputSurface(bool hdr10, bool sdr = false, unsigned int framebuffer = 0);
   void Reset();
   bool Prepare(const Layer& base, const Layer* enhancement,
                const CDVMetadataBuffer& metadata, dvbridge_geometry geometry, bool allowPacked = false);
