@@ -36,8 +36,6 @@ constexpr const char* SETTING_VIDEOSCREEN_MAXBPC = "videoscreen.maxbpc";
 //
 // amdgpu drm driver needs at least 1 primary plane to active when doing a modeset
 inline constexpr int QUIRK_NEEDSPRIMARY = 1 << 0;
-// CB1 native one-ahead admission uses the physical display edge on amdgpu.
-inline constexpr int QUIRK_CB1_NATIVE_EDGE = 1 << 1;
 
 struct drm_fb
 {

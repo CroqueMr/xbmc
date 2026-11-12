@@ -130,19 +130,16 @@ public:
   bool ConfigureHDR10Conversion(const VideoPicture& picture);
   bool SupportsHDR10Conversion(bool requireCurrentMode = true);
   void SetDVBridgeOverlays(bool visible) { m_dvOverlays = visible; }
+  // Kodi presentation timestamp of the picture the next CB1 render prepares.
+  void SetCB1RenderPts(double pts) { m_cb1RenderPts = pts; }
   bool CB1FramePending() const { return m_cb1FramePending; }
   bool CB1AsyncPlayback() const
   {
     return CB1AsyncAvailable() && m_dvBridge->AsyncPreparationActive();
   }
-  bool CB1NativeAsyncPlayback() const
-  {
-    return m_DRM && m_DRM->HasQuirk(QUIRK_CB1_NATIVE_EDGE) && CB1AsyncPlayback() &&
-        !m_hdrConversion && !m_dvBridge->Advanced() &&
-        (m_dvSelection.policy.mode == DVBRIDGE_MODE_STANDARD ||
-         m_dvSelection.policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
-  }
   std::optional<double> CB1PresentationAge() const;
+  // Kodi presentation timestamp and KMS completion time of the latest presented CB1 picture.
+  std::optional<std::pair<double, uint64_t>> CB1PresentedPicture() const;
   void RecordDVSubtitle(const CRect& rect, unsigned texture);
   bool BeginDVPQSubtitle();
   void EndDVPQSubtitle();
@@ -236,6 +233,7 @@ private:
   double m_previousSourcePts{};
   uint64_t m_preparedSourceStream{};
   double m_preparedSourcePts{};
+  double m_cb1RenderPts{}, m_preparedRenderPts{};
   bool m_dvShutdownFence{};
   bool m_dvRejectedSurface{}, m_dvRollbackFailed{};
   bool PollRejectedDVSurface();

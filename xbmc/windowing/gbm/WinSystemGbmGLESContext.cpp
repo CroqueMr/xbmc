@@ -126,6 +126,14 @@ std::optional<double> CWinSystemGbmGLESContext::CB1PresentationAge() const
   if (age < -period || age > 1.25 * sourcePeriod) return std::nullopt;
   return age;
 }
+
+std::optional<std::pair<double, uint64_t>> CWinSystemGbmGLESContext::CB1PresentedPicture() const
+{
+  if (!CB1AsyncPlayback()) return std::nullopt;
+  const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  if (!drm || !drm->CB1PresentationTime()) return std::nullopt;
+  return std::make_pair(drm->CB1PresentationPts(), drm->CB1PresentationTime());
+}
 #endif
 
 CWinSystemGbmGLESContext::CWinSystemGbmGLESContext()
@@ -527,6 +535,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         if (drm) drm->StageHDR10Plus(submitted.hdr10plus, submitted.informationGeneration);
         AnnounceCB1Mode(true);
         const bool nvidiaRestore = m_dvState.CapturedBackend() == CDVBridgeState::Backend::NVIDIA;
+        if (drm) drm->SetCB1PresentationPts(m_preparedRenderPts);
         presented = drm && (nvidiaRestore ? (valid && FlipDVBridgePage(m_dvState,true,false,true,bo)) :
                             drm->FlipPageTransactional(valid ? bo : nullptr, false, asynchronous));
         CompleteCB1Mode(presented,true);
@@ -582,6 +591,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
           const bool plain = !asynchronous && !m_dvActivating && !drm->HasPendingRequest();
           AnnounceCB1Mode(true);
           const auto started = std::chrono::steady_clock::now();
+          drm->SetCB1PresentationPts(m_preparedRenderPts);
           presented = FlipDVBridgePage(m_dvState, false, asynchronous);
           CompleteCB1Mode(presented,true);
           if (presented)
@@ -940,7 +950,7 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
     }
     CRenderSystemGLES::SetViewPort(viewport);
     const auto& context = GetGfxContext();
-    // libplacebo raster passes can leave the GUI's scissor test disabled.
+    // libplacebo can leave scissor testing disabled after a raster pass.
     glEnable(GL_SCISSOR_TEST);
     CRenderSystemGLES::SetScissors(context.StereoCorrection(context.GetScissors()));
     if (report)
@@ -2611,6 +2621,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   }
   m_preparedSourceStream = layer.binding.stream;
   m_preparedSourcePts = layer.pts;
+  m_preparedRenderPts = m_cb1RenderPts;
   geometry.ignore_l5=false;
   const bool mergedPQGUI = ComposeDVPQGUI();
   const bool subtitlesOnly = !capturing && guiAvailable && m_guiFbo.IsValid() &&

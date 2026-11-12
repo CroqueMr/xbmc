@@ -53,6 +53,10 @@ void CRenderManager::CClockSync::Reset()
   m_syncOffset = 0;
   m_enabled = false;
   m_cb1Phase = false;
+#ifdef HAVE_DVBRIDGE
+  m_cb1Latency.Reset();
+  m_cb1LatencyActive = false;
+#endif
 }
 
 CRenderManager::CRenderManager(CDVDClock &clock, IRenderMsg *player) :
@@ -370,9 +374,9 @@ bool CRenderManager::PrepareHDR10AILookahead(std::unique_lock<CCriticalSection>&
     {
       const double end = successor != queue.end() ? m_Queue[*successor].pts :
           head.pts + std::max(0.0,head.duration);
-      // Match source selection; native playback retains its synchronization lead.
-      const double tolerance = cb1Async ? 1.0 : (m_lateframes <= 6 ? 0.98 : 0.0);
-      const double lead = !cb1Async && m_clockSync.m_enabled ? refresh / 2 - m_clockSync.m_syncOffset : 0;
+      // Match source selection, including its synchronization lead.
+      const double tolerance = m_lateframes <= 6 ? 0.98 : 0.0;
+      const double lead = m_clockSync.m_enabled ? refresh / 2 - m_clockSync.m_syncOffset : 0;
       cutoff = end + tolerance * refresh - lead;
     }
     const double remaining = std::max(0.0,
@@ -986,7 +990,10 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   {
 #ifdef HAVE_DVBRIDGE
     if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
+    {
       window->SetDVBridgeOverlays(m_renderDebug || m_overlays.HasVisibleOverlay(m_presentsource));
+      window->SetCB1RenderPts(m_Queue[m_presentsource].pts);
+    }
 #endif
     SPresent& m = m_Queue[m_presentsource];
 
@@ -1175,9 +1182,16 @@ void CRenderManager::PresentBlend(bool clear, DWORD flags, DWORD alpha)
 
 void CRenderManager::UpdateDisplayLatency()
 {
+  double displayLatency =
+      static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetDisplayLatency());
+#ifdef HAVE_DVBRIDGE
+  // Asynchronous CB1 scanout uses its measured selection-to-display delay.
+  if (m_clockSync.m_cb1LatencyActive)
+    if (const auto measured = m_clockSync.m_cb1Latency.EstimateUs())
+      displayLatency = *measured / 1000.0;
+#endif
   m_displayLatency = DVD_MSEC_TO_TIME(
-      m_latencyTweak +
-      static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetDisplayLatency()) -
+      m_latencyTweak + displayLatency -
       m_videoDelay -
       static_cast<double>(CServiceBroker::GetWinSystem()->GetFrameLatencyAdjustment()));
 }
@@ -1502,8 +1516,6 @@ void CRenderManager::PrepareNextRender()
       1.0 / static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) *
       DVD_TIME_BASE;
 
-  UpdateDisplayLatency();
-
   // While the clock is paused, frameOnScreen does not advance, so adding the display
   // latency would pick a frame ahead of the one actually shown. That only holds for
   // renderers that draw the video into our framebuffer and re-pick every refresh.
@@ -1512,6 +1524,24 @@ void CRenderManager::PrepareNextRender()
   // internal pause (caching, display reset) keep that lead and video stays ahead of audio.
   const bool isPaused =
       m_dvdClock.IsPaused() && !(m_pRenderer && m_pRenderer->VideoBypassesFramebuffer());
+
+  bool cb1Async = false;
+  std::optional<double> completionAge;
+#ifdef HAVE_DVBRIDGE
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
+  {
+    cb1Async = window->CB1AsyncPlayback();
+    if (cb1Async && !isPaused && m_dvdClock.GetClockSpeed() == 1.0)
+      completionAge = window->CB1PresentationAge();
+    if (cb1Async)
+      if (const auto presented = window->CB1PresentedPicture())
+        m_clockSync.m_cb1Latency.Completed(presented->first, presented->second);
+  }
+  m_clockSync.m_cb1LatencyActive = cb1Async;
+#endif
+
+  UpdateDisplayLatency();
+
   double renderPts = frameOnScreen;
   if (!isPaused)
     renderPts += m_displayLatency;
@@ -1519,26 +1549,8 @@ void CRenderManager::PrepareNextRender()
   const double nextFramePts =
       m_dvdClock.GetClockSpeed() < 0 ? renderPts : m_Queue[m_queued.front()].pts;
 
-  bool cb1Async = false;
-  bool nativeAsync = false;
-  std::optional<double> completionAge;
-#ifdef HAVE_DVBRIDGE
-  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
-  {
-    cb1Async = window->CB1AsyncPlayback();
-    nativeAsync = window->CB1NativeAsyncPlayback();
-    if (cb1Async && !isPaused && m_dvdClock.GetClockSpeed() == 1.0)
-      completionAge = window->CB1PresentationAge();
-  }
-#endif
-
   const bool physicalPhase = cb1Async && m_clockSync.m_enabled && !isPaused &&
       m_dvdClock.GetClockSpeed() == 1.0;
-  const bool prepareAhead = cb1Async && !isPaused && m_dvdClock.GetClockSpeed() == 1.0 &&
-      m_Queue[m_presentsource].presentmethod == PRESENT_METHOD_SINGLE &&
-      m_Queue[m_presentsource].presentfield == FS_NONE &&
-      m_Queue[m_queued.front()].presentmethod == PRESENT_METHOD_SINGLE &&
-      m_Queue[m_queued.front()].presentfield == FS_NONE;
   if (m_clockSync.m_cb1Phase != physicalPhase)
   {
     m_clockSync.m_error = 0;
@@ -1550,8 +1562,8 @@ void CRenderManager::PrepareNextRender()
 
   if (m_clockSync.m_enabled)
   {
-    // Calibrate once per physical segment; missing anchors never contribute CPU phase.
-    if (!physicalPhase || (completionAge && m_clockSync.m_errCount <= 30))
+    // Keep calibrating, as Kodi does; missing anchors never contribute CPU phase.
+    if (!physicalPhase || completionAge)
     {
       double err = fmod(renderPts - nextFramePts - completionAge.value_or(0.0), frametime);
       if (physicalPhase)
@@ -1568,35 +1580,18 @@ void CRenderManager::PrepareNextRender()
         const double average = physicalPhase ? std::remainder(mean, frametime) : mean;
         m_clockSync.m_syncOffset = average;
         m_clockSync.m_error = 0;
-        m_clockSync.m_errCount = physicalPhase ? 31 : 0;
+        m_clockSync.m_errCount = 0;
 
         m_dvdClock.SetVsyncAdjust(-average);
       }
     }
     if (!isPaused)
-    {
-      // One-ahead native pictures are prepared at the display edge, not its blend midpoint.
-      const bool nativeEdge = physicalPhase && nativeAsync && prepareAhead && completionAge &&
-          std::abs(frametime * static_cast<double>(m_fps) - DVD_TIME_BASE) < DVD_TIME_BASE * 0.0005;
-      renderPts += (nativeEdge ? frametime : frametime / 2) - m_clockSync.m_syncOffset;
-    }
+      renderPts += frametime / 2 - m_clockSync.m_syncOffset;
   }
   else
   {
     m_dvdClock.SetVsyncAdjust(0);
   }
-
-#ifdef CB1_HAS_HDR10_AI
-  if (physicalPhase && completionAge && m_fps > 0 &&
-      frametime * m_fps < DVD_TIME_BASE * 0.75 && m_pRenderer->HDR10AILookahead())
-  {
-    const auto source = DVBRIDGE::FrameOutputSettings(
-        m_picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS, m_picture.hdrType == StreamHdrType::HDR_TYPE_HLG).hdr10Source;
-    if (source == DVBRIDGE::HDR10SourceMode::ReferenceDV || source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV)
-      // Select on the physical refresh phase, not an interpolated mid-refresh clock.
-      renderPts -= std::fmod(std::max(0.0, *completionAge), frametime);
-  }
-#endif
 
   CLog::LogFC(LOGDEBUG, LOGAVTIMING,
               "frameOnScreen: {:f} renderPts: {:f} nextFramePts: {:f} -> diff: {:f}  render: {} "
@@ -1626,8 +1621,10 @@ void CRenderManager::PrepareNextRender()
       // renderer/drivers have internal queues, being slightly late here does not mean that
       // we are really late. The likelihood that we recover decreases the greater m_lateframes
       // get. Skipping a frame is easier than having decoder dropping one (lateframes > 10)
-      // One-ahead scanout admits one full refresh, including clock phase jitter.
-      double x = cb1Async ? 1.0 : (m_lateframes <= 6 ? 0.98 : 0);
+      // CB1 one-ahead scanout is part of the measured display latency. With an anchored
+      // refresh phase the pictures sit half a refresh from this boundary, so no
+      // hysteresis is needed and a picture of lag is removed at once.
+      double x = physicalPhase && completionAge ? 0 : (m_lateframes <= 6 ? 0.98 : 0);
       if (latePts < m_Queue[*iter].pts + x * frametime)
         break;
       idx = *iter;
@@ -1646,10 +1643,7 @@ void CRenderManager::PrepareNextRender()
       m_queued.pop_front();
     }
 
-    // Account only for delay beyond the admitted CB1 one-refresh window.
-    const double lateness = cb1Async ?
-        std::max(0.0, latePts - m_Queue[idx].pts - frametime) :
-        renderPts - m_Queue[idx].pts;
+    const double lateness = latePts - m_Queue[idx].pts;
     const int lateframes = static_cast<int>(lateness *
                                             static_cast<double>(m_fps / DVD_TIME_BASE));
     if (lateframes)
@@ -1661,19 +1655,27 @@ void CRenderManager::PrepareNextRender()
     m_discard.push_back(m_presentsource);
     m_presentsource = idx;
     m_queued.pop_front();
+#ifdef HAVE_DVBRIDGE
+    if (cb1Async)
+      m_clockSync.m_cb1Latency.Selected(m_Queue[idx].pts, DVBRIDGE::MonotonicNowNs());
+#endif
     m_presentpts = m_Queue[idx].pts - m_displayLatency;
     m_presentevent.notifyAll();
 
     m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
   }
-  // A submitted progressive CB1 picture no longer needs native blend-frame waiting.
-  else if ((!combined || prepareAhead) && renderPts > (nextFramePts - frametime))
+  // CB1 one-ahead scanout presents single pictures; it has no blend frame to prepare.
+  else if (!combined && !cb1Async && renderPts > (nextFramePts - frametime))
   {
     m_lateframes = 0;
     m_presentstep = PRESENT_FLIP;
     m_presentsourcePast = m_presentsource;
     m_presentsource = m_queued.front();
     m_queued.pop_front();
+#ifdef HAVE_DVBRIDGE
+    if (cb1Async)
+      m_clockSync.m_cb1Latency.Selected(m_Queue[m_presentsource].pts, DVBRIDGE::MonotonicNowNs());
+#endif
     m_presentpts = m_Queue[m_presentsource].pts - m_displayLatency - frametime / 2;
     m_presentevent.notifyAll();
   }
