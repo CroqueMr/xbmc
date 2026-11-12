@@ -614,7 +614,7 @@ bool CDRMUtils::OpenDrm(bool needConnector)
             version->version_major,version->version_minor,version->version_patchlevel);
 #endif
       if (strcmp(version->name, "amdgpu") == 0)
-        m_drm_quirks |= QUIRK_NEEDSPRIMARY | QUIRK_CB1_NATIVE_EDGE;
+        m_drm_quirks |= QUIRK_NEEDSPRIMARY;
       drmFreeVersion(version);
     }
 

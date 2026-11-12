@@ -19,6 +19,9 @@
 #include "threads/SystemClock.h"
 #include "utils/Geometry.h"
 #include "windowing/Resolution.h"
+#ifdef HAVE_DVBRIDGE
+#include "utils/DVBridgePresentation.h"
+#endif
 
 #include <atomic>
 #include <deque>
@@ -298,6 +301,10 @@ protected:
     double m_syncOffset;
     bool m_enabled;
     bool m_cb1Phase{false};
+#ifdef HAVE_DVBRIDGE
+    DVBRIDGE::PresentationLatency m_cb1Latency;
+    bool m_cb1LatencyActive{false};
+#endif
   };
   CClockSync m_clockSync;
 };
