@@ -30,6 +30,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   accepted.creativeReason=output.creativeReason;
   accepted.iptTransport=output.iptTransport;
   accepted.felUpscaling=output.felUpscaling;
+  accepted.lldv=output.lldv;
 #ifdef CB1_HAS_HDR10_AI
   accepted.hdr10AI=output.hdr10AI; accepted.aiL1L3=output.aiL1L3;
   accepted.aiModel=output.aiModel; accepted.aiBaseline=output.aiBaseline;

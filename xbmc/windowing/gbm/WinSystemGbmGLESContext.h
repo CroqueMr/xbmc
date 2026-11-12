@@ -89,6 +89,7 @@ public:
       bool allowModeSwitch = false) const;
   bool CanRetainDVSource() const;
   bool CompleteDVModeSwitch(const VideoPicture& picture);
+  std::optional<RESOLUTION> PlayerLedResolution(double fps) const;
   bool DVModeSwitchDeferred()
   {
     return !m_dvRollbackFailed && m_dvShutdownFence && m_dvContext &&
@@ -194,6 +195,12 @@ private:
   void PublishVideoSource(bool accepted, const std::shared_ptr<const VideoSourceSideData>& source);
   std::shared_ptr<const VideoSourceSideData> m_videoSourceSideData;
 #ifdef HAVE_DVBRIDGE
+  bool PresentPlayerLedFrame();
+  void PresentPlayerLedCpu(const DVBRIDGE::LldvTransport& transport);
+  bool CompleteDVBridgePage(int timeoutMs = 0);
+  bool FinishPlayerLedFrame(const CDVBridgeGLES::PlayerLedFrame& frame, double pts);
+  std::optional<CDVBridgeGLES::PlayerLedFrame> m_playerLedPage;
+  double m_playerLedPagePts{};
   void StageNativeHDR10Plus(bool overlay);
   std::string m_hdr10plusReason;
   uint64_t m_dvProfileLoggedRevision{},m_dvProfileLoggedStream{};
@@ -225,6 +232,7 @@ private:
   bool RetireDVContext();
   bool ComposeDVPQGUI();
   bool CB1AsyncAvailable() const;
+  int ExportCB1GPUFence();
   bool CreateCB1GPUFence(const CDVBridgeGLES::Submission& submission);
   DVBRIDGE::MasterSafety m_masterSafety;
   uint64_t m_masterFramePeriodNs{};
@@ -241,7 +249,7 @@ private:
   bool RecoverDVActivation();
   void ResetDVActivation(const VideoPicture* picture);
   bool m_dvSuperseded{}; // Benign cancellation still uses the complete recovery owner.
-  bool m_dvRecoveryPending{}, m_dvNativeFailed{}, m_dvHDR10Failed{}, m_dvSDRFailed{}, m_dvFallbackActive{};
+  bool m_dvRecoveryPending{}, m_dvNativeFailed{}, m_dvHDR10Failed{}, m_dvSDRFailed{}, m_dvPlayerLedFailed{}, m_dvFallbackActive{};
   bool m_dvActivating{};
   uint64_t m_dvActivationStream{}, m_dvActivationPolicy{};
   unsigned m_dvAttemptFailures{};
@@ -261,6 +269,7 @@ private:
 #endif
   DVBRIDGE::OutputCapabilities m_dvCapabilities;
   bool m_dvAvailableNativeDV{}, m_dvAvailableHDR10{};
+  DVBRIDGE::LldvConnectorStatus m_dvLldvStatus{};
   DVBRIDGE::SourceBinding m_dvImportBinding{};
   dvbridge_geometry m_dvImportGeometry{};
   bool m_dvImportUsable{};

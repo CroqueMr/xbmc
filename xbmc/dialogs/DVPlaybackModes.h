@@ -15,6 +15,7 @@ public:
   static bool ShowMenu(bool settingsMenu = false);
   static bool ConfigureProfile();
   static std::string DefaultPlaybackLabel();
+  static std::string LldvPreferenceLabel();
   void OnSettingAction(const std::shared_ptr<const CSetting>& setting) override;
   void OnSettingsLoaded() override;
   void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override;

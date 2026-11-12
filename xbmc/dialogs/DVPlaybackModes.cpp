@@ -27,6 +27,10 @@
 #include "utils/JSONVariantParser.h"
 #include "utils/Variant.h"
 #include "utils/DVBridgeDiagnosticLog.h"
+#include "utils/DVBridgeLldv.h"
+#ifdef HAVE_GBM
+#include "windowing/gbm/WinSystemGbm.h"
+#endif
 #include "utils/log.h"
 #include "threads/IRunnable.h"
 #include <cstdio>
@@ -36,7 +40,7 @@ namespace
 struct Choice { int output,method,label; };
 constexpr Choice dvChoices[]={{0,0,40812},{4,0,40913},
     {5,0,40914},
-    {2,0,40814},{1,0,40822},{1,1,40823},{1,2,40922},{6,0,41130}};
+    {2,0,40814},{1,0,40822},{1,1,40823},{1,2,40922},{6,0,41130},{7,0,41221}};
 }
 
 CDVPlaybackModes& CDVPlaybackModes::GetInstance()
@@ -96,7 +100,8 @@ bool CDVPlaybackModes::ConfigureProfile()
     std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
     DVBRIDGE::ReadDefaultOutputSelectors().Apply(preferences);
   }
-  const bool expert=preferences.output==DVBRIDGE::OutputMode::HDR10 && preferences.method==1;
+  const bool expert=preferences.output==DVBRIDGE::OutputMode::PlayerLed ||
+      (preferences.output==DVBRIDGE::OutputMode::HDR10 && preferences.method==1);
   const auto& strings=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
   std::string peak=StringUtils::Format("{:g}",expert?preferences.expertPeak:preferences.peak);
   if (expert ? !CGUIKeyboardFactory::ShowAndGetInput(peak,strings.Get(41030),false) :
@@ -259,10 +264,89 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
   }
 }
 
+namespace
+{
+int LldvFormatLabel(DVBRIDGE::LldvFormat format, bool forced)
+{
+  return forced ? 41217 : 41202 + static_cast<int>(format);
+}
+
+DVBRIDGE::LldvConnectorStatus ReadLldvConnector()
+{
+#ifdef HAVE_GBM
+  const auto* gbm = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
+  if (gbm)
+    return gbm->GetLldvConnectorStatus();
+#endif
+  return {};
+}
+
+void ShowLldvFormatMenu()
+{
+  using namespace DVBRIDGE;
+  const auto status = ReadLldvConnector();
+  const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  auto* dialog = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogSelect>(WINDOW_DIALOG_SELECT);
+  if (!dialog)
+    return;
+
+  const bool usableTiming = status.currentTiming || status.availableTiming;
+  const auto preferred =
+      ChooseLldvFormat(status.sink, status.driverFormats, usableTiming, status.forced42210);
+  const auto requiresForcing = [&status](LldvFormat format) {
+    return LldvRequiresForcing(format, status.driverFormats, status.forced42210);
+  };
+  const auto saved = settings->GetInt("dvbridge.lldvformatvalue");
+  dialog->Reset();
+  dialog->SetHeading(strings.Get(41200));
+  dialog->SetUseDetails(true);
+  for (int i = 0; i <= static_cast<int>(LldvFormat::Y444_12); ++i)
+  {
+    const auto format = static_cast<LldvFormat>(i);
+    const auto reason = i ? LldvFormatReason(status.sink, format, status.driverFormats,
+                                             usableTiming, status.forced42210)
+                          : LldvReason::Ready;
+    const bool disabled = reason != LldvReason::Ready;
+    const auto label = strings.Get(LldvFormatLabel(format, requiresForcing(format)));
+    CFileItem item(disabled ? "[COLOR grey]" + label + "[/COLOR]" : label);
+    item.SetProperty("disabled", disabled);
+    if (i == 0)
+      item.SetLabel2(preferred == LldvFormat::Auto ? strings.Get(41213)
+          : strings.Get(LldvFormatLabel(preferred, requiresForcing(preferred))));
+    else if (disabled)
+      item.SetLabel2(strings.Get(41208 + static_cast<int>(reason)));
+    else if (format == status.active)
+      item.SetLabel2(strings.Get(status.activeForced && !requiresForcing(format) ? 41218 : 41214));
+    else
+      item.SetLabel2(strings.Get(format == LldvFormat::Y422_10 ? 41216 : 41215));
+    dialog->Add(item);
+  }
+  dialog->SetSelected(saved);
+  dialog->Open();
+  if (dialog->IsConfirmed() && settings->SetInt("dvbridge.lldvformatvalue", dialog->GetSelectedItem()))
+    settings->Save();
+}
+} // namespace
+
+std::string CDVPlaybackModes::LldvPreferenceLabel()
+{
+  using namespace DVBRIDGE;
+  const auto status = ReadLldvConnector();
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const auto format = status.active == LldvFormat::Auto ?
+      LldvFormatPreference(settings->GetInt("dvbridge.lldvformatvalue")) : status.active;
+  const bool forced = status.active != LldvFormat::Auto ? status.activeForced :
+      LldvRequiresForcing(format, status.driverFormats, status.forced42210);
+  return CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(
+      LldvFormatLabel(format, forced));
+}
+
 void CDVPlaybackModes::OnSettingAction(const std::shared_ptr<const CSetting>& setting)
 {
   if (setting && setting->GetId()=="dvbridge.configureprofile") ConfigureProfile();
   else if (setting && setting->GetId()=="dvbridge.playback") ShowMenu(true);
+  else if (setting && setting->GetId()=="dvbridge.lldvformat") ShowLldvFormatMenu();
 }
 
 

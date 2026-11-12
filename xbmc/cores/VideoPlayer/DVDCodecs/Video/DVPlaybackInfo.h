@@ -11,20 +11,20 @@ namespace DVBRIDGE
 {
 enum class OutputReason { None, NoDVTransport, NoHDR10Transport,
   NoGPUProcessing, SourceIneligible, TVProfileRequired, ActivationFailed, RestoreFailed,
-  NoHDR10PlusTransport, SDRTargetInvalid, ProcessingPending };
+  NoHDR10PlusTransport, SDRTargetInvalid, ProcessingPending, NoPlayerLedTransport };
 struct ModeAdmission { bool usable{}; OutputReason reason{OutputReason::None}; };
 struct OutputCapabilities
 {
   bool sourceKnown{}, isDV{}, processingKnown{}, nativeDV{}, hdr10{};
   bool stereoSource{};
   uint64_t generation{};
-  std::array<ModeAdmission, 8> processing{};
+  std::array<ModeAdmission, 9> processing{};
   bool isHLG{}; // Plain HLG only: Dolby Vision RPU/configuration takes precedence.
   bool isHDR10{};
   bool hdr10PlusSource{}; // Native source classification, independent of metadata admission.
   bool isHDR10Plus{}; // Selected decoded picture, not receiver HDR10+ transport.
-  std::array<ModeAdmission, 8> hdr10Processing{};
-  bool hdr10plus{};
+  std::array<ModeAdmission, 9> hdr10Processing{};
+  bool hdr10plus{}, playerLed{};
 };
 }
 
@@ -43,9 +43,11 @@ struct CDVPlaybackInfo
     return false;
   }
   enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4, HDR10 = 8, HDR10PLUS = 16, SDR = 32 };
+  static constexpr int PlayerLedMode = 9;
   inline static std::atomic<unsigned> presented{0};
   static int ReasonLabel(DVBRIDGE::OutputReason reason)
-  { return reason == DVBRIDGE::OutputReason::ProcessingPending ? 41142 :
+  { return reason == DVBRIDGE::OutputReason::NoPlayerLedTransport ? 41222 :
+      reason == DVBRIDGE::OutputReason::ProcessingPending ? 41142 :
       reason == DVBRIDGE::OutputReason::SDRTargetInvalid ? 41141 :
       reason == DVBRIDGE::OutputReason::NoHDR10PlusTransport ? 40923 :
       reason == DVBRIDGE::OutputReason::None ? 0 : 40840 + static_cast<int>(reason); }
@@ -54,6 +56,7 @@ struct CDVPlaybackInfo
   {
     switch(reason)
     {
+      case DVBRIDGE::OutputReason::NoPlayerLedTransport: return "no-player-led-transport";
       case DVBRIDGE::OutputReason::NoDVTransport: return "no-dv-transport";
       case DVBRIDGE::OutputReason::NoHDR10Transport: return "no-hdr10-transport";
       case DVBRIDGE::OutputReason::NoGPUProcessing: return "gpu-processing-unavailable";
@@ -109,6 +112,7 @@ struct CDVPlaybackInfo
       case 6:return "Dolby Vision Adaptive HDR Mapping";
       case 7:return "HDR10+ Rendering";
       case 8:return "SDR Rendering";
+      case PlayerLedMode:return "Dolby Vision Player-Led";
       default:return "";
     }
   }
@@ -117,6 +121,8 @@ struct CDVPlaybackInfo
   {
     if (output.effective==8 && (output.flags & SDR)) return "SDR Rendering";
     if (!output.flags) return "Kodi default";
+    if constexpr (requires { output.lldv; })
+      if (output.lldv) return RequestedPolicy(PlayerLedMode);
     if (IsHDR10PlusDV(output)) return Policy(output);
     std::string mode = output.flags & HDR10 ? Policy(output) :
         output.effective == 6 ? "Dolby Vision Adaptive HDR Mapping" :

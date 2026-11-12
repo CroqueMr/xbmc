@@ -119,6 +119,21 @@ CGBMUtils::CGBMDevice::CGBMSurface::CGBMSurfaceBuffer::CGBMSurfaceBuffer(gbm_sur
 {
 }
 
+CGBMUtils::CGBMDevice::CGBMSurface::CGBMSurfaceBuffer::CGBMSurfaceBuffer(
+    gbm_bo* buffer, std::shared_ptr<void> lease)
+  : m_buffer(buffer), m_lease(std::move(lease))
+{
+}
+
+gbm_bo* CGBMUtils::CGBMDevice::CGBMSurface::AdoptTransactionalBuffer(
+    gbm_bo* buffer, std::shared_ptr<void> lease)
+{
+  if (m_pendingBuffer || !buffer || !lease)
+    return nullptr;
+  m_pendingBuffer = std::make_unique<CGBMSurfaceBuffer>(buffer, std::move(lease));
+  return buffer;
+}
+
 gbm_bo* CGBMUtils::CGBMDevice::CGBMSurface::LockTransactionalBuffer()
 {
   if (m_pendingBuffer)
