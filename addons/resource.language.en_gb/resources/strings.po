@@ -26485,3 +26485,87 @@ msgstr ""
 msgctxt "#41140"
 msgid " - SDR target black (nits)"
 msgstr ""
+
+msgctxt "#41200"
+msgid "LLDV output format"
+msgstr ""
+
+msgctxt "#41201"
+msgid "Choose the format preference for Dolby Vision Player-Led. Availability depends on the display, driver and current HDMI timing."
+msgstr ""
+
+msgctxt "#41202"
+msgid "Automatic"
+msgstr ""
+
+msgctxt "#41203"
+msgid "YCbCr 4:2:2 · 10 useful bits"
+msgstr ""
+
+msgctxt "#41204"
+msgid "YCbCr 4:2:2 · 12 bits"
+msgstr ""
+
+msgctxt "#41205"
+msgid "RGB 4:4:4 · 10 bits"
+msgstr ""
+
+msgctxt "#41206"
+msgid "RGB 4:4:4 · 12 bits"
+msgstr ""
+
+msgctxt "#41207"
+msgid "YCbCr 4:4:4 · 10 bits"
+msgstr ""
+
+msgctxt "#41208"
+msgid "YCbCr 4:4:4 · 12 bits"
+msgstr ""
+
+msgctxt "#41209"
+msgid "Display capabilities unavailable or invalid"
+msgstr ""
+
+msgctxt "#41210"
+msgid "Not advertised by the display for LLDV"
+msgstr ""
+
+msgctxt "#41211"
+msgid "LLDV format not qualified on this driver"
+msgstr ""
+
+msgctxt "#41212"
+msgid "Unavailable at the current HDMI timing"
+msgstr ""
+
+msgctxt "#41213"
+msgid "No compatible LLDV format at this timing"
+msgstr ""
+
+msgctxt "#41214"
+msgid "Active on HDMI"
+msgstr ""
+
+msgctxt "#41215"
+msgid "Available as a format preference"
+msgstr ""
+
+msgctxt "#41216"
+msgid "HDMI transport uses 12-bit fields"
+msgstr ""
+
+msgctxt "#41217"
+msgid "4:2:2 · 10-bit · Forced · experimental"
+msgstr ""
+
+msgctxt "#41218"
+msgid "Active · forced · experimental"
+msgstr ""
+
+msgctxt "#41221"
+msgid "Dolby Vision Player-Led"
+msgstr ""
+
+msgctxt "#41222"
+msgid "No compatible LLDV output at this timing"
+msgstr ""

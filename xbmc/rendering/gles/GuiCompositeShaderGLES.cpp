@@ -65,6 +65,9 @@ void CGuiCompositeShaderGLES::OnCompiledAndLinked()
   m_hOotfGamma = glGetUniformLocation(ProgramHandle(), "u_ootfGamma");
   m_hInputPQ = glGetUniformLocation(ProgramHandle(), "u_inputPQ");
   m_hOutputRange = glGetUniformLocation(ProgramHandle(), "u_outputRange");
+  m_hPlayerLedScale = glGetUniformLocation(ProgramHandle(), "u_playerLedScale");
+  m_hPlayerLedGui = glGetUniformLocation(ProgramHandle(), "u_playerLedGui");
+  m_hPlayerLedSubtitles = glGetUniformLocation(ProgramHandle(), "u_playerLedSubtitles");
   glUseProgram(ProgramHandle());
   glUniform1i(m_hSamp, 0);
   glUniform1i(m_hLutDegamma, 1);
@@ -80,6 +83,12 @@ bool CGuiCompositeShaderGLES::OnEnabled()
   glUniform1f(m_hOotfGamma, m_ootfGamma);
   glUniform1i(m_hInputPQ, m_inputPQ);
   glUniform2f(m_hOutputRange, m_outputScale, m_outputOffset);
+  glUniform1f(m_hPlayerLedScale, m_playerLedScale);
+  if (m_playerLedScale > 0)
+  {
+    glUniformMatrix3fv(m_hPlayerLedGui, 1, GL_FALSE, m_playerLedGui.data());
+    glUniformMatrix3fv(m_hPlayerLedSubtitles, 1, GL_FALSE, m_playerLedSubtitles.data());
+  }
 
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_2D, m_lutDegammaTexId);
