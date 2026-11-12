@@ -23,6 +23,7 @@
 #include "drm/DVBridgeState.h"
 #include "ModeChangeHold.h"
 #include "DVPresentStall.h"
+#include "PascalHDR10Scanout.h"
 #include "utils/DVBridgePresentation.h"
 #endif
 
@@ -59,6 +60,10 @@ public:
   }
 #ifdef HAVE_DVBRIDGE
   bool BeginRender() override;
+  int GetOutputBitDepth() const override
+  {
+    return m_pascalHDRActive ? 10 : CWinSystemGbmEGLContext::GetOutputBitDepth();
+  }
   bool Hide() override;
   bool Show(bool raise = true) override;
   float GetDisplayLatency() override;
@@ -293,6 +298,12 @@ private:
   bool m_cb1FramePending{};
   bool m_dvEndPending{};
   bool m_dvStopPending{};
+  bool PrepareHDR10Scanout() override;
+  bool RetainHDR10ScanoutOnTransition() const override { return m_priorPascalHDRActive; }
+  unsigned int HDR10Framebuffer() const;
+  std::unique_ptr<CPascalHDR10Scanout> m_pascalHDRScanout;
+  bool m_pascalHDRActive{};
+  bool m_priorPascalHDRActive{};
   bool m_hdrConversion = false;
   bool m_sdrConversion = false;
   bool m_dvPriorSDRConversion = false;
