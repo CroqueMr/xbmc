@@ -11,7 +11,7 @@ namespace DVBRIDGE
 {
 enum class OutputReason { None, NoDVTransport, NoHDR10Transport,
   NoGPUProcessing, SourceIneligible, TVProfileRequired, ActivationFailed, RestoreFailed,
-  NoHDR10PlusTransport, SDRTargetInvalid, ProcessingPending, NoPlayerLedTransport };
+  NoHDR10PlusTransport, SDRTargetInvalid, ProcessingPending, NoPlayerLedTransport, HDR10LinkDepthTooLow };
 struct ModeAdmission { bool usable{}; OutputReason reason{OutputReason::None}; };
 struct OutputCapabilities
 {
@@ -25,6 +25,9 @@ struct OutputCapabilities
   bool isHDR10Plus{}; // Selected decoded picture, not receiver HDR10+ transport.
   std::array<ModeAdmission, 9> hdr10Processing{};
   bool hdr10plus{}, playerLed{};
+  uint64_t hdr10MaxBpc{}; // Zero means the HDMI ceiling is unknown.
+
+  bool HDR10DepthLimited() const { return hdr10MaxBpc != 0 && hdr10MaxBpc < 10; }
 };
 }
 
@@ -46,7 +49,8 @@ struct CDVPlaybackInfo
   static constexpr int PlayerLedMode = 9;
   inline static std::atomic<unsigned> presented{0};
   static int ReasonLabel(DVBRIDGE::OutputReason reason)
-  { return reason == DVBRIDGE::OutputReason::NoPlayerLedTransport ? 41222 :
+  { return reason == DVBRIDGE::OutputReason::HDR10LinkDepthTooLow ? 41223 :
+      reason == DVBRIDGE::OutputReason::NoPlayerLedTransport ? 41222 :
       reason == DVBRIDGE::OutputReason::ProcessingPending ? 41142 :
       reason == DVBRIDGE::OutputReason::SDRTargetInvalid ? 41141 :
       reason == DVBRIDGE::OutputReason::NoHDR10PlusTransport ? 40923 :
@@ -59,6 +63,7 @@ struct CDVPlaybackInfo
       case DVBRIDGE::OutputReason::NoPlayerLedTransport: return "no-player-led-transport";
       case DVBRIDGE::OutputReason::NoDVTransport: return "no-dv-transport";
       case DVBRIDGE::OutputReason::NoHDR10Transport: return "no-hdr10-transport";
+      case DVBRIDGE::OutputReason::HDR10LinkDepthTooLow: return "hdr10-link-depth-too-low";
       case DVBRIDGE::OutputReason::NoGPUProcessing: return "gpu-processing-unavailable";
       case DVBRIDGE::OutputReason::SourceIneligible: return "source-ineligible";
       case DVBRIDGE::OutputReason::TVProfileRequired: return "tv-profile-required";

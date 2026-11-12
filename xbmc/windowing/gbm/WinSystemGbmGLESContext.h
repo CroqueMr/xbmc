@@ -85,6 +85,7 @@ public:
   static bool DVBridgeRequested(const VideoPicture* picture);
   bool CreateNewWindow(const std::string& name, bool fullScreen, RESOLUTION_INFO& res) override;
   void RefreshDVOutputCapabilities();
+  void RefreshHDR10LinkDepth();
   DVBRIDGE::OutputCapabilities GetDVOutputCapabilities(const VideoPicture* picture,
       bool allowModeSwitch = false) const;
   bool CanRetainDVSource() const;
@@ -269,6 +270,7 @@ private:
 #endif
   DVBRIDGE::OutputCapabilities m_dvCapabilities;
   bool m_dvAvailableNativeDV{}, m_dvAvailableHDR10{};
+  std::atomic<uint64_t> m_hdr10MaxBpc{0};
   DVBRIDGE::LldvConnectorStatus m_dvLldvStatus{};
   DVBRIDGE::SourceBinding m_dvImportBinding{};
   dvbridge_geometry m_dvImportGeometry{};
