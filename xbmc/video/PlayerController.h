@@ -58,5 +58,6 @@ private:
   bool NextAudioStream();
 
   int m_sliderAction = 0; ///< \brief set to the action id for a slider being displayed \sa ShowSlider
+  int m_sliderLabel = 0; ///< \brief label id of the slider being displayed \sa ShowSlider
   KODI::UTILS::MOVING_SPEED::CMovingSpeed m_movingSpeed;
 };

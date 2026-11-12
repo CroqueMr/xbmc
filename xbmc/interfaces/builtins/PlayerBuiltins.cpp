@@ -756,8 +756,7 @@ static int Seek(const std::vector<std::string>& params)
 static int SubtitleShiftUp(const std::vector<std::string>& params)
 {
   CAction action{ACTION_SUBTITLE_VSHIFT_UP};
-  if (!params.empty() && params[0] == "save")
-    action.SetText("save");
+  action.SetText(StringUtils::Join(params, ","));
   CPlayerController::GetInstance().OnAction(action);
   return 0;
 }
@@ -765,8 +764,7 @@ static int SubtitleShiftUp(const std::vector<std::string>& params)
 static int SubtitleShiftDown(const std::vector<std::string>& params)
 {
   CAction action{ACTION_SUBTITLE_VSHIFT_DOWN};
-  if (!params.empty() && params[0] == "save")
-    action.SetText("save");
+  action.SetText(StringUtils::Join(params, ","));
   CPlayerController::GetInstance().OnAction(action);
   return 0;
 }
@@ -876,16 +874,18 @@ static int SubtitleShiftDown(const std::vector<std::string>& params)
 ///     @param[in] core                  Name of playback core.
 ///   }
 ///   \table_row2_l{
-///     <b>`SubtitleShiftUp([save])`</b>
+///     <b>`SubtitleShiftUp([save]\,[step])`</b>
 ///     ,
 ///     Shift the subtitle position up.
 ///     @param[in] save                  "save" to keep the change permanently (optional)
+///     @param[in] step                  "step" to move one fixed step (optional)
 ///   }
 ///   \table_row2_l{
-///     <b>`SubtitleShiftDown([save])`</b>
+///     <b>`SubtitleShiftDown([save]\,[step])`</b>
 ///     ,
 ///     Shift the subtitle position down.
 ///     @param[in] save                  "save" to keep the change permanently (optional)
+///     @param[in] step                  "step" to move one fixed step (optional)
 ///   }
 ///   \table_row2_l{
 ///     <b>`Seek(seconds)`</b>
