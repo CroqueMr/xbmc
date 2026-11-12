@@ -85,6 +85,9 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
           caps.processing[policy.mode].reason : OutputReason::NoGPUProcessing};
     return {OutputRoute::SDR,policy,OutputReason::None};
   }
+  if ((policy.mode == DVBRIDGE_MODE_HDR10_BASIC || policy.mode == DVBRIDGE_MODE_HDR10_EXPERT) &&
+      caps.HDR10DepthLimited())
+    return {OutputRoute::Vanilla, policy, OutputReason::HDR10LinkDepthTooLow};
   // Display configuration is known before the first GPU import.
   if (preferences.output == OutputMode::HDR10 && policy.mode == DVBRIDGE_MODE_HDR10_EXPERT &&
       !preferences.ProfileValid(policy.mode))

@@ -138,6 +138,8 @@ protected:
   virtual bool StageTransportPreferences() { return true; }
   virtual std::optional<uint64_t> RestoredConnectorProperty(const char*) const { return {}; }
   std::optional<uint64_t> DefaultMaxBpc() const { return m_defaultMaxBpc; }
+  //! The "max bpc" in effect: the choice, or what the connector has. 0 if unknown
+  uint64_t GetEffectiveMaxBpc(std::optional<uint64_t> restored = {}) const;
   bool RequeueOutputProperties();
   std::optional<uint64_t> m_queuedColorspace, m_queuedHdrMetadata;
   void OnLostDevice();
@@ -199,8 +201,6 @@ private:
   ColorFormat GetColorFormat() const;
   //! The format to ask the driver for: the choice or Adaptive's pick, if listed and not refused
   ColorFormat GetRequestedColorFormat() const;
-  //! The "max bpc" in effect: the choice, or what the connector has. 0 if unknown
-  uint64_t GetEffectiveMaxBpc() const;
   //! True if the HDMI link can be driven with FRL, which carries 4K 60 Hz 10 bit RGB
   bool IsHdmiFrlLink() const;
   //! True if >8 bit video in the active HDMI mode does not fit as RGB, but does as YCbCr

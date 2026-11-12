@@ -416,6 +416,9 @@ void CWinSystemGbmGLESContext::PresentRender(bool rendered, bool videoLayer)
     return;
 
   PresentFrame(rendered, videoLayer);
+#ifdef HAVE_DVBRIDGE
+  RefreshHDR10LinkDepth();
+#endif
   if (m_dispReset && m_dispResetTimer.IsTimePast()
 #ifdef HAVE_DVBRIDGE
       && m_modeAnnouncement.Pending() == CHeldModeAnnouncement::Step::NONE
@@ -1535,6 +1538,7 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
 {
   if (eglGetCurrentContext() == EGL_NO_CONTEXT ||
       eglGetCurrentContext() != m_eglContext.GetEGLContext()) return;
+  RefreshHDR10LinkDepth();
   auto caps = GetDVOutputCapabilities(nullptr);
   caps.nativeDV = SupportsNativeDVOutput();
   caps.hdr10 = SupportsHDR10Conversion();
@@ -1704,6 +1708,7 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
 {
   std::lock_guard lock(m_dvCapabilityMutex);
   auto caps = m_dvCapabilities;
+  caps.hdr10MaxBpc = m_hdr10MaxBpc.load();
   caps.playerLed = DVBRIDGE::SelectLldvTransport(m_dvLldvStatus,
       preferences.lldvFormat, allowModeSwitch).connectorId != 0;
   if (allowModeSwitch)
@@ -2043,6 +2048,27 @@ DVBRIDGE::OutputReason CWinSystemGbmGLESContext::ConsumeDVPlaybackFailure(DVBRID
     return DVBRIDGE::OutputReason::None;
   if (m_dvFatalReason != DVBRIDGE::OutputReason::None) m_dvFatalConsumed = true;
   return m_dvFatalReason;
+}
+
+void CWinSystemGbmGLESContext::RefreshHDR10LinkDepth()
+{
+  auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (!connector || connector->GetType().rfind("HDMI", 0) != 0 ||
+      !connector->SupportsProperty("max bpc"))
+  {
+    m_hdr10MaxBpc = 0;
+    return;
+  }
+
+  // Native DV and LLDV temporarily own an 8-bit scanout. HDR10 setup stages
+  // the saved connector depth when it releases that transport.
+  const auto restored = m_dvState.Before("max bpc");
+  auto depth = GetEffectiveMaxBpc(restored);
+  if (restored && *restored != 0)
+    depth = std::min(depth, *restored);
+  if (const auto range = connector->GetRangePropertyLimits("max bpc"); range && depth != 0)
+    depth = std::min(depth, range->second);
+  m_hdr10MaxBpc = depth;
 }
 
 bool CWinSystemGbmGLESContext::SupportsHDR10Conversion(bool requireCurrentMode)
