@@ -940,6 +940,8 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
     }
     CRenderSystemGLES::SetViewPort(viewport);
     const auto& context = GetGfxContext();
+    // libplacebo raster passes can leave the GUI's scissor test disabled.
+    glEnable(GL_SCISSOR_TEST);
     CRenderSystemGLES::SetScissors(context.StereoCorrection(context.GetScissors()));
     if (report)
     {
