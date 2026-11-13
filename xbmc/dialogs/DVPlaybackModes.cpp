@@ -366,17 +366,4 @@ void DVBRIDGE::PlaybackNotification::EmitAI(int mode)
   const int label=mode==1 ? 40867 : 40868;
   Emit(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(label));
 }
-void DVBRIDGE::PlaybackNotification::RenderingUnavailable(OutputReason reason)
-{
-  const auto& localizer=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
-  const int reasonId=CDVPlaybackInfo::ReasonLabel(reason);
-  if (reason == OutputReason::HDR10LinkDepthTooLow)
-  {
-    CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info,
-        localizer.Get(40822), localizer.Get(reasonId), 3500, false);
-    return;
-  }
-  CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info,
-      localizer.Get(40863),localizer.Get(40875)+(reasonId ? " "+localizer.Get(reasonId) : ""),3000,false);
-}
 #endif

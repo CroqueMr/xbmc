@@ -439,11 +439,20 @@ void CApplicationPlayerCallback::OnPlayBackStopped()
 
 void CApplicationPlayerCallback::OnPlayBackError()
 {
+  OnPlayBackError(0);
+}
+
+void CApplicationPlayerCallback::OnPlayBackError(int detail)
+{
   //@todo Playlists can be continued by calling OnPlaybackEnded instead
-  // open error dialog
-  CGUIMessage msg(GUI_MSG_PLAYBACK_ERROR, 0, 0);
+  // Finish display restoration before opening the circuit error dialog.
+  if (detail != 0)
+    OnPlayBackStopped();
+
+  CGUIMessage msg(GUI_MSG_PLAYBACK_ERROR, 0, 0, detail);
   CServiceBroker::GetGUI()->GetWindowManager().SendThreadMessage(msg);
-  OnPlayBackStopped();
+  if (detail == 0)
+    OnPlayBackStopped();
 }
 
 void CApplicationPlayerCallback::OnQueueNextItem()

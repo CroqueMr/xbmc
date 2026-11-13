@@ -579,6 +579,7 @@ protected:
   CPlayerOptions m_playerOptions;
   bool m_bAbortRequest;
   bool m_error;
+  int m_errorDetail{0};
   bool m_bCloseRequest;
 
   ECacheState  m_caching;
