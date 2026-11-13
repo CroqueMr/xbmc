@@ -1030,8 +1030,11 @@ bool CVideoPlayerVideo::HandleDVPlaybackFailure(const VideoPicture* picture)
   CLog::Log(LOGERROR, "Dolby Vision playback unavailable: stream={} source_revision={} profile={} reason={}",
       picture->doviSourceBinding.stream, picture->doviSourceBinding.revision,
       picture->doviSourceInfo.profile, static_cast<int>(reason));
-  DVBRIDGE::PlaybackNotification::RenderingUnavailable(reason);
-  m_messageParent.Put(std::make_shared<CDVDMsgBool>(CDVDMsg::PLAYER_ABORT, true));
+  const int detail = authoredDV && reason == DVBRIDGE::OutputReason::SourceIneligible &&
+                             picture->doviMetadata.Size() == 0
+                         ? 41224
+                         : CDVPlaybackInfo::ReasonLabel(reason);
+  m_messageParent.Put(std::make_shared<CDVDMsgInt>(CDVDMsg::PLAYER_ABORT, detail));
   return true;
 }
 #endif
