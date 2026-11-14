@@ -4157,6 +4157,18 @@
     </category>
     <category id="logging" label="14092" help="36391">
       <group id="1" label="14260">
+        <setting id="debug.cb1logdetail" type="integer" label="41225" help="41228">
+          <requirement>HAVE_DVBRIDGE</requirement>
+          <level>1</level>
+          <default>1</default>
+          <constraints>
+            <options>
+              <option label="41226">0</option>
+              <option label="41227">1</option>
+            </options>
+          </constraints>
+          <control type="spinner" format="string" />
+        </setting>
         <setting id="debug.showloginfo" type="boolean" label="20191" help="36392">
           <level>1</level>
           <default>false</default>

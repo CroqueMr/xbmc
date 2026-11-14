@@ -1087,7 +1087,7 @@ void CDVBridgeGLES::PreparedAudit(std::string_view sdr)
       m_pendingIdentity.revision},"Prepared");
   // An unevaluated SDR selector leaves both the epoch and retry limiter pending.
   if (m_effectiveMode==DVBRIDGE_MODE_SDR && sdr.empty()) return;
-  if (m_auditPreparedSerial!=m_auditSerial && DVBRIDGE::DiagnosticsEnabled() &&
+  if (m_auditPreparedSerial!=m_auditSerial && DVBRIDGE::DetailedDiagnosticsEnabled() &&
       m_auditPrepared.Record(DVBRIDGE::DiagnosticNowMs(),"prepared",m_auditSerial))
   {
     try
@@ -1406,7 +1406,7 @@ struct CDVBridgeGLES::PlayerLedCpu
       packMs += std::chrono::duration<double,std::milli>(end - begin).count();
       if (++samples == 120)
       {
-        if (std::getenv("CB1_PRESENTATION_AUDIT"))
+        if (DVBRIDGE::DetailedDiagnosticsEnabled() && std::getenv("CB1_PRESENTATION_AUDIT"))
           CLog::Log(LOGINFO, "CB1 LLDV packing: gpu_wait_ms={:.3f} cpu_ms={:.3f}", waitMs / samples, packMs / samples);
         samples = 0;
         waitMs = packMs = 0;
@@ -1981,7 +1981,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   }
   // A phase remains pending across failed/superseded pictures and exhausted
   // log budgets. Only its emitted report consumes this source/settings epoch.
-  if (m_auditRequestedSerial!=m_auditSerial && DVBRIDGE::DiagnosticsEnabled() &&
+  if (m_auditRequestedSerial!=m_auditSerial && DVBRIDGE::DetailedDiagnosticsEnabled() &&
       m_auditRequested.Record(DVBRIDGE::DiagnosticNowMs(),"requested",m_auditSerial))
   {
     m_auditRequestedSerial=m_auditSerial;
@@ -2131,7 +2131,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     m_pending = m_prepared && fenced;
     result = m_pending ? FrameStatus::Ready : FrameStatus::Failed;
     if (result==FrameStatus::Ready && policy.mode==DVBRIDGE_MODE_SDR && directQuery>=0 &&
-        m_auditPreparedSerial!=m_auditSerial && DVBRIDGE::DiagnosticsEnabled())
+        m_auditPreparedSerial!=m_auditSerial && DVBRIDGE::DetailedDiagnosticsEnabled())
       sdrAudit=SDRPreparationAudit(bl.frame,enhancement ? &el.frame : nullptr,metadata,
           geometry,m_scanout,m_outputBits,m_hdr10Limited,base.pts,elPts,
           {int(originalDV)+2*int(originalHDR),allowPacked,m_directUsable,bool(m_scanout),
@@ -3019,7 +3019,7 @@ bool CDVBridgeGLES::Presented(bool success)
     // Immutable session policy is announced only on its first accepted frame.
     // Picture reset and changing CM/FEL metadata do not start a new session.
     if (m_hdr10 && DVBRIDGE::DiagnosticsEnabled() && m_presentations == 1)
-      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge presented: policy=Basic target={} nits origin={} creative_trims=not-applied framebuffer_bits={}",
+      DVBRIDGE::DiagnosticEssentialLog(LOGINFO, "DVBridge presented: policy=Basic target={} nits origin={} creative_trims=not-applied framebuffer_bits={}",
           target, level6 ? "RPU-L6" : "RPU-source-PQ", m_outputBits);
     if (m_hdr10 && m_pendingHDR10Fallback != m_hdr10FallbackReason)
     {
@@ -3029,9 +3029,9 @@ bool CDVBridgeGLES::Presented(bool success)
         const auto now = DVBRIDGE::DiagnosticNowMs();
         const char* reason = m_hdr10FallbackReason == 1 ? "missing-L1" : "unusable-L1";
         if (m_hdr10FallbackReason && m_hdr10Fallbacks.Record(now, reason))
-          DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge Basic HDR10: presented static fallback reason={}", reason);
+          DVBRIDGE::DiagnosticEssentialLog(LOGINFO, "DVBridge Basic HDR10: presented static fallback reason={}", reason);
         else if (!m_hdr10FallbackReason && m_hdr10Fallbacks.Recovered(now))
-          DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge Basic HDR10: presented L1 mapping recovered");
+          DVBRIDGE::DiagnosticEssentialLog(LOGINFO, "DVBridge Basic HDR10: presented L1 mapping recovered");
       }
     }
   }
@@ -3290,7 +3290,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   DVBRIDGE::StreamTelemetry::PublishNativeInfo(submission.informationGeneration);
   const auto acceptedOutput=DVBRIDGE::StreamTelemetry::Read().output;
 #ifdef CB1_HAS_HDR10_AI
-  if (m_aiFrame && DVBRIDGE::DiagnosticsEnabled() && m_aiSummary.Due(DVBRIDGE::DiagnosticNowMs()))
+  if (m_aiFrame && DVBRIDGE::DetailedDiagnosticsEnabled() && m_aiSummary.Due(DVBRIDGE::DiagnosticNowMs()))
   {
     m_aiSummary.Emitted(DVBRIDGE::DiagnosticNowMs());
     const auto metrics=m_context->HDR10AI().Metrics();
@@ -3329,7 +3329,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
           m_committedBinding.stream,m_committedBinding.picture,m_committedBinding.revision,
           m_committedRevision,acceptedOutput.effective,acceptedOutput.bits,acceptedOutput.authoredLegacy,acceptedOutput.sampleCount,
           acceptedOutput.creativeStatus,acceptedOutput.creativeReason,acceptedOutput.creativeApplied,acceptedOutput.creativeEdited);
-      DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge output selection: requested={} effective={} reason={} minimum_link_bits={} profile={} bl={} el={} rpu={} hdr_origin={}",
+      DVBRIDGE::DiagnosticEssentialLog(LOGINFO,"DVBridge output selection: requested={} effective={} reason={} minimum_link_bits={} profile={} bl={} el={} rpu={} hdr_origin={}",
           CDVPlaybackInfo::RequestedPolicy(acceptedOutput.requested,CDVPlaybackInfo::IsHDR10AI(acceptedOutput),CDVPlaybackInfo::IsHDR10PlusDV(acceptedOutput)),
           CDVPlaybackInfo::RequestedPolicy(acceptedOutput.effective,CDVPlaybackInfo::IsHDR10AI(acceptedOutput),CDVPlaybackInfo::IsHDR10PlusDV(acceptedOutput)),
           CDVPlaybackInfo::Reason(acceptedOutput.reason),acceptedOutput.minimumLinkBits,
@@ -3341,7 +3341,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
           acceptedOutput.flags & CDVPlaybackInfo::HDR10 ? (acceptedOutput.effective>=3 ? "manual-tv-profile" :
               acceptedOutput.level6 ? "source-L6" : "reference-default") : "source-RPU");
     }
-    if (m_failures.Recovered(now)) DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge renderer recovered: policy unchanged");
+    if (m_failures.Recovered(now)) DVBRIDGE::DiagnosticEssentialLog(LOGINFO,"DVBridge renderer recovered: policy unchanged");
   }
   m_prepared = m_packed = m_pending = false;
   m_submission = {};

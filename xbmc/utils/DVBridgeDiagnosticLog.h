@@ -67,7 +67,7 @@ bool WriteDiagnosticLocked(DiagnosticEvent event, int level,
 }
 
 template<class... Args>
-bool DiagnosticLog(int level, fmt::format_string<Args...> format, Args&&... args) noexcept
+bool DiagnosticEssentialLog(int level, fmt::format_string<Args...> format, Args&&... args) noexcept
 {
   if (!DiagnosticsEnabled()) return false;
   try
@@ -78,11 +78,18 @@ bool DiagnosticLog(int level, fmt::format_string<Args...> format, Args&&... args
   catch (...) { return false; } // Diagnostics cannot escape into a C callback or playback.
 }
 
+template<class... Args>
+bool DiagnosticLog(int level, fmt::format_string<Args...> format, Args&&... args) noexcept
+{
+  if (level < LOGWARNING && !DetailedDiagnosticsEnabled()) return false;
+  return DiagnosticEssentialLog(level, format, std::forward<Args>(args)...);
+}
+
 // Summary owns the periodic and reset-coalescing bounds for these counters.
 template<class... Args>
 bool DiagnosticRendererCounterLog(int level, fmt::format_string<Args...> format, Args&&... args) noexcept
 {
-  if (!DiagnosticsEnabled()) return false;
+  if (!DetailedDiagnosticsEnabled()) return false;
   try
   {
     std::lock_guard lock(diagnosticMutex);
@@ -101,7 +108,7 @@ inline void DiagnosticReserveProgress() noexcept
 template<class... Args>
 bool DiagnosticProgressLog(int level, fmt::format_string<Args...> format, Args&&... args) noexcept
 {
-  if (!DiagnosticsEnabled()) return false;
+  if (!DetailedDiagnosticsEnabled()) return false;
   try
   {
     std::lock_guard lock(diagnosticMutex);
@@ -137,8 +144,9 @@ inline void DiagnosticStartup(uint64_t generation, uint64_t stream, const char* 
     // A decoder can reopen before the renderer adopts its first new picture.
     if (!diagnosticSession.Stream() || stream == diagnosticSession.Stream())
       diagnosticSession.Stage(stage);
-    WriteDiagnosticLocked(DiagnosticEvent::Normal, LOGINFO,
-                          "DV decode startup: decoder_stream={} stage={} fel={} pending={}",
+    if (DetailedDiagnosticsEnabled())
+      WriteDiagnosticLocked(DiagnosticEvent::Normal, LOGINFO,
+                            "DV decode startup: decoder_stream={} stage={} fel={} pending={}",
                           stream, stage, fel, pending);
   }
   catch (...) {}
