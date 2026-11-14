@@ -56,7 +56,8 @@ uint64_t DVNowNs()
 
 void CollectDVKernelLog()
 {
-  DVBRIDGE::CollectKernelLog();
+  if (DVBRIDGE::DetailedDiagnosticsEnabled())
+    DVBRIDGE::CollectKernelLog();
 }
 }
 
@@ -130,7 +131,9 @@ void CDRMAtomic::RefreshDVLink()
 
 void CDRMAtomic::ReportDVCommit(const char* stage) noexcept try
 {
-  DVBRIDGE::DiagnosticLog(LOGINFO,
+  if (std::string_view(stage) != "atomic-commit" && !DVBRIDGE::DetailedDiagnosticsEnabled())
+    return;
+  DVBRIDGE::DiagnosticEssentialLog(LOGINFO,
       "DVBridge activation: stage={} result=accepted requested_dv={} restoring={}", stage,
       m_req && m_req->requestedDV ? std::to_string(*m_req->requestedDV) : "unavailable",m_dvRestoring);
 }
@@ -431,7 +434,7 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
       ReportDVCommit("atomic-commit");
     }
     if (DVBRIDGE::DiagnosticsEnabled() && m_dvFailures.Recovered(DVNowMs()))
-      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge output recovered: failures={} recoveries={}",
+      DVBRIDGE::DiagnosticEssentialLog(LOGINFO, "DVBridge output recovered: failures={} recoveries={}",
           m_dvFailures.Count(), m_dvFailures.Recoveries());
   }
   FinishRequest(true);
@@ -858,7 +861,7 @@ void CDRMAtomic::ReportSignalState() noexcept try
   if (m_signalKnown && state == m_signalState)
     return;
   const auto error = m_connector ? m_connector->PropertyInventoryError() : std::nullopt;
-  if (DVBRIDGE::DiagnosticLog(LOGINFO,
+  if (DVBRIDGE::DiagnosticEssentialLog(LOGINFO,
       "DVBridge signal: origin=accepted-commit-cache connector={} crtc={} dv_property={} dv_value={} hdr_property={} hdr_value={} colorspace_property={} colorspace_value={} max_bpc_property={} max_bpc_ceiling={} rgb_property={} rgb_value={} active_property={} active_value={} mode={}x{} clock_khz={} inventory_error={} nv_vsif_property={} nv_vsif_value={} dither_property={} dither_value={} color_format_property={} color_format_value={}",
       state[0], state[1], dv.Presence(),dv.Value(),hdr.Presence(),hdr.Value(),
       color.Presence(),color.Value(),bpc.Presence(),bpc.Value(),rgb.Presence(),rgb.Value(),
