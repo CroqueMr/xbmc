@@ -149,6 +149,9 @@
 #include "utils/URIUtils.h"
 #include "utils/Variant.h"
 #include "utils/log.h"
+#ifdef HAVE_DVBRIDGE
+#include "utils/DVBridgeOverlayTrace.h"
+#endif
 #include "video/PlayerController.h"
 #include "video/VideoLibraryQueue.h"
 #include "video/dialogs/GUIDialogVideoBookmarks.h"
@@ -895,6 +898,23 @@ void CApplication::Render()
   const auto appPower = GetComponent<CApplicationPowerHandling>();
 
   bool hasRendered = false;
+#ifdef HAVE_DVBRIDGE
+  if (DVBRIDGE::OverlayDebugEnabled())
+  {
+    const auto& windows = CServiceBroker::GetGUI()->GetWindowManager();
+    const char* overlay = nullptr;
+    if (appPlayer->IsPlayingVideo())
+    {
+      if (windows.IsWindowActive(WINDOW_DIALOG_PLAYER_PROCESS_INFO) && DVBRIDGE::IsPlayerInfoTrace())
+        overlay = DVBRIDGE::overlayTrace.kind;
+      else if (windows.IsWindowActive(WINDOW_DIALOG_VIDEO_OSD))
+        overlay = DVBRIDGE::VIDEO_OSD;
+    }
+    DVBRIDGE::overlayTrace.Observe(overlay);
+  }
+  else if (DVBRIDGE::overlayTrace.kind)
+    DVBRIDGE::overlayTrace = {};
+#endif
 
   // Whether externalplayer is playing and we're unfocused
   bool extPlayerActive = appPlayer->IsExternalPlaying() && !m_AppFocused;
@@ -919,6 +939,9 @@ void CApplication::Render()
 
   if (guiWillRender)
   {
+#ifdef HAVE_DVBRIDGE
+    const DVBRIDGE::OverlayTimer timing(DVBRIDGE::OverlayStage::Draw);
+#endif
     if (CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoMode() != RenderStereoMode::OFF)
     {
       CServiceBroker::GetWinSystem()->GetGfxContext().SetStereoView(RenderStereoView::LEFT);
@@ -948,7 +971,12 @@ void CApplication::Render()
   CServiceBroker::GetGUI()->GetWindowManager().RenderEx();
 
   if (compositing)
+  {
+#ifdef HAVE_DVBRIDGE
+    const DVBRIDGE::OverlayTimer timing(DVBRIDGE::OverlayStage::Composite);
+#endif
     CServiceBroker::GetWinSystem()->CompositeGui();
+  }
 
   // serve pending requests from the finished frame, then fail any left
   // unserved. Both need a frame that really drew: on a skipped frame nothing
@@ -974,8 +1002,13 @@ void CApplication::Render()
     infoMgr.GetInfoProviders().GetSystemInfoProvider().UpdateFPS();
   }
 
-  CServiceBroker::GetWinSystem()->GetGfxContext().Flip(hasRendered,
+  {
+#ifdef HAVE_DVBRIDGE
+    const DVBRIDGE::OverlayTimer timing(DVBRIDGE::OverlayStage::Present);
+#endif
+    CServiceBroker::GetWinSystem()->GetGfxContext().Flip(hasRendered,
                                                        appPlayer->IsRenderingVideoLayer());
+  }
 
   CTimeUtils::UpdateFrameTime(hasRendered);
 }

@@ -21,6 +21,7 @@
 #include "utils/StringUtils.h"
 #include "utils/Variant.h"
 #include "utils/CPUInfo.h"
+#include "utils/DVBridgeOverlayTrace.h"
 #include "utils/MemUtils.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
@@ -52,6 +53,10 @@ bool CGUIDialogPlayerProcessInfo::OnMessage(CGUIMessage& message)
   if (message.GetMessage() == GUI_MSG_WINDOW_INIT)
   {
     const bool enhanced = DVBRIDGE::EnhancedInfoEnabled();
+    const bool trace = DVBRIDGE::OverlayDebugEnabled();
+    const auto begin = trace ? DVBRIDGE::OverlayClock::now() : DVBRIDGE::OverlayClock::time_point{};
+    if (trace)
+      DVBRIDGE::overlayTrace.Observe(enhanced ? DVBRIDGE::PLAYER_INFO_CB1 : DVBRIDGE::PLAYER_INFO_KODI);
     const std::string file = enhanced ?
         "special://xbmc/media/cb1/DialogPlayerProcessInfo.xml" :
         "DialogPlayerProcessInfo.xml";
@@ -78,6 +83,15 @@ bool CGUIDialogPlayerProcessInfo::OnMessage(CGUIMessage& message)
       g_fontManager.LoadTTF("CB1.InfoHero", face, 0xfff4f6f6, 0, 32, FONT_STYLE_BOLD, false,
                             1.0f, 1.0f, &resolution);
     }
+    if (trace)
+    {
+      const auto resources = DVBRIDGE::OverlayElapsedUs(begin);
+      const bool initialized = CGUIDialog::OnMessage(message);
+      CLog::Log(LOGDEBUG, "CB1 Player Info open: kind={} opened_ms={} resource_setup_us={} init_total_us={}",
+                DVBRIDGE::overlayTrace.kind, DVBRIDGE::overlayTrace.openedMs, resources,
+                DVBRIDGE::OverlayElapsedUs(begin));
+      return initialized;
+    }
   }
 #endif
   return CGUIDialog::OnMessage(message);
@@ -101,6 +115,9 @@ void CGUIDialogPlayerProcessInfo::OnInitWindow()
 void CGUIDialogPlayerProcessInfo::OnDeinitWindow(int nextWindowID)
 {
 #ifdef HAVE_DVBRIDGE
+  if (DVBRIDGE::IsPlayerInfoTrace() && DVBRIDGE::OverlayDebugEnabled())
+    CLog::Log(LOGDEBUG, "CB1 Player Info close: kind={} opened_ms={} now_ms={}",
+              DVBRIDGE::overlayTrace.kind, DVBRIDGE::overlayTrace.openedMs, DVBRIDGE::DiagnosticNowMs());
   m_renderUsage.Reset();
 #endif
   CGUIDialog::OnDeinitWindow(nextWindowID);
@@ -275,6 +292,7 @@ std::string L11Content(const VideoDVLevels& levels)
 
 void CGUIDialogPlayerProcessInfo::RefreshInfo()
 {
+    const DVBRIDGE::OverlayTimer timing(DVBRIDGE::OverlayStage::Refresh);
     const auto render = m_renderUsage.Sample();
     SetProperty("DV.GPUAvailable", render.has_value());
     SetProperty("DV.GPURender", render ? StringUtils::Format("{:.0f} %", *render) : "N/A");
