@@ -209,6 +209,13 @@ bool CWinSystemGbm::InitWindowSystem()
   if (connector)
   {
     std::vector<uint8_t> edid = connector->GetEDID();
+#ifdef HAVE_DVBRIDGE
+    std::lock_guard lock(m_lldvEdidMutex);
+    m_lldvEdid = edid;
+    m_lldvDisplay = DVBRIDGE::ReadLldvDisplay(edid.data(), edid.size());
+    m_lldvEdidConnector = *connector->GetConnectorId();
+    ++m_lldvEdidGeneration;
+#endif
     if (!edid.empty())
     {
       m_info = UTILS::CDisplayInfo::Create(edid);
@@ -963,14 +970,29 @@ bool CWinSystemGbm::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool bl
 bool CWinSystemGbm::RefreshDisplayInfoForVideo()
 {
   auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
-  if (!connector) return false;
-  auto edid = connector->GetEDID(true);
-  if (edid.empty() || edid == m_displayEdid) return false;
-  auto information = UTILS::CDisplayInfo::Create(edid);
-  if (!information) return false;
+  const auto id = connector && connector->IsConnected() ? *connector->GetConnectorId() : 0;
+  auto edid = id ? connector->GetEDID(true) : std::vector<uint8_t>{};
+  bool lldvChanged;
+  {
+    std::lock_guard lock(m_lldvEdidMutex);
+    lldvChanged = id != m_lldvEdidConnector || edid != m_lldvEdid;
+    if (lldvChanged)
+    {
+      m_lldvEdid = edid;
+      m_lldvDisplay = DVBRIDGE::ReadLldvDisplay(edid.data(), edid.size());
+      m_lldvEdidConnector = id;
+      ++m_lldvEdidGeneration;
+    }
+  }
+  if (edid == m_displayEdid)
+    return lldvChanged;
+  // An absent or invalid EDID withdraws the previous sink's capabilities.
+  auto information = edid.empty() ? nullptr : UTILS::CDisplayInfo::Create(edid);
+  if (!information && !m_info)
+    return lldvChanged;
+  m_displayEdid = information ? std::move(edid) : std::vector<uint8_t>{};
   m_info = std::move(information);
-  m_displayEdid = std::move(edid);
-  DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge display refresh: connector={} changed=true",connector->GetId());
+  DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge display refresh: connector={} changed=true",id);
   return true;
 }
 
@@ -1081,6 +1103,12 @@ bool CWinSystemGbm::FlipDVBridgePage(CDVBridgeState& state, bool restore, bool a
 
 void CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async)
 {
+  FlipPage(rendered, videoLayer, async, {});
+}
+
+bool CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async,
+                             const std::shared_ptr<gbm_bo>& carrier)
+{
   if (m_videoLayerBridge && !videoLayer)
   {
     // disable video plane when video layer no longer is active
@@ -1091,24 +1119,25 @@ void CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async)
     DeferConnectorPreferences();
 
   auto atomic = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-  const bool colourTransition = rendered && atomic && atomic->HasColorRangeTransition();
+  const bool transactional = rendered && atomic && (carrier || atomic->HasColorRangeTransition());
   struct gbm_bo* bo = nullptr;
 
   if (rendered)
   {
     auto& surface = m_GBM->GetDevice().GetSurface();
-    bo = colourTransition ? surface.LockTransactionalBuffer() : surface.LockFrontBuffer().Get();
-    if (colourTransition && !bo)
+    bo = carrier ? surface.AdoptTransactionalBuffer(carrier.get(), carrier)
+                 : transactional ? surface.LockTransactionalBuffer() : surface.LockFrontBuffer().Get();
+    if (transactional && !bo)
     {
       if (auto gui = CServiceBroker::GetGUI()) gui->GetWindowManager().MarkDirty();
-      return;
+      return false;
     }
   }
 
   // A refused colour request keeps the old scanout. Release its GBM buffers
   // only after a blocking replacement has completed, as in CB1 restoration.
-  m_DRM->FlipPage(bo, rendered, videoLayer, colourTransition ? false : async);
-  if (colourTransition)
+  m_DRM->FlipPage(bo, rendered, videoLayer, transactional ? false : async);
+  if (transactional)
   {
     auto& surface = m_GBM->GetDevice().GetSurface();
     surface.CompleteTransactionalBuffer(atomic->LastPageAccepted());
@@ -1134,6 +1163,9 @@ void CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async)
     auto* gui = m_DRM->GetGuiPlane();
     m_DRM->FindGuiPlane(gui->GetFormat(), gui->GetModifier());
   }
+  if (atomic)
+    return atomic->LastPageAccepted();
+  return false;
 }
 
 bool CWinSystemGbm::OrdinaryShaderLimitedColor()
@@ -1353,6 +1385,139 @@ void CWinSystemGbm::ApplyColorspace()
   }
 }
 
+namespace
+{
+hdr_output_metadata MakeHDRMetadata(const VideoPicture& picture, KODI::UTILS::Eotf eotf)
+{
+  hdr_output_metadata hdr_metadata = {};
+
+  hdr_metadata.metadata_type = KODI::UTILS::HDMI_STATIC_METADATA_TYPE1;
+  hdr_metadata.hdmi_metadata_type1.eotf = static_cast<uint8_t>(eotf);
+  hdr_metadata.hdmi_metadata_type1.metadata_type = KODI::UTILS::HDMI_STATIC_METADATA_TYPE1;
+
+  if (hdr_metadata.hdmi_metadata_type1.eotf)
+  {
+    const AVMasteringDisplayMetadata* mdmd =
+        KODI::UTILS::GetMasteringDisplayMetadata(picture);
+    if (mdmd && mdmd->has_primaries)
+    {
+      // Convert to unsigned 16-bit values in units of 0.00002,
+      // where 0x0000 represents zero and 0xC350 represents 1.0000
+      for (int i = 0; i < 3; i++)
+      {
+        hdr_metadata.hdmi_metadata_type1.display_primaries[i].x =
+            std::round(av_q2d(mdmd->display_primaries[i][0]) * 50000.0);
+        hdr_metadata.hdmi_metadata_type1.display_primaries[i].y =
+            std::round(av_q2d(mdmd->display_primaries[i][1]) * 50000.0);
+
+        CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - display_primaries[{}].x: {}",
+                  __FUNCTION__, i, hdr_metadata.hdmi_metadata_type1.display_primaries[i].x);
+        CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - display_primaries[{}].y: {}",
+                  __FUNCTION__, i, hdr_metadata.hdmi_metadata_type1.display_primaries[i].y);
+      }
+      hdr_metadata.hdmi_metadata_type1.white_point.x =
+          std::round(av_q2d(mdmd->white_point[0]) * 50000.0);
+      hdr_metadata.hdmi_metadata_type1.white_point.y =
+          std::round(av_q2d(mdmd->white_point[1]) * 50000.0);
+
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - white_point.x: {}", __FUNCTION__,
+                hdr_metadata.hdmi_metadata_type1.white_point.x);
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - white_point.y: {}", __FUNCTION__,
+                hdr_metadata.hdmi_metadata_type1.white_point.y);
+    }
+    if (mdmd && mdmd->has_luminance)
+    {
+      // Convert to unsigned 16-bit value in units of 1 cd/m2,
+      // where 0x0001 represents 1 cd/m2 and 0xFFFF represents 65535 cd/m2
+      hdr_metadata.hdmi_metadata_type1.max_display_mastering_luminance =
+          std::round(av_q2d(mdmd->max_luminance));
+
+      // Convert to unsigned 16-bit value in units of 0.0001 cd/m2,
+      // where 0x0001 represents 0.0001 cd/m2 and 0xFFFF represents 6.5535 cd/m2
+      hdr_metadata.hdmi_metadata_type1.min_display_mastering_luminance =
+          std::round(av_q2d(mdmd->min_luminance) * 10000.0);
+
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - max_display_mastering_luminance: {}",
+                __FUNCTION__, hdr_metadata.hdmi_metadata_type1.max_display_mastering_luminance);
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - min_display_mastering_luminance: {}",
+                __FUNCTION__, hdr_metadata.hdmi_metadata_type1.min_display_mastering_luminance);
+    }
+
+    const AVContentLightMetadata* clmd = KODI::UTILS::GetContentLightMetadata(picture);
+    if (clmd)
+    {
+      hdr_metadata.hdmi_metadata_type1.max_cll = clmd->MaxCLL;
+      hdr_metadata.hdmi_metadata_type1.max_fall = clmd->MaxFALL;
+
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - max_cll: {}", __FUNCTION__,
+                hdr_metadata.hdmi_metadata_type1.max_cll);
+      CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - max_fall: {}", __FUNCTION__,
+                hdr_metadata.hdmi_metadata_type1.max_fall);
+    }
+
+  }
+  return hdr_metadata;
+}
+} // namespace
+
+bool CWinSystemGbm::CanKeepHDR10Signal(const VideoPicture& picture) const
+{
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  const auto settings = settingsComponent ? settingsComponent->GetSettings() : nullptr;
+  if (!settings || !settings->GetBool(SETTING_WINSYSTEM_IS_HDR_DISPLAY))
+    return false;
+
+  const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  if (!drm || !drm->HasQuirk(QUIRK_NEEDSPRIMARY) || !drm->IsActive() ||
+      !drm->IsSelectedModeCommitted() || drm->LastCommitFellBack() ||
+      drm->IsSDRRestorePending() || drm->HasPendingRequest() || drm->HasPendingCB1Page() ||
+      drm->HasColorRangeTransition() || drm->HDR10PlusActive() || !m_hdrBlob.IsValid() ||
+      m_eotf != KODI::UTILS::Eotf::PQ || picture.color_transfer != AVCOL_TRC_SMPTE2084 ||
+      KODI::UTILS::GetColorimetry(picture) != m_colorimetry || !m_queuedColorspace)
+    return false;
+
+  auto* connector = drm->GetConnector();
+  const auto* crtc = drm->GetCrtc();
+  if (!connector || !crtc)
+    return false;
+
+  // An HDR10+ source can retain the static PQ signal when the output cannot send HDR10+.
+  if (picture.hdrType != StreamHdrType::HDR_TYPE_HDR10 &&
+      (picture.hdrType != StreamHdrType::HDR_TYPE_HDR10PLUS ||
+       (connector->SupportsProperty("HDR10PLUS_METADATA") &&
+        (!m_info || m_info->HDR10PlusVersion() >= 0))))
+    return false;
+
+  return crtc->GetPropertyValue("ACTIVE") == 1 &&
+      connector->GetPropertyValue("HDR_OUTPUT_METADATA") == m_hdrBlob.Get() &&
+      connector->GetPropertyValue("Colorspace") == m_queuedColorspace;
+}
+
+bool CWinSystemGbm::PresentHDR10Handoff(const VideoPicture& picture)
+{
+  if (!CanKeepHDR10Signal(picture))
+    return false;
+
+  const auto drm = std::static_pointer_cast<CDRMAtomic>(m_DRM);
+  const auto metadata = MakeHDRMetadata(picture, m_eotf);
+  CDRMPropertyBlob candidate(drm->GetFileDescriptor(), &metadata, sizeof(metadata));
+  if (!candidate.IsValid())
+    return false;
+
+  auto& surface = m_GBM->GetDevice().GetSurface();
+  auto* buffer = surface.LockTransactionalBuffer();
+  const bool accepted = buffer && drm->FlipPageWithHDR10Metadata(buffer, candidate.Get());
+  surface.CompleteTransactionalBuffer(accepted);
+  if (!accepted)
+    return false;
+
+  surface.EndTransactionalMode();
+  m_hdrBlob = std::move(candidate);
+  m_queuedHdrMetadata = m_hdrBlob.Get();
+  CLog::Log(LOGDEBUG, "HDR10 handoff committed picture and metadata blob {} together", m_hdrBlob.Get());
+  return true;
+}
+
 bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
 {
   if (!videoPicture)
@@ -1405,72 +1570,9 @@ bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
   if (connector->SupportsProperty("HDR_OUTPUT_METADATA") && m_info &&
       m_info->SupportsHDRStaticMetadataType1() && m_info->SupportsEOTF(eotf))
   {
-    hdr_output_metadata hdr_metadata = {};
-
-    hdr_metadata.metadata_type = KODI::UTILS::HDMI_STATIC_METADATA_TYPE1;
-    hdr_metadata.hdmi_metadata_type1.eotf = static_cast<uint8_t>(eotf);
-    hdr_metadata.hdmi_metadata_type1.metadata_type = KODI::UTILS::HDMI_STATIC_METADATA_TYPE1;
-
+    const auto hdr_metadata = MakeHDRMetadata(*videoPicture, eotf);
     if (hdr_metadata.hdmi_metadata_type1.eotf)
     {
-      const AVMasteringDisplayMetadata* mdmd =
-          KODI::UTILS::GetMasteringDisplayMetadata(*videoPicture);
-      if (mdmd && mdmd->has_primaries)
-      {
-        // Convert to unsigned 16-bit values in units of 0.00002,
-        // where 0x0000 represents zero and 0xC350 represents 1.0000
-        for (int i = 0; i < 3; i++)
-        {
-          hdr_metadata.hdmi_metadata_type1.display_primaries[i].x =
-              std::round(av_q2d(mdmd->display_primaries[i][0]) * 50000.0);
-          hdr_metadata.hdmi_metadata_type1.display_primaries[i].y =
-              std::round(av_q2d(mdmd->display_primaries[i][1]) * 50000.0);
-
-          CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - display_primaries[{}].x: {}",
-                    __FUNCTION__, i, hdr_metadata.hdmi_metadata_type1.display_primaries[i].x);
-          CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - display_primaries[{}].y: {}",
-                    __FUNCTION__, i, hdr_metadata.hdmi_metadata_type1.display_primaries[i].y);
-        }
-        hdr_metadata.hdmi_metadata_type1.white_point.x =
-            std::round(av_q2d(mdmd->white_point[0]) * 50000.0);
-        hdr_metadata.hdmi_metadata_type1.white_point.y =
-            std::round(av_q2d(mdmd->white_point[1]) * 50000.0);
-
-        CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - white_point.x: {}", __FUNCTION__,
-                  hdr_metadata.hdmi_metadata_type1.white_point.x);
-        CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - white_point.y: {}", __FUNCTION__,
-                  hdr_metadata.hdmi_metadata_type1.white_point.y);
-      }
-      if (mdmd && mdmd->has_luminance)
-      {
-        // Convert to unsigned 16-bit value in units of 1 cd/m2,
-        // where 0x0001 represents 1 cd/m2 and 0xFFFF represents 65535 cd/m2
-        hdr_metadata.hdmi_metadata_type1.max_display_mastering_luminance =
-            std::round(av_q2d(mdmd->max_luminance));
-
-        // Convert to unsigned 16-bit value in units of 0.0001 cd/m2,
-        // where 0x0001 represents 0.0001 cd/m2 and 0xFFFF represents 6.5535 cd/m2
-        hdr_metadata.hdmi_metadata_type1.min_display_mastering_luminance =
-            std::round(av_q2d(mdmd->min_luminance) * 10000.0);
-
-        CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - max_display_mastering_luminance: {}",
-                  __FUNCTION__, hdr_metadata.hdmi_metadata_type1.max_display_mastering_luminance);
-        CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - min_display_mastering_luminance: {}",
-                  __FUNCTION__, hdr_metadata.hdmi_metadata_type1.min_display_mastering_luminance);
-      }
-
-      const AVContentLightMetadata* clmd = KODI::UTILS::GetContentLightMetadata(*videoPicture);
-      if (clmd)
-      {
-        hdr_metadata.hdmi_metadata_type1.max_cll = clmd->MaxCLL;
-        hdr_metadata.hdmi_metadata_type1.max_fall = clmd->MaxFALL;
-
-        CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - max_cll: {}", __FUNCTION__,
-                  hdr_metadata.hdmi_metadata_type1.max_cll);
-        CLog::Log(LOGDEBUG, LOGVIDEO, "CWinSystemGbm::{} - max_fall: {}", __FUNCTION__,
-                  hdr_metadata.hdmi_metadata_type1.max_fall);
-      }
-
       m_hdrBlob = CDRMPropertyBlob(drm->GetFileDescriptor(), &hdr_metadata, sizeof(hdr_metadata));
     }
 
@@ -1567,13 +1669,16 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
 
   const auto status = GetLldvConnectorStatus();
   if (!packed.connectorId || packed.connectorId != status.connectorId ||
+      packed.edidGeneration != status.edidGeneration || status.display.status != LldvEdidStatus::Ready ||
       (packed.format != LldvFormat::Y422_10 && packed.format != LldvFormat::Y422_12) ||
+      (packed.rgb10Scanout && (!status.rgb10Scanout || packed.forced)) ||
       (packed.forced && (packed.format != LldvFormat::Y422_10 || !status.forced42210)) ||
       LldvFormatReason(status.sink, packed.format, status.driverFormats,
                        status.currentTiming, packed.forced) != LldvReason::Ready)
     return reject();
 
-  const char* name = packed.forced ? "YCbCr 4:2:2 10 bits forced" :
+  const char* name = packed.rgb10Scanout ? "YCbCr 4:2:2 10 bits RGB10 lab" :
+      packed.forced ? "YCbCr 4:2:2 10 bits forced" :
       packed.format == LldvFormat::Y422_10 ? "YCbCr 4:2:2 10 useful bits" : "YCbCr 4:2:2 12 bits";
   auto* connector = drm->GetConnector();
   const auto value = connector ? connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", name) :
@@ -1586,11 +1691,16 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
                        surface.LockTransactionalBuffer();
   if (!bo) return reject();
   const auto format = gbm_bo_get_format(bo);
-  const bool ready = (format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888) &&
+  const bool validFormat = packed.rgb10Scanout ?
+      (format == DRM_FORMAT_XRGB2101010 || format == DRM_FORMAT_ARGB2101010 ||
+       format == DRM_FORMAT_XBGR2101010 || format == DRM_FORMAT_ABGR2101010) :
+      (format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888);
+  const bool ready = validFormat &&
       gbm_bo_get_width(bo) == 3840 && gbm_bo_get_height(bo) == 2160 &&
-      state.StagePlayerLed(*drm, *value) && StageTransportPreferences();
+      state.StagePlayerLed(*drm, *value, packed.rgb10Scanout ? 10 : 8) && StageTransportPreferences();
   const bool stable = status.timingCommitted && status.active == packed.format &&
-                      status.activeForced == packed.forced;
+                      status.activeForced == packed.forced &&
+                      status.activeRgb10Scanout == packed.rgb10Scanout;
   if (ready)
   {
     drm->StageHDR10Plus(std::nullopt, 0);
@@ -1598,25 +1708,57 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
       drm->AllowModeset();
   }
   const bool accepted = drm->FlipPageTransactional(ready ? bo : nullptr, false, async && stable);
+  if (ready && !stable)
+  {
+    std::lock_guard lock(m_lldvEdidMutex);
+    m_lldvRejected = accepted ? LldvTransport{} : packed;
+  }
+  if (!accepted && !stable)
+    CLog::Log(LOGWARNING, "CB1 LLDV: DRM commit refused connector={} edid_generation={} format={} forced={} staged={}",
+              packed.connectorId, packed.edidGeneration, name, packed.forced, ready);
   if (!drm->HasPendingCB1Page()) surface.CompleteTransactionalBuffer(accepted);
   return accepted;
+}
+
+CWinSystemGbm::SDRBT2020Support CWinSystemGbm::GetSDRBT2020Support() const
+{
+  // CB1's existing SDR scanout stages RGB via CaptureColorPreferences.
+  auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (!connector || !connector->GetType().starts_with("HDMI") ||
+      !connector->GetPropertyEnumValue("Colorspace", "BT2020_RGB"))
+    return SDRBT2020Support::Driver;
+  if (!m_info || !m_info->SupportsColorimetry(KODI::UTILS::Colorimetry::BT2020_RGB))
+    return SDRBT2020Support::Display;
+  return SDRBT2020Support::Available;
 }
 
 DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
 {
   DVBRIDGE::LldvConnectorStatus status;
-  if (const auto* display = GetDisplayInfo())
-    status.sink = display->GetDolbyVisionCaps();
   auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (connector && connector->IsConnected())
+  {
+    std::lock_guard lock(m_lldvEdidMutex);
+    status.connectorId = *connector->GetConnectorId();
+    status.edidGeneration = m_lldvEdidGeneration;
+    if (status.connectorId == m_lldvEdidConnector)
+      status.display = m_lldvDisplay;
+    if (status.connectorId == m_lldvRejected.connectorId &&
+        status.edidGeneration == m_lldvRejected.edidGeneration)
+      status.rejected = m_lldvRejected.format;
+    status.sink = status.display.sink;
+  }
   if (connector && connector->IsConnected() && connector->SupportsProperty("CB1_LLDV_FORMAT"))
   {
     const auto native10 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 useful bits");
     const auto native12 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 12 bits");
+    const auto rgb10 = connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 bits RGB10 lab");
+    status.rgb10Scanout = rgb10.has_value();
     const auto forced10 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 bits forced");
-    if (native10)
+    if (native10 || rgb10)
       status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_10);
     if (native12)
       status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_12);
@@ -1642,8 +1784,11 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
     status.timingCommitted = status.currentTiming && atomic && atomic->IsActive() &&
                              !atomic->HasPendingCB1Page() && atomic->IsSelectedModeCommitted();
     const auto active = connector->ReadPropertyValue("CB1_LLDV_FORMAT");
-    if (active && active == native10)
+    if (active && (active == native10 || active == rgb10))
+    {
       status.active = DVBRIDGE::LldvFormat::Y422_10;
+      status.activeRgb10Scanout = active == rgb10;
+    }
     else if (active && active == native12)
       status.active = DVBRIDGE::LldvFormat::Y422_12;
     else if (active && active == forced10)

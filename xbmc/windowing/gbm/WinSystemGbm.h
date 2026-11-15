@@ -78,6 +78,7 @@ public:
   bool SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays) override;
 
   void FlipPage(bool rendered, bool videoLayer, bool async);
+  bool FlipPage(bool rendered, bool videoLayer, bool async, const std::shared_ptr<gbm_bo>& carrier);
 #ifdef HAVE_DVBRIDGE
   bool FlipDVBridgePage(CDVBridgeState& state, bool restore, bool async = false,
                         bool retainSignal = false, struct gbm_bo* bo = nullptr);
@@ -110,6 +111,8 @@ public:
   bool IsHDRDisplay() override;
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
 #ifdef HAVE_DVBRIDGE
+  enum class SDRBT2020Support { Available, Display, Driver };
+  SDRBT2020Support GetSDRBT2020Support() const;
   DVBRIDGE::LldvConnectorStatus GetLldvConnectorStatus() const;
   bool FlipPlayerLedPage(CDVBridgeState& state, const DVBRIDGE::LldvTransport& packed,
                          bool async = false, gbm_bo* carrier = nullptr,
@@ -132,6 +135,8 @@ protected:
   virtual bool ConnectorPreferencesAllowed() const { return true; }
   void DeferConnectorPreferences();
   void ApplyColorspace();
+  bool CanKeepHDR10Signal(const VideoPicture& picture) const;
+  bool PresentHDR10Handoff(const VideoPicture& picture);
   virtual std::optional<bool> TransportLimitedColor() const { return {}; }
   bool OrdinaryShaderLimitedColor();
   bool RequestedLimitedColor() const { return GetColorRange() == ColorRange::LIMITED; }
@@ -259,6 +264,14 @@ private:
 
   std::unique_ptr<UTILS::CDisplayInfo> m_info;
   std::vector<uint8_t> m_displayEdid;
+#ifdef HAVE_DVBRIDGE
+  mutable std::mutex m_lldvEdidMutex;
+  std::vector<uint8_t> m_lldvEdid;
+  DVBRIDGE::LldvDisplay m_lldvDisplay;
+  uint32_t m_lldvEdidConnector{};
+  uint64_t m_lldvEdidGeneration{};
+  DVBRIDGE::LldvTransport m_lldvRejected;
+#endif
 };
 
 } // namespace GBM

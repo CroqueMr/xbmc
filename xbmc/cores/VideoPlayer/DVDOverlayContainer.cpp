@@ -11,6 +11,7 @@
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDInputStreams/DVDInputStreamNavigator.h"
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 
@@ -49,7 +50,12 @@ void CDVDOverlayContainer::ProcessAndAddOverlayIfValid(const std::shared_ptr<CDV
       m_overlays[i]->iPTSStopTime = pOverlay->iPTSStartTime;
   }
 
-  m_overlays.emplace_back(pOverlay);
+  auto position = m_overlays.end();
+  if (pOverlay->GetSource() == DVDOverlaySource::SUBTITLE)
+    position = std::ranges::find_if(m_overlays, [](const auto& overlay) {
+      return overlay->GetSource() == DVDOverlaySource::MENU;
+    });
+  m_overlays.insert(position, pOverlay);
 }
 
 VecOverlays* CDVDOverlayContainer::GetOverlays()
@@ -141,6 +147,14 @@ void CDVDOverlayContainer::Clear(DVDOverlaySource source)
 size_t CDVDOverlayContainer::GetSize()
 {
   return m_overlays.size();
+}
+
+size_t CDVDOverlayContainer::GetSize(DVDOverlaySource source)
+{
+  std::unique_lock lock(*this);
+  return std::ranges::count_if(m_overlays, [source](const auto& overlay) {
+    return overlay->GetSource() == source;
+  });
 }
 
 bool CDVDOverlayContainer::ContainsOverlayType(DVDOverlayType type)

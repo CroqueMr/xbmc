@@ -64,6 +64,7 @@ public:
     bool AsyncPreparationConfigured() const;
     bool FELHardwareUpscaling(uint64_t stream);
     void SetSpatialMethod(ESCALINGMETHOD method, bool exact);
+    int Upscaler() const;
     pl_opengl GL() const;
     pl_log Log() const;
     void Retain(std::shared_ptr<void> base, std::shared_ptr<void> enhancement = {});
@@ -79,7 +80,7 @@ public:
     cb1_ai_status BeginHDR10AI(const char* bundle,
         const DVBRIDGE::OutputPreferences& preferences, DVBRIDGE::SourceBinding binding,
         double pts, uint64_t now, bool buffered = true);
-    cb1_ai_status AnalyseHDR10AI(const Layer& base, double headPts);
+    cb1_ai_status AnalyseHDR10AI(const Layer& base);
     HDR10AISource::Decision PrepareHDR10AIQueue(std::span<const Layer> queue,
         const DVBRIDGE::OutputPreferences& preferences, const char* bundle,
         uint64_t now, bool end, cb1_ai_result* result, bool paused = false,
@@ -97,6 +98,7 @@ public:
   {
     dvbridge_gl_layout layout;
     ESCALINGMETHOD scalingMethod{VS_SCALINGMETHOD_LINEAR};
+    ESCALINGMETHOD autoScalingMethod{VS_SCALINGMETHOD_LINEAR};
     int width;
     int height;
     dvbridge_gl_plane planes[3];
@@ -116,7 +118,7 @@ public:
 #ifdef CB1_HAS_HDR10_AI
   cb1_ai_status BeginHDR10AI(const char* bundle, const DVBRIDGE::OutputPreferences& preferences,
       DVBRIDGE::SourceBinding binding, double pts, uint64_t now);
-  cb1_ai_status AnalyseHDR10AI(const Layer& base, double headPts);
+  cb1_ai_status AnalyseHDR10AI(const Layer& base);
   cb1_ai_status CollectHDR10AI();
   cb1_ai_status SealHDR10AI(double pts);
   void EndHDR10AI();
@@ -157,12 +159,15 @@ public:
     std::optional<std::array<uint8_t,CB1_HDR10PLUS_VSIF_BYTES>> hdr10plus{};
     bool hdr10plusAccepted{};
     cb1_cmv40_status cmv40Status{CB1_CMV40_OFF};
+    int upscaler{-1};
   };
+  uint64_t PendingSourceGeneration() const { return m_pendingSourceInfo.informationGeneration; }
   Submission CaptureSubmission() const
   {
     auto submission=m_submission;
     submission.informationGeneration=m_pendingSourceInfo.informationGeneration;
     submission.cmv40Status=dvbridge_renderer_cmv40_status(m_renderer);
+    submission.upscaler = m_context->Upscaler();
     const bool fel=(m_pendingInfo & CDVPlaybackInfo::FEL) != 0;
     submission.felFilter=fel ? m_requested.felUpscaling : -1;
     submission.felBackend=fel ? (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE || m_requested.felUpscaling == 2 ? 3 :
@@ -218,6 +223,7 @@ public:
   bool PlayerLed() const { return m_playerLed; }
   bool SetHDR10Session(const dvbridge_hdr10_session& session, uint64_t stream = 0,
                       bool limited = false);
+  bool SetSDROutputRange(bool limited);
   bool RebindOutputSurface(bool hdr10, bool sdr = false, unsigned int framebuffer = 0);
   void Reset();
   bool Prepare(const Layer& base, const Layer* enhancement,
@@ -338,6 +344,7 @@ private:
   dvbridge_geometry m_sourceGeometry{};
   ESCALINGMETHOD m_spatialMethod{VS_SCALINGMETHOD_MAX};
   uint64_t m_geometryRevision{1};
+  dvbridge_gamut m_sdrGamut{DVBRIDGE_GAMUT_UNSET};
   bool m_geometryKnown{};
   bool Failure(const char* stage);
   void PreparedAudit(std::string_view sdr = {});
@@ -353,6 +360,7 @@ private:
   DVBRIDGE::DiagnosticFailures m_auditCreative;
   DVBRIDGE::DiagnosticFailures m_auditCMv40;
   uint64_t m_cmv40LogStream{};
+  uint64_t m_lldvEdidGeneration{};
   uint64_t m_auditStream{},m_auditSource{},m_auditPolicy{};
   int m_auditSerial{},m_auditRequestedSerial{},m_auditPreparedSerial{},m_auditCommittedSerial{};
   uint64_t m_prepares{0}, m_directFrames{0}, m_presentations{0}, m_failedPresentations{0};

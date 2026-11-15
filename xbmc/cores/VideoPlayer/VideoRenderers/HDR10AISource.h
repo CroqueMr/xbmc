@@ -30,7 +30,7 @@ public:
       std::shared_ptr<const AVDynamicHDRPlus> source, double pts, uint64_t now,
       cb1_ai_result* result);
   cb1_ai_status Submit(const pl_frame* frame, DVBRIDGE::SourceBinding binding, double pts,
-      double headPts, std::shared_ptr<void> lease);
+      std::shared_ptr<void> lease);
   cb1_ai_status Seal(double pts);
   void End();
   Decision Prediction(DVBRIDGE::SourceBinding binding,

@@ -1139,6 +1139,8 @@ void CGUIControlButtonSetting::Update(bool fromControl, bool updateDisplayOnly)
             strText=CDVPlaybackModes::DefaultPlaybackLabel();
           else if (m_pSetting->GetId()=="dvbridge.lldvformat")
             strText=CDVPlaybackModes::LldvPreferenceLabel();
+          else if (m_pSetting->GetId()=="dvbridge.sdrgamut")
+            strText=CDVPlaybackModes::SDRGamutLabel();
           else
 #endif
             strText = m_pButton->GetLabel2();

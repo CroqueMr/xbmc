@@ -157,8 +157,17 @@ std::vector<uint8_t> CDRMConnector::GetEDID(bool refresh) const
     if (!current) return {};
     const auto property = GetPropertyId("EDID");
     blob_id = 0;
-    for (int i=0;i<current->count_props;++i)
-      if (current->props[i] == property) blob_id = current->prop_values[i];
+    if (current->connection == DRM_MODE_CONNECTED)
+    {
+      for (int i = 0; i < current->count_props; ++i)
+      {
+        if (current->props[i] == property)
+        {
+          blob_id = current->prop_values[i];
+          break;
+        }
+      }
+    }
     drmModeFreeConnector(current);
   }
 

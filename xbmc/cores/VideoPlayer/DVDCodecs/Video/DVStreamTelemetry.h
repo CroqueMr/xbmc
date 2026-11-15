@@ -74,7 +74,7 @@ struct StreamSnapshot
     std::optional<VideoProcessingInfo::PlayerLed> lldv{};
 #ifdef CB1_HAS_HDR10_AI
     bool hdr10AI{};
-    bool hlgAI{}, sdrHDRSource{};
+    bool hlgAI{}, sdrHDRSource{}, sdrHLGSource{};
     bool hdr10PlusDV{}, untranslatedCurve{}, untranslatedSaturation{};
     unsigned guidedSourceFields{}, guidedEstimatedFields{};
     std::array<unsigned,6> aiL1L3{};
@@ -86,7 +86,8 @@ struct StreamSnapshot
     {
       if (!flags) return "";
       if (lldv) return cb1_circuit_version(CB1_DV_DV_LLDV);
-      if (effective==8) return cb1_circuit_version(sdrHDRSource ? CB1_HDR10_SDR : CB1_DV_SDR);
+      if (effective==8)
+        return cb1_circuit_version(sdrHLGSource ? CB1_HLG_SDR : sdrHDRSource ? CB1_HDR10_SDR : CB1_DV_SDR);
       if (hdr10AI)
       {
         if (hlgAI) return cb1_circuit_version(CB1_HLG_DV_REFERENCE);

@@ -25950,7 +25950,7 @@ msgid " - HDR10 conversion method"
 msgstr ""
 
 msgctxt "#40821"
-msgid "HDR10 Rendering uses source metadata. HDR10 Rendering Reference maps to the configured display peak, black level and gamut. HDR10+ sends picture statistics and representable trims to a compatible display."
+msgid "HDR10 Rendering uses source metadata. LLDV Reference – HDR10 Output maps to the configured display peak, black level and gamut. HDR10+ sends picture statistics and representable trims to a compatible display."
 msgstr ""
 
 msgctxt "#40922"
@@ -25962,7 +25962,7 @@ msgid "No HDR10+ output"
 msgstr ""
 
 msgctxt "#40925"
-msgid " - Disable L2 trims"
+msgid "Disable L2 trims"
 msgstr ""
 
 msgctxt "#40926"
@@ -25974,7 +25974,7 @@ msgid "HDR10 Rendering"
 msgstr ""
 
 msgctxt "#40823"
-msgid "HDR10 Rendering Reference"
+msgid "LLDV Reference – HDR10 Output"
 msgstr ""
 
 msgctxt "#40829"
@@ -25982,7 +25982,7 @@ msgid " - TV peak luminance (nits)"
 msgstr ""
 
 msgctxt "#40830"
-msgid "Enter a known TV peak, 1 to 10000 nits. This is a processing reference, not measured TV light. HDR10 Rendering Reference has its own display calibration settings."
+msgid "Enter a known TV peak, 1 to 10000 nits. This is a processing reference, not measured TV light. LLDV Reference – HDR10 Output has its own display calibration settings."
 msgstr ""
 
 msgctxt "#40831"
@@ -26115,11 +26115,11 @@ msgid "Kodi default"
 msgstr ""
 
 msgctxt "#40867"
-msgid "Dolby Vision rendering (AI)"
+msgid "Dolby Vision Rendering"
 msgstr ""
 
 msgctxt "#40868"
-msgid "Dolby Vision Adaptive HDR Mapping (AI)"
+msgid "Dolby Vision Adaptive HDR Mapping"
 msgstr ""
 
 msgctxt "#40870"
@@ -26127,7 +26127,27 @@ msgid "Choose the default playback circuit for HDR10 sources. New files use this
 msgstr ""
 
 msgctxt "#40876"
-msgid "Playback modes | Source: {0}"
+msgid "Quick Switch"
+msgstr ""
+
+msgctxt "#40877"
+msgid "Pending"
+msgstr ""
+
+msgctxt "#40878"
+msgid "Selected"
+msgstr ""
+
+msgctxt "#40879"
+msgid "Output"
+msgstr ""
+
+msgctxt "#40880"
+msgid "Dolby Vision Adaptive HDR"
+msgstr ""
+
+msgctxt "#40881"
+msgid "Master Reference is recommended over LLDV."
 msgstr ""
 
 msgctxt "#40907"
@@ -26307,7 +26327,7 @@ msgid "Adjust only bitmap subtitles in their authoring domain before composition
 msgstr ""
 
 msgctxt "#40980"
-msgid " - Add CM4.0 metadata"
+msgid "Add CM4.0 metadata"
 msgstr ""
 
 msgctxt "#40981"
@@ -26439,11 +26459,11 @@ msgid "HLG default playback"
 msgstr ""
 
 msgctxt "#41132"
-msgid "Choose the default playback circuit for original HLG video. New files use this default. Playback-menu choices apply only to the current file. Kodi default uses native Kodi playback."
+msgid "Choose the default playback circuit for original HLG video. Playback-menu choices apply only to the current file. Kodi default uses native HLG playback. SDR Rendering uses the configured HDR/DV to SDR target."
 msgstr ""
 
 msgctxt "#41133"
-msgid "HDR/DV to SDR target"
+msgid " - HDR/DV to SDR target"
 msgstr ""
 
 msgctxt "#41134"
@@ -26487,7 +26507,7 @@ msgid "LLDV output format"
 msgstr ""
 
 msgctxt "#41201"
-msgid "Choose the format preference for Dolby Vision Player-Led. Availability depends on the display, driver and current HDMI timing."
+msgid "Choose the format preference for Dolby Vision LLDV Reference. Availability depends on the display, driver and current HDMI timing."
 msgstr ""
 
 msgctxt "#41202"
@@ -26495,7 +26515,7 @@ msgid "Automatic"
 msgstr ""
 
 msgctxt "#41203"
-msgid "YCbCr 4:2:2 · 10 useful bits"
+msgid "YCbCr 4:2:2 · 10 bits"
 msgstr ""
 
 msgctxt "#41204"
@@ -26519,7 +26539,7 @@ msgid "YCbCr 4:4:4 · 12 bits"
 msgstr ""
 
 msgctxt "#41209"
-msgid "Display capabilities unavailable or invalid"
+msgid "No valid display data"
 msgstr ""
 
 msgctxt "#41210"
@@ -26527,15 +26547,15 @@ msgid "Not advertised by the display for LLDV"
 msgstr ""
 
 msgctxt "#41211"
-msgid "LLDV format not qualified on this driver"
+msgid "Not qualified by driver"
 msgstr ""
 
 msgctxt "#41212"
-msgid "Unavailable at the current HDMI timing"
+msgid "HDMI mode unsupported"
 msgstr ""
 
 msgctxt "#41213"
-msgid "No compatible LLDV format at this timing"
+msgid "No compatible format"
 msgstr ""
 
 msgctxt "#41214"
@@ -26559,7 +26579,7 @@ msgid "Active · forced · experimental"
 msgstr ""
 
 msgctxt "#41221"
-msgid "Dolby Vision Player-Led"
+msgid "Dolby Vision LLDV Reference"
 msgstr ""
 
 msgctxt "#41222"
@@ -26588,4 +26608,232 @@ msgstr ""
 
 msgctxt "#41228"
 msgid "Normal keeps CB1 warnings, errors and key playback and display events. Enhanced includes detailed CB1 diagnostics. Kodi debug logging is controlled separately."
+msgstr ""
+
+msgctxt "#41270"
+msgid " - SDR output gamut"
+msgstr ""
+
+msgctxt "#41271"
+msgid "Select the colour gamut used by SDR Rendering. BT.709 is compatible with standard SDR displays."
+msgstr ""
+
+msgctxt "#41272"
+msgid "BT.709"
+msgstr ""
+
+msgctxt "#41273"
+msgid "BT.2020"
+msgstr ""
+
+msgctxt "#41274"
+msgid "The display does not advertise BT.2020 RGB."
+msgstr ""
+
+msgctxt "#41275"
+msgid "The active HDMI driver cannot signal BT.2020 RGB."
+msgstr ""
+
+msgctxt "#41276"
+msgid "Dolby Vision active area"
+msgstr ""
+
+msgctxt "#41280"
+msgid "Display EDID unavailable"
+msgstr ""
+
+msgctxt "#41281"
+msgid "Display EDID incomplete"
+msgstr ""
+
+msgctxt "#41282"
+msgid "Display EDID invalid"
+msgstr ""
+
+msgctxt "#41283"
+msgid "TV does not announce Dolby Vision"
+msgstr ""
+
+msgctxt "#41284"
+msgid "Unsupported or ambiguous Dolby Vision EDID block"
+msgstr ""
+
+msgctxt "#41285"
+msgid "TV does not announce Low-Latency Dolby Vision"
+msgstr ""
+
+msgctxt "#41286"
+msgid "Invalid LLDV luminance in EDID"
+msgstr ""
+
+msgctxt "#41287"
+msgid "Invalid LLDV primaries in EDID"
+msgstr ""
+
+msgctxt "#41288"
+msgid "LLDV"
+msgstr ""
+
+msgctxt "#41289"
+msgid "Available"
+msgstr ""
+
+msgctxt "#41290"
+msgid "EDID"
+msgstr ""
+
+msgctxt "#41291"
+msgid "LLDV only"
+msgstr ""
+
+msgctxt "#41292"
+msgid "TV-led + LLDV"
+msgstr ""
+
+msgctxt "#41293"
+msgid "TV-led only"
+msgstr ""
+
+msgctxt "#41294"
+msgid "Peak / black"
+msgstr ""
+
+msgctxt "#41295"
+msgid "EDID primaries"
+msgstr ""
+
+msgctxt "#41296"
+msgid "Driver transport"
+msgstr ""
+
+msgctxt "#41298"
+msgid "Driver rejected format"
+msgstr ""
+
+msgctxt "#41299"
+msgid "HDMI timing"
+msgstr ""
+
+msgctxt "#41320"
+msgid "Display details"
+msgstr ""
+
+msgctxt "#41321"
+msgid "LLDV available"
+msgstr ""
+
+msgctxt "#41322"
+msgid "LLDV unavailable"
+msgstr ""
+
+msgctxt "#41323"
+msgid "Dolby Vision EDID"
+msgstr ""
+
+msgctxt "#41324"
+msgid "TV modes"
+msgstr ""
+
+msgctxt "#41325"
+msgid "Peak luminance"
+msgstr ""
+
+msgctxt "#41326"
+msgid "Black level"
+msgstr ""
+
+msgctxt "#41327"
+msgid "Red x/y"
+msgstr ""
+
+msgctxt "#41328"
+msgid "Green x/y"
+msgstr ""
+
+msgctxt "#41329"
+msgid "Blue x/y"
+msgstr ""
+
+msgctxt "#41330"
+msgid "EDID size"
+msgstr ""
+
+msgctxt "#41331"
+msgid "Forced · experimental"
+msgstr ""
+
+msgctxt "#41332"
+msgid "Not advertised by TV"
+msgstr ""
+
+msgctxt "#41300"
+msgid "EDID target gamut exceeds BT.2020"
+msgstr ""
+
+msgctxt "#41301"
+msgid "Kodi default"
+msgstr ""
+
+msgctxt "#41302"
+msgid "Upscaler – 1080p and above"
+msgstr ""
+
+msgctxt "#41303"
+msgid "Upscaler – Below 1080p"
+msgstr ""
+
+msgctxt "#41304"
+msgid "Select the filter based on the source video resolution. Kodi default keeps the existing video scaling settings."
+msgstr ""
+
+msgctxt "#41305"
+msgid "Upscaler"
+msgstr ""
+
+msgctxt "#41306"
+msgid "FSR 1 (EASU)"
+msgstr ""
+
+msgctxt "#41260"
+msgid "Disable dialogue normalization for Dolby Digital / Dolby Digital Plus"
+msgstr ""
+
+msgctxt "#41261"
+msgid "Keep the original decoded level by neutralizing dialogue normalization in supported AC-3 and E-AC-3 passthrough streams."
+msgstr ""
+
+msgctxt "#41262"
+msgid "Include Dolby Digital Plus Atmos"
+msgstr ""
+
+msgctxt "#41263"
+msgid "Also neutralize dialogue normalization in Dolby Digital Plus Atmos passthrough."
+msgstr ""
+
+msgctxt "#41264"
+msgid "Disable dialogue normalization for Dolby TrueHD Atmos"
+msgstr ""
+
+msgctxt "#41265"
+msgid "Neutralize dialogue normalization for the Atmos presentation in supported Dolby TrueHD passthrough streams."
+msgstr ""
+
+msgctxt "#41266"
+msgid "Disable dialogue normalization for DTS / DTS-HD"
+msgstr ""
+
+msgctxt "#41267"
+msgid "Neutralize dialogue normalization in supported DTS and DTS-HD passthrough streams."
+msgstr ""
+
+msgctxt "#41307"
+msgid "FSRCNNX x2"
+msgstr ""
+
+msgctxt "#41308"
+msgid "Anime4K Fast"
+msgstr ""
+
+msgctxt "#41309"
+msgid "FSR 1 (EASU + RCAS)"
 msgstr ""

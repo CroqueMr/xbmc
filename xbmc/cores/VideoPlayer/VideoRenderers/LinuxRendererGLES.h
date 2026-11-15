@@ -83,6 +83,14 @@ public:
   CRenderInfo GetRenderInfo() override;
   bool ConfigChanged(const VideoPicture& picture) override;
 #ifdef CB1_HAS_HDR10_AI
+  void PreserveHDR10AIOutputOnReconfigure(const VideoPicture& picture) override;
+  bool HDR10AIQueueEligible() const override { return m_softwareAIBuffers > NUM_BUFFERS; }
+  bool HDR10AILookahead() const override { return HDR10AIQueueEligible() && m_aiLookahead; }
+  bool HDR10AIFrameCommitted() const override;
+  bool PrepareHDR10AIQueue(const std::deque<int>& queue, bool end, bool paused,
+                          uint64_t presentationDeadline = 0) override;
+  HDR10AIQueuePreparation CaptureHDR10AIQueue(const std::deque<int>& queue, bool end,
+                                             bool paused, uint64_t presentationDeadline) override;
   bool HDR10AIFramePending() const override { return HDR10AILookahead() && !m_aiFrameRendered; }
 #endif
 
@@ -93,10 +101,17 @@ public:
 
 protected:
   bool m_frameRendered{false};
+  enum class RetainedOutput { None, NativeDV, HDR10 };
+  bool Configure(const VideoPicture& picture, float fps, unsigned int orientation,
+                 RetainedOutput retainedOutput);
   bool ConfigureVideoOutput(const VideoPicture& picture);
 #ifdef CB1_HAS_HDR10_AI
+  virtual bool HDR10AITextureReady(int index) const { return m_buffers[index].loaded; }
+  unsigned m_softwareAIBuffers{NUM_BUFFERS};
+  bool m_aiLookahead{};
   bool m_aiOutputPending{false};
   bool m_aiFrameRendered{true};
+  bool m_preserveHLGOutput{false};
 #endif
   // Returns 0 if scaling is below hqscalers threshold.
   // Otherwise returns the scale factor: < 1.0 = downscale, > 1.0 = upscale.
@@ -114,8 +129,13 @@ protected:
   virtual void ReleaseShaders();
   void SetTextureFilter(GLenum method);
   ESCALINGMETHOD SelectScalingMethod() const;
+  ESCALINGMETHOD ResolveScalingMethod(ESCALINGMETHOD method) const;
+#ifdef HAVE_DVBRIDGE
+  ESCALINGMETHOD AutoUpscalingOverride() const;
+#endif
   void UpdateVideoFilter();
   void CheckVideoParameters(int index);
+  void UpdateActiveArea(int index);
   AVColorPrimaries GetSrcPrimaries(AVColorPrimaries srcPrimaries, unsigned int width, unsigned int height);
 
   // textures
@@ -141,6 +161,12 @@ protected:
   // renderers
   void RenderToFBO(int index, int field);
   void RenderFromFBO();
+#ifdef HAVE_DVBRIDGE
+  bool RunRCAS();
+  CFrameBufferObject m_rcasInput;
+  std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> m_rcasShader;
+  int m_rcasWidth{}, m_rcasHeight{};
+#endif
   void RenderSinglePass(int index, int field); // single pass glsl renderer
 
   // hooks for HwDec rendering
@@ -152,6 +178,12 @@ protected:
   virtual bool BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer);
   dvbridge_geometry DVBridgeGeometry();
   bool m_dvRequested{false};
+  struct ShaderUpscaler;
+  std::unique_ptr<ShaderUpscaler> m_shaderUpscaler;
+  bool RenderShaderUpscaler(int index, int preset);
+
+  int m_reportedUpscaler{-2};
+  uint64_t m_reportedUpscalerGeneration{};
 #endif
   virtual void AfterRenderHook(int idx) {}
 
@@ -220,11 +252,14 @@ protected:
     AVMasteringDisplayMetadata displayMetadata;
     bool hasLightMetadata{false};
     AVContentLightMetadata lightMetadata;
+    bool hasHDR10LightMetadata{false};
+    StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};
     CDVMetadataBuffer doviMetadata;
 #ifdef HAVE_DVBRIDGE
     std::shared_ptr<AVFrame> doviEnhancement;
     DVBRIDGE::SourceBinding doviEnhancementBinding{};
     std::shared_ptr<VideoPicture> doviSourcePicture;
+    uint64_t informationGeneration{};
 #endif
     double doviPts = DVD_NOPTS_VALUE;
   };

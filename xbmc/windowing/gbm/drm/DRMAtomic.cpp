@@ -213,16 +213,27 @@ int CDRMAtomic::TestAtomicFrame(int& flags, bool frameMetadata)
 
 bool CDRMAtomic::PrepareSDRRestore(int& flags)
 {
-  if (!m_sdrRestorePending) return true;
-  if (!m_connector) return false;
-  if (!m_connector->SupportsProperty("HDR_OUTPUT_METADATA"))
+  if (!m_connector) return !m_sdrRestorePending;
+  // The connector can retain CB1 transport after its userspace owner exits.
+  // Take it over in the first real SDR modeset, with the GUI framebuffer.
+  const auto inheritedStandard = !m_committedMode.clock &&
+      m_connector->GetPropertyValue("DVBRIDGE_DV_STANDARD_LAB").value_or(0);
+  const auto inheritedPlayerLed = !m_committedMode.clock &&
+      m_connector->GetPropertyValue("CB1_LLDV_FORMAT").value_or(0);
+  const bool inheritedTransport = inheritedStandard || inheritedPlayerLed;
+  if (!m_sdrRestorePending && !inheritedTransport) return true;
+  const bool hasHDRMetadata = m_connector->SupportsProperty("HDR_OUTPUT_METADATA");
+  if (!hasHDRMetadata && !inheritedTransport)
   {
     SetSDRRestorePending(false);
     return true;
   }
+  if (inheritedTransport) SetSDRRestorePending(true);
   m_req->sdrRestore = true;
   flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
-  if (!AddProperty(m_connector, "HDR_OUTPUT_METADATA", 0)) return false;
+  if ((inheritedStandard && !AddProperty(m_connector, "DVBRIDGE_DV_STANDARD_LAB", 0)) ||
+      (inheritedPlayerLed && !AddProperty(m_connector, "CB1_LLDV_FORMAT", 0)) ||
+      (hasHDRMetadata && !AddProperty(m_connector, "HDR_OUTPUT_METADATA", 0))) return false;
   if (m_connector->SupportsProperty("DVBRIDGE_HDR10_DEEP_COLOR") &&
       !AddProperty(m_connector, "DVBRIDGE_HDR10_DEEP_COLOR", 0)) return false;
   if (m_connector->SupportsProperty("Colorspace"))
@@ -378,7 +389,7 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (CServiceBroker::GetLogging().CanLogComponent(LOGWINDOWING))
     m_req->LogAtomicRequest();
 
-  if ((strict || m_req->sdrRestore) && m_propertyFailure)
+  if ((strict || m_req->sdrRestore || m_colorRangeTransition) && m_propertyFailure)
   {
     return reject("properties", EINVAL);
   }
@@ -659,6 +670,24 @@ bool CDRMAtomic::FlipPageTransactional(struct gbm_bo* bo, bool restore, bool asy
     if (fd >= 0) close(fd);
   }
   return accepted;
+}
+
+bool CDRMAtomic::FlipPageWithHDR10Metadata(struct gbm_bo* bo, uint32_t blob)
+{
+  auto* fb = DrmFbGetFromBo(bo);
+  if (!fb)
+    return false;
+
+  // Treat a new static packet and framebuffer as one color transition.
+  // Ordinary fallback would submit the new framebuffer with the old packet.
+  if (!AddProperty(m_connector, "HDR_OUTPUT_METADATA", blob))
+  {
+    FinishRequest(false);
+    return false;
+  }
+  m_colorRangeTransition = true;
+  m_lastPageAccepted = DrmAtomicCommit(fb->fb_id, 0, true, false);
+  return m_lastPageAccepted;
 }
 
 bool CDRMAtomic::TestFramebuffer(struct gbm_bo* bo)

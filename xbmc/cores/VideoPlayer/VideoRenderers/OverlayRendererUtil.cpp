@@ -292,6 +292,11 @@ bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay)
   // Convert to sRGB unless the overlay is going to a PQ destination: the HDR
   // composite, or a GUI layer that is output as an HDR signal.
   const CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
+#ifdef HAVE_DVBRIDGE
+  if (const auto* gbm = dynamic_cast<const KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(winSystem);
+      gbm && gbm->IsDVBridgeScreenshotSDR())
+    return true; // The SDR compositor expects sRGB overlays, including PQ bitmap palettes.
+#endif
   const bool destinationIsPQ =
       winSystem->IsHdrComposite() || winSystem->GetEotf() != KODI::UTILS::Eotf::TRADITIONAL_SDR;
   return !destinationIsPQ;

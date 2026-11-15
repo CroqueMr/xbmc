@@ -8,7 +8,9 @@ class VideoPicture;
 
 namespace DVBRIDGE
 {
+enum class NativeHDRSignal { None, HDR10, HLG, Unknown };
 inline std::atomic<int> modeChangeResolution{-1};
+inline std::atomic<NativeHDRSignal> modeChangeNativeHDR{NativeHDRSignal::None};
 // A synchronous GUI request must not replace a queued decoder request's intent.
 inline thread_local std::optional<int> guiModeChangeResolution;
 // Keep software metadata probes and ordinary HDR/SDR playback on Kodi's path.

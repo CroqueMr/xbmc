@@ -381,11 +381,42 @@ void CBaseRenderer::ManageRenderArea()
   const bool eyeCropped =
       (stereo_view == RenderStereoView::LEFT || stereo_view == RenderStereoView::RIGHT);
 
+  float aspectRatio = (eyeCropped ? GetPerEyeAspectRatio() : GetAspectRatio()) *
+                      CDisplaySettings::GetInstance().GetPixelRatio();
+  if (m_videoSettings.m_ViewMode == ViewModeActiveArea && !stereo_mode &&
+      m_renderOrientation == 0)
+    FitActiveArea(aspectRatio);
+
   CalcNormalRenderRect(m_viewRect.x1, m_viewRect.y1, m_viewRect.Width(), m_viewRect.Height(),
-                       (eyeCropped ? GetPerEyeAspectRatio() : GetAspectRatio()) *
-                           CDisplaySettings::GetInstance().GetPixelRatio(),
+                       aspectRatio,
                        CDisplaySettings::GetInstance().GetZoomAmount(),
                        CDisplaySettings::GetInstance().GetVerticalShift());
+}
+
+void CBaseRenderer::FitActiveArea(float& aspectRatio)
+{
+  const CRect frame(0.0f, 0.0f, static_cast<float>(m_sourceWidth),
+                    static_cast<float>(m_sourceHeight));
+  CRect area(m_activeArea);
+  area.Intersect(frame);
+  if (area.IsEmpty() || area == frame)
+    return;
+
+  const float areaAspectRatio =
+      aspectRatio * (area.Width() / frame.Width()) / (area.Height() / frame.Height());
+  auto& display = CDisplaySettings::GetInstance();
+  CRect whole;
+  CRect fitted;
+  CalcDestRect(m_viewRect.x1, m_viewRect.y1, m_viewRect.Width(), m_viewRect.Height(), aspectRatio,
+               display.GetZoomAmount(), display.GetVerticalShift(), whole);
+  CalcDestRect(m_viewRect.x1, m_viewRect.y1, m_viewRect.Width(), m_viewRect.Height(),
+               areaAspectRatio, display.GetZoomAmount(), display.GetVerticalShift(), fitted);
+  // Compare the area's width inside the whole-frame fit; one pixel absorbs rounding.
+  if (fitted.Width() <= whole.Width() * area.Width() / frame.Width() + 1.0f)
+    return;
+
+  m_sourceRect = area;
+  aspectRatio = areaAspectRatio;
 }
 
 float CBaseRenderer::GetPerEyeAspectRatio() const
@@ -450,7 +481,7 @@ EShaderFormat CBaseRenderer::GetShaderFormat()
 
 void CBaseRenderer::SetViewMode(int viewMode)
 {
-  if (viewMode < ViewModeNormal || viewMode > ViewModeAuto)
+  if (viewMode < ViewModeNormal || viewMode > ViewModeActiveArea)
     viewMode = ViewModeNormal;
 
   m_videoSettings.m_ViewMode = viewMode;

@@ -18,6 +18,10 @@
 #include "resources/ResourcesComponent.h"
 #include "utils/StringUtils.h"
 #ifdef HAVE_DVBRIDGE
+#include "GUIDialogTextViewer.h"
+#include "guilib/GUIComponent.h"
+#include "guilib/GUIWindowManager.h"
+#include "guilib/GUIFont.h"
 #include "guilib/GUIFontManager.h"
 #include "guilib/GUIIncludes.h"
 #include "windowing/GraphicContext.h"
@@ -33,6 +37,10 @@
 #define CONTROL_EXTRA_BUTTON    5
 #define CONTROL_EXTRA_BUTTON2 8
 #define CONTROL_CANCEL_BUTTON   7
+
+#ifdef HAVE_DVBRIDGE
+constexpr int CONTROL_LLDV_DETAILS = 9;
+#endif
 
 CGUIDialogSelect::CGUIDialogSelect() : CGUIDialogSelect(WINDOW_DIALOG_SELECT) {}
 
@@ -134,9 +142,11 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
         const RESOLUTION_INFO resolution(1920, 1080);
         SetCoordsRes(resolution);
         g_fontManager.LoadTTF("CB1.SwitchBody", "special://xbmc/media/Fonts/arial.ttf",
-                            0xfff0f0f0, 0, 25, 0, false, 1.0f, 1.0f, &resolution);
+                            0xfff2f5f6, 0, 21, 0, false, 1.0f, 1.0f, &resolution);
+        g_fontManager.LoadTTF("CB1.SwitchTitle", "special://xbmc/media/Fonts/arial.ttf",
+                            0xfff2f5f6, 0, 26, FONT_STYLE_BOLD, false, 1.0f, 1.0f, &resolution);
         g_fontManager.LoadTTF("CB1.SwitchHelp", "special://xbmc/media/Fonts/arial.ttf",
-                            0xffa0a0a0, 0, 23, 0, false, 1.0f, 1.0f, &resolution);
+                            0xffc2cccf, 0, 18, 0, false, 1.0f, 1.0f, &resolution);
       }
 #endif
       m_bButtonPressed = false;
@@ -151,6 +161,29 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
   case GUI_MSG_CLICKED:
     {
       int iControl = message.GetSenderId();
+#ifdef HAVE_DVBRIDGE
+      if (iControl == CONTROL_LLDV_DETAILS || iControl == CONTROL_EXTRA_BUTTON)
+      {
+        const auto details = GetProperty("CB1.LldvDetails").asString();
+        if (!details.empty())
+        {
+          auto* viewer = CServiceBroker::GetGUI()->GetWindowManager()
+                             .GetWindow<CGUIDialogTextViewer>(WINDOW_DIALOG_TEXT_VIEWER);
+          if (viewer)
+          {
+            viewer->SetHeading(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(41320));
+            viewer->SetText(details);
+            viewer->UseMonoFont(false);
+            for (const char* field : {"CB1.LldvDetailLabels", "CB1.LldvDetailValues"})
+              viewer->SetProperty(field, GetProperty(field));
+            viewer->Open();
+            for (const char* field : {"CB1.LldvDetailLabels", "CB1.LldvDetailValues"})
+              viewer->SetProperty(field, CVariant{});
+          }
+          return true;
+        }
+      }
+#endif
       if (m_viewControl.HasControl(CONTROL_SIMPLE_LIST))
       {
         int iAction = message.GetParam1();
@@ -408,19 +441,31 @@ void CGUIDialogSelect::OnInitWindow()
 #ifdef HAVE_DVBRIDGE
   if (GetProperty("CB1.PlaybackModes").asBoolean())
   {
-    const int maxRows = std::max(1, (GetCoordsRes().iHeight - 80 - 112) / 50);
-    const float rowsHeight = 50.0f * std::clamp(m_vecList->Size(), 1, maxRows);
-    const float height = 112.0f + rowsHeight;
+    constexpr int listTop = 104;
+    constexpr int footerGap = 10;
+    constexpr int footerHeight = 32;
+    constexpr int footerPadding = 12;
+    constexpr int padding = 24;
+    constexpr int rowHeight = 38;
+    constexpr int margin = 40;
+    const bool hasFooter = std::any_of(m_vecList->begin(), m_vecList->end(),
+                                       [](const auto& item) { return !item->GetLabel2().empty(); });
+    const int spacing = listTop + (hasFooter ? footerGap + footerHeight + footerPadding : padding);
+    const int bottomMargin = hasFooter ? 56 : margin;
+    const int maxRows =
+        std::max(1, (GetCoordsRes().iHeight - margin - bottomMargin - spacing) / rowHeight);
+    const float rowsHeight = rowHeight * std::clamp(m_vecList->Size(), 1, maxRows);
+    const float height = spacing + rowsHeight;
     if (auto* group = GetControl(9100))
     {
-      group->SetPosition(group->GetXPosition(), GetCoordsRes().iHeight - 40.0f - height);
+      group->SetPosition(group->GetXPosition(), GetCoordsRes().iHeight - bottomMargin - height);
       group->SetHeight(height);
     }
     if (auto* background = GetControl(9101)) background->SetHeight(height);
     for (int id : {CONTROL_SIMPLE_LIST, CONTROL_DETAILED_LIST})
       if (auto* list = GetControl(id)) list->SetHeight(rowsHeight);
-    if (auto* help = GetControl(9102))
-      help->SetPosition(help->GetXPosition(), 70.0f + rowsHeight);
+    if (auto* footer = GetControl(9103))
+      footer->SetPosition(footer->GetXPosition(), listTop + footerGap + rowsHeight);
   }
 #endif
   m_viewControl.SetItems(*m_vecList);

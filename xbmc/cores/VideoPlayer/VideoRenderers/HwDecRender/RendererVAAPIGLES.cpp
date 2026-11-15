@@ -90,6 +90,12 @@ CRendererVAAPIGLES::~CRendererVAAPIGLES()
 
 bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsigned int orientation)
 {
+  return Configure(picture, fps, orientation, RetainedOutput::None);
+}
+
+bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps,
+                                  unsigned int orientation, RetainedOutput retainedOutput)
+{
   CVaapiRenderPicture *pic = dynamic_cast<CVaapiRenderPicture*>(picture.videoBuffer);
   if (pic->procPic.videoSurface != VA_INVALID_ID)
     m_isVAAPIBuffer = true;
@@ -102,6 +108,7 @@ bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsig
       !picture.doviSourceInfo.profile && !(picture.iFlags & DVP_FLAG_INTERLACED) &&
       DVBridgeOrientationSupported(orientation) ? pic->renderBufferCount : NUM_BUFFERS;
   m_aiLookahead=m_aiBuffers>NUM_BUFFERS;
+  SetFps(fps);
 #endif
 
   if (m_isVAAPIBuffer)
@@ -134,7 +141,7 @@ bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsig
     }
   }
 
-  return CLinuxRendererGLES::Configure(picture, fps, orientation);
+  return CLinuxRendererGLES::Configure(picture, fps, orientation, retainedOutput);
 }
 
 #ifdef CB1_HAS_HDR10_AI
@@ -143,6 +150,50 @@ CRenderInfo CRendererVAAPIGLES::GetRenderInfo()
   CRenderInfo info;
   info.max_buffer_size = m_aiBuffers;
   return info;
+}
+
+CRendererVAAPIGLES::DVHandoff CRendererVAAPIGLES::RetainDVOutput(
+    const VideoPicture& picture, float fps, unsigned int orientation)
+{
+  const auto* next = dynamic_cast<const CVaapiRenderPicture*>(picture.videoBuffer);
+  if (!m_isVAAPIBuffer || !next || !next->valid ||
+      next->procPic.videoSurface == VA_INVALID_ID || next->procPic.fourcc != m_vaapiFourcc ||
+      picture.iWidth != m_sourceWidth || picture.iHeight != m_sourceHeight ||
+      picture.colorBits != m_srcColorBits || !DVBridgeOrientationSupported(orientation) ||
+      (picture.iFlags & DVP_FLAG_INTERLACED) || std::abs(fps - m_fps) > 0.001f)
+    return DVHandoff::None;
+
+  auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      CServiceBroker::GetWinSystem());
+  if (!window)
+    return DVHandoff::None;
+
+  if (!m_dvRequested)
+  {
+    if (!m_bConfigured || !m_passthroughHDR ||
+        m_srcFullRange != (picture.color_range == 1) ||
+        m_srcPrimaries != picture.color_primaries || !window->CanRetainHDR10Output(picture))
+      return DVHandoff::None;
+
+    m_bConfigured = false;
+    return DVHandoff::HDR10;
+  }
+
+  const auto handoff = window->RetainNativeDVOutput(picture) ? DVHandoff::Native :
+      m_aiLookahead && next->renderBufferCount > NUM_BUFFERS && window->RetainHDR10DVOutput(picture)
+          ? DVHandoff::HDR10AI : DVHandoff::None;
+  if (handoff != DVHandoff::None)
+    m_dvRequested = m_bConfigured = false; // The successor owns output cleanup.
+  return handoff;
+}
+
+bool CRendererVAAPIGLES::ConfigureWithHandoff(const VideoPicture& picture,
+                                              float fps,
+                                              unsigned int orientation,
+                                              DVHandoff handoff)
+{
+  return Configure(picture, fps, orientation,
+                   handoff == DVHandoff::HDR10 ? RetainedOutput::HDR10 : RetainedOutput::NativeDV);
 }
 
 bool CRendererVAAPIGLES::HDR10AILookahead() const
@@ -248,6 +299,7 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
     default: return false;
   }
   layer.scalingMethod = SelectScalingMethod();
+  layer.autoScalingMethod = AutoUpscalingOverride();
   layer.width = m_sourceWidth;
   layer.height = m_sourceHeight;
   // AI follows Kodi's repaired presentation timestamps; DV pairing keeps source timestamps.
@@ -292,95 +344,6 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   }
   return true;
 }
-
-#ifdef CB1_HAS_HDR10_AI
-bool CRendererVAAPIGLES::PrepareHDR10AIQueue(const std::deque<int>& queue, bool end, bool paused,
-    uint64_t presentationDeadline)
-{
-  auto preparation = CaptureHDR10AIQueue(queue,end,paused,presentationDeadline);
-  if (!preparation.execute) return preparation.ready;
-  const auto outcome = preparation.execute();
-  return preparation.publish(outcome) && outcome.ready;
-}
-
-HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
-    const std::deque<int>& queue, bool end, bool paused, uint64_t presentationDeadline)
-{
-  if (queue.empty() || !HDR10AIQueueEligible()) return {};
-  auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
-      CServiceBroker::GetWinSystem());
-  if (!window) { m_aiLookahead=false; return {}; }
-  std::vector<CDVBridgeGLES::Layer> layers;
-  // Copy ownership, not a reference to a slot that the decoder may replace.
-  const auto head = m_buffers[queue.front()].doviSourcePicture;
-  if (!head) return {};
-  const auto horizon = head->pts / DVD_TIME_BASE + 1.0;
-  for (const auto idx : queue)
-  {
-    const auto* pic = dynamic_cast<CVaapiRenderPicture*>(m_buffers[idx].videoBuffer);
-    if (!pic || !pic->valid) break;
-    // ReleaseBuffer invalidates the import before a slot receives another picture.
-    if (!m_vaapiTextures[idx] && !UploadTexture(idx)) break;
-    CDVBridgeGLES::Layer layer{};
-    if (!BuildDVBridgeLayer(idx,layer)) break;
-    layers.push_back(std::move(layer));
-    if(window->HDR10AIMetadataOnly())break;
-    if (layers.back().pts >= horizon - 1e-9) break;
-  }
-  // Future imports must not replace the current picture's admission identity.
-  if (!UploadTexture(queue.front())) return {false, {}, {}};
-  const auto index = queue.front();
-  const auto binding = head->doviSourceBinding;
-  const bool buffered = !layers.empty() &&
-      std::all_of(layers.begin(), layers.end(), [&](const auto& layer) {
-        return layer.lease && layer.binding.Valid() && std::isfinite(layer.pts) &&
-            layer.binding.stream == binding.stream && layer.binding.revision == binding.revision;
-      }) && ((end && layers.size() == queue.size()) ||
-             layers.back().pts >= layers.front().pts + 1.0 - 1e-9);
-  const auto preferences = DVBRIDGE::FrameOutputSettings(head->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS, head->hdrType == StreamHdrType::HDR_TYPE_HLG);
-  if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::Native ||
-      preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::SDR)
-  {
-    // Preserve the original locked/native stop and readiness path.
-    const bool ready = window->PrepareHDR10AIQueue(*head,layers,end,paused,presentationDeadline);
-    m_aiLookahead = window->HDR10AILookaheadActive();
-    m_aiOutputPending |= m_aiLookahead != m_dvRequested;
-    if (ready && m_aiOutputPending)
-    {
-      if (!ConfigureVideoOutput(*head)) return {false, {}, {}};
-      m_aiOutputPending = false;
-    }
-    return {ready, {}, {}};
-  }
-  return {false,
-      [window,head,layers=std::move(layers),end,paused,presentationDeadline]() {
-        const bool ready = window->PrepareHDR10AIQueue(*head,layers,end,paused,presentationDeadline);
-        return HDR10AIQueuePreparation::Outcome{ready,window->HDR10AILookaheadActive()};
-      },
-      [this,index,binding,preferences](const HDR10AIQueuePreparation::Outcome& outcome) {
-        const auto& current = m_buffers[index].doviSourcePicture;
-        const auto settings = DVBRIDGE::FrameOutputSettings(current && current->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS, current && current->hdrType == StreamHdrType::HDR_TYPE_HLG);
-        if (!current || !(current->doviSourceBinding == binding) ||
-            settings.revision != preferences.revision || !settings.SameValues(preferences))
-          return false;
-        m_aiLookahead = outcome.lookahead;
-        // Automatic fallback can change the resolved route without a mode switch.
-        m_aiOutputPending |= m_aiLookahead != m_dvRequested;
-        if (outcome.ready && m_aiOutputPending)
-        {
-          if (!ConfigureVideoOutput(*current)) return false;
-          m_aiOutputPending = false;
-        }
-        return true;
-      }, buffered && head->hdrType == StreamHdrType::HDR_TYPE_HDR10};
-}
-
-bool CRendererVAAPIGLES::HDR10AIFrameCommitted() const
-{
-  auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
-  return window && window->HDR10AIFrameCommitted();
-}
-#endif
 
 void CRendererVAAPIGLES::SetDVBridgeFELSuccessor(int index)
 {

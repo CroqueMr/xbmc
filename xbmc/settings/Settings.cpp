@@ -11,6 +11,7 @@
 #include <optional>
 #endif
 #ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/VideoRenderers/UpscalerSettings.h"
 #include "dialogs/DVPlaybackModes.h"
 #endif
 
@@ -220,11 +221,15 @@ bool CSettings::Load(const TiXmlElement* root, bool& updated)
 #ifdef HAVE_DVBRIDGE
   std::unique_ptr<TiXmlElement> migrated;
   bool hasHDR10PlusPreference = false;
+  bool hasSDRPreference = false;
   for (const auto* setting = root->FirstChildElement("setting"); setting;
        setting = setting->NextSiblingElement("setting"))
-    if (setting->Attribute("id") &&
-        std::string_view(setting->Attribute("id")) == "dvbridge.hdr10plussource")
-      hasHDR10PlusPreference = true;
+  {
+    const char* id = setting->Attribute("id");
+    if (!id) continue;
+    hasHDR10PlusPreference |= std::string_view(id) == "dvbridge.hdr10plussource";
+    hasSDRPreference |= std::string_view(id) == "dvbridge.sdrpreset";
+  }
   for (const auto* setting = root->FirstChildElement("setting"); setting;
        setting = setting->NextSiblingElement("setting"))
   {
@@ -235,7 +240,8 @@ bool CSettings::Load(const TiXmlElement* root, bool& updated)
                                std::string_view(value) == "3";
     const auto legacy = legacyHDR10Plus ? std::optional<int>{0} :
             std::string_view(id) == "dvbridge.outputmode" &&
-            (std::string_view(value) == "3" || std::string_view(value) == "6") ?
+            // The SDR preset first shipped alongside the reuse of value 6.
+            (std::string_view(value) == "3" || (!hasSDRPreference && std::string_view(value) == "6")) ?
             std::optional<int>{5} : std::nullopt;
     if (!legacy) continue;
     if (!migrated) migrated.reset(root->Clone()->ToElement());
@@ -614,9 +620,57 @@ void CSettings::UninitializeConditions()
   CSettingConditions::Deinitialize();
 }
 
+#ifdef HAVE_DVBRIDGE
+namespace
+{
+class UpscalerPreferences final : public ISettingsHandler, public ISettingCallback
+{
+public:
+  void OnSettingsLoaded() override
+  {
+    using namespace KODI::VIDEO::UPSCALER;
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    Set(AT_LEAST_1080P, settings->GetInt(AT_LEAST_1080P));
+    Set(BELOW_1080P, settings->GetInt(BELOW_1080P));
+  }
+
+  void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override
+  {
+    Set(setting->GetId(),
+        std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
+  }
+
+  int Get(bool atLeast1080p, int kodi) const
+  {
+    using namespace KODI::VIDEO::UPSCALER;
+    const int method = (atLeast1080p ? atLeast1080pMethod : below1080pMethod).load(std::memory_order_relaxed);
+    return Select(method, kodi);
+  }
+
+private:
+  void Set(const std::string& id, int method)
+  {
+    using namespace KODI::VIDEO::UPSCALER;
+    auto& preference = id == AT_LEAST_1080P ? atLeast1080pMethod : below1080pMethod;
+    preference.store(Label(method) ? method : KODI_DEFAULT, std::memory_order_relaxed);
+  }
+
+  std::atomic<int> below1080pMethod{KODI::VIDEO::UPSCALER::KODI_DEFAULT};
+  std::atomic<int> atLeast1080pMethod{KODI::VIDEO::UPSCALER::KODI_DEFAULT};
+};
+UpscalerPreferences upscalerPreferences;
+} // namespace
+
+int KODI::VIDEO::UPSCALER::Get(unsigned int sourceWidth, unsigned int sourceHeight, int kodi)
+{
+  return upscalerPreferences.Get(IsAtLeast1080p(sourceWidth, sourceHeight), kodi);
+}
+#endif
+
 void CSettings::InitializeISettingsHandlers()
 {
 #ifdef HAVE_DVBRIDGE
+  GetSettingsManager()->RegisterSettingsHandler(&upscalerPreferences);
   GetSettingsManager()->RegisterSettingsHandler(&CDVPlaybackModes::GetInstance());
 #endif
   // register ISettingsHandler implementations
@@ -635,6 +689,7 @@ void CSettings::UninitializeISettingsHandlers()
 {
 #ifdef HAVE_DVBRIDGE
   GetSettingsManager()->UnregisterSettingsHandler(&CDVPlaybackModes::GetInstance());
+  GetSettingsManager()->UnregisterSettingsHandler(&upscalerPreferences);
 #endif
   // unregister ISettingsHandler implementations
   GetSettingsManager()->UnregisterSettingsHandler(&CMediaSettings::GetInstance());
@@ -670,9 +725,11 @@ void CSettings::UninitializeISubSettings()
 void CSettings::InitializeISettingCallbacks()
 {
 #ifdef HAVE_DVBRIDGE
+  GetSettingsManager()->RegisterCallback(&upscalerPreferences,
+      {KODI::VIDEO::UPSCALER::AT_LEAST_1080P, KODI::VIDEO::UPSCALER::BELOW_1080P});
   GetSettingsManager()->RegisterCallback(&CDVPlaybackModes::GetInstance(),
       {"dvbridge.configureprofile","dvbridge.expertblack","dvbridge.expertblackcustom",
-       "dvbridge.playback", "dvbridge.lldvformat"});
+       "dvbridge.playback", "dvbridge.lldvformat", "dvbridge.sdrgamut"});
 #endif
   // register any ISettingCallback implementations
   GetSettingsManager()->RegisterCallback(
@@ -738,6 +795,7 @@ void CSettings::UninitializeISettingCallbacks()
 {
 #ifdef HAVE_DVBRIDGE
   GetSettingsManager()->UnregisterCallback(&CDVPlaybackModes::GetInstance());
+  GetSettingsManager()->UnregisterCallback(&upscalerPreferences);
 #endif
   GetSettingsManager()->UnregisterCallback(&CMediaSettings::GetInstance());
   GetSettingsManager()->UnregisterCallback(&CDisplaySettings::GetInstance());

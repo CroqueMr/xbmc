@@ -186,6 +186,7 @@ protected:
   std::atomic_bool m_aiGUIOwnsRenderer{false};
   bool m_aiQueueReady{true},m_aiEnd{};
   bool m_aiQueuePreparationStale{};
+  bool m_aiSameInputReconfigure{};
   bool m_aiStartupBuffered{};
   bool m_aiFullscreenRequested{},m_aiGuiReady{},m_aiFullscreenWanted{};
   double m_aiStartPts{DVD_NOPTS_VALUE};

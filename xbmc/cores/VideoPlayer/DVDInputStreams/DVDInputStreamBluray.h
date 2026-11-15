@@ -40,6 +40,7 @@ extern "C"
 #define BD_EVENT_MENU_OVERLAY -1
 #define BD_EVENT_MENU_ERROR   -2
 #define BD_EVENT_ENC_ERROR    -3
+#define BD_EVENT_BDJ_PRESENTATION_STAMP -4
 
 #define HDMV_PID_VIDEO            0x1011
 #define HDMV_PID_VIDEO_SS         0x1012
@@ -139,6 +140,23 @@ public:
 
   void GetStreamInfo(int pid, std::string &language);
   bool GetVideoPresentationWindow(bool& required, int64_t& first, int64_t& last) const;
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+  void PollBdjEvents();
+#if defined(BD_BDJ_PLAYBACK_CLOCK)
+  void SetBdjPlaybackTime(uint64_t time)
+  {
+    if (IsBdjTitle() && m_titleInfo)
+      bd_bdj_set_playback_time(m_bd, std::min(time, m_titleInfo->duration));
+  }
+#endif
+  void ReleaseBdjEvents(uint32_t seq);
+  void ReleaseBdjEnd();
+  void ResetBdjPresentation();
+  uint32_t BdjEndSequence() const { return m_bdjEndSequence; }
+  bool WaitingForBdjPlaylist() const { return m_bdjWaitingForPlaylist; }
+  bool TakeBdjPlaylistJump();
+  bool HasPendingBdjSelection() const;
+#endif
 
   /*!
    * \brief Check whether a stream is the default of the playlist being played, ie. audio stream
@@ -227,6 +245,7 @@ public:
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
 
   void ProcessEvent();
+  bool CanContinuePlayItem(uint32_t next) const;
   bool HoldEvent();
 
   void SaveCurrentState(const CStreamDetails& details) override;
@@ -257,6 +276,15 @@ protected:
   bool m_isInMainMenu = false;
   std::atomic_bool m_menuShows{false};
   bool m_navmode = false;
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+  bool IsBdjTitle() const;
+  void StampBdjPending();
+
+  uint32_t m_bdjStampedSeq{0};
+  uint32_t m_bdjEndSequence{0};
+  bool m_bdjWaitingForPlaylist{false};
+  bool m_bdjPlaylistJump{false};
+#endif
   int m_dispTimeBeforeRead = 0;
 
   typedef std::shared_ptr<CDVDOverlayImage> SOverlay;

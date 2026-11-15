@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "HDR10AISource.h"
+#include "utils/DVBridgeDiagnosticState.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -35,6 +36,7 @@ cb1_ai_status HDR10AISource::Collect()
   {
     m_job = false;
     m_lastSubmitted = m_jobIdentity.picture;
+    m_activation.AnalysisCompleted(m_jobIdentity, DVBRIDGE::DiagnosticNowMs());
     m_lease.reset();
   }
   return RecordStatus("analysis-collect",status);
@@ -79,6 +81,10 @@ cb1_ai_status HDR10AISource::Begin(pl_gpu gpu, const char* bundle,
     const auto status = Collect();
     if (status != CB1_AI_READY)
     {
+      // Terminal work belongs to the retiring source. The context owner
+      // fences it before releasing its lease and starting the new source.
+      if (status != CB1_AI_PENDING)
+        return CB1_AI_INVALID;
       if (m_active && m_activation.Observe(status,Identity(binding),now) == Decision::Native)
       {
         m_fallback = true;
@@ -122,10 +128,9 @@ cb1_ai_status HDR10AISource::Begin(pl_gpu gpu, const char* bundle,
 }
 
 cb1_ai_status HDR10AISource::Submit(const pl_frame* frame, DVBRIDGE::SourceBinding binding,
-    double pts, double headPts, std::shared_ptr<void> lease)
+    double pts, std::shared_ptr<void> lease)
 {
-  if (!Matches(binding) || m_fallback || !m_context || !std::isfinite(pts) ||
-      !std::isfinite(headPts) || pts < m_origin || pts < headPts || pts > headPts + 1.0 + 1e-9)
+  if (!Matches(binding) || m_fallback || !m_context || !std::isfinite(pts) || pts < m_origin)
     return RecordStatus("analysis-submit",CB1_AI_INVALID);
   const auto collected = Collect();
   if (collected != CB1_AI_READY) return collected;
@@ -185,7 +190,8 @@ HDR10AISource::Decision HDR10AISource::Prediction(DVBRIDGE::SourceBinding bindin
   RecordStatus("prediction",status,false);
   const auto elapsed=static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now()-started).count());
-  const auto completed=now+std::min(elapsed,std::numeric_limits<uint64_t>::max()-now);
+  const auto completed=std::max(DVBRIDGE::DiagnosticNowMs(),
+      now+std::min(elapsed,std::numeric_limits<uint64_t>::max()-now));
   const auto decision = m_activation.Observe(status,Identity(binding),completed,required);
   if (decision == Decision::Prepare)
   {

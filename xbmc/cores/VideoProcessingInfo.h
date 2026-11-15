@@ -68,6 +68,9 @@ struct VideoProcessingInfo
     std::array<unsigned, 2> scenePQ{}; // effective max/avg after L3
     unsigned trimGroups{};
     bool cm4Appended{};
+    unsigned edidVersion{};
+    std::array<double, 6> primaries{};
+    std::array<double, 6> reportedPrimaries{};
   };
   struct Output
   {

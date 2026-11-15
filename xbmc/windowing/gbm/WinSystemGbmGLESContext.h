@@ -60,9 +60,11 @@ public:
   }
 #ifdef HAVE_DVBRIDGE
   bool BeginRender() override;
+  void BindNativePascalHDRFramebuffer();
   int GetOutputBitDepth() const override
   {
-    return m_pascalHDRActive ? 10 : CWinSystemGbmEGLContext::GetOutputBitDepth();
+    return m_pascalHDRMode != PascalHDRMode::None ? 10 :
+                                                  CWinSystemGbmEGLContext::GetOutputBitDepth();
   }
   bool Hide() override;
   bool Show(bool raise = true) override;
@@ -113,6 +115,17 @@ public:
   bool PrepareDVOutputFrame(const VideoPicture& picture);
 #ifdef CB1_HAS_HDR10_AI
   bool HDR10AILookaheadActive() const;
+  bool RetainNativeDVOutput(const VideoPicture& picture);
+  bool CanRetainHDR10Output(const VideoPicture& picture) const;
+  void BeginHDR10Handoff();
+  bool HDR10HandoffPending() const { return m_hdr10HandoffPending; }
+  void StageHDR10Handoff(const VideoPicture& picture);
+  bool RetainHDR10DVOutput(const VideoPicture& picture);
+  bool OwnsHDR10DVOutput() const
+  {
+    return m_dvState.Captured() && m_dvSelection.route == DVBRIDGE::OutputRoute::NativeDV &&
+        !m_dvStopPending && !m_dvEndPending && HDR10AIFrameCommitted();
+  }
   bool HDR10AIMetadataOnly() const { return m_dvContext && m_dvContext->HDR10AI().MetadataOnly(); }
   bool HDR10AISelectionPending() const
   {
@@ -144,6 +157,7 @@ public:
   {
     return CB1AsyncAvailable() && m_dvBridge->AsyncPreparationActive();
   }
+  bool CB1AdaptiveScanout() const;
   std::optional<double> CB1PresentationAge() const;
   // Kodi presentation timestamp and KMS completion time of the latest presented CB1 picture.
   std::optional<std::pair<double, uint64_t>> CB1PresentedPicture() const;
@@ -207,9 +221,14 @@ private:
   bool FinishPlayerLedFrame(const CDVBridgeGLES::PlayerLedFrame& frame, double pts);
   std::optional<CDVBridgeGLES::PlayerLedFrame> m_playerLedPage;
   double m_playerLedPagePts{};
-  void StageNativeHDR10Plus(bool overlay);
+  void StageNativeHDR10Plus();
   std::string m_hdr10plusReason;
   uint64_t m_dvProfileLoggedRevision{},m_dvProfileLoggedStream{};
+#endif
+#ifdef CB1_HAS_HDR10_AI
+  bool m_hdr10HandoffPending{false};
+  unsigned m_hdr10HandoffFailures{0};
+  std::unique_ptr<VideoPicture> m_hdr10HandoffPicture;
 #endif
   void PresentFrame(bool rendered, bool videoLayer);
   bool m_guiCompositing{false};
@@ -261,6 +280,9 @@ private:
   unsigned m_dvAttemptFailures{};
   DVBRIDGE::OutputRoute m_dvRejectedRoute{DVBRIDGE::OutputRoute::Vanilla};
   DVBRIDGE::OutputReason m_dvActivationReason{DVBRIDGE::OutputReason::None};
+  // Render-thread ownership. Empty signal requires a fresh SDR property commit.
+  std::optional<dvbridge_gamut> m_sdrSignal;
+  bool m_sdrBT2020Rejected{};
   std::optional<dvbridge_mode> m_dvConfiguredOutput;
   std::optional<dvbridge_mode> m_dvPriorConfiguredOutput;
   DVBRIDGE::OutputSelection m_dvSelection;
@@ -277,6 +299,7 @@ private:
   bool m_dvAvailableNativeDV{}, m_dvAvailableHDR10{};
   std::atomic<uint64_t> m_hdr10MaxBpc{0};
   DVBRIDGE::LldvConnectorStatus m_dvLldvStatus{};
+  XbmcThreads::EndTime<> m_lldvEdidRefresh;
   DVBRIDGE::SourceBinding m_dvImportBinding{};
   dvbridge_geometry m_dvImportGeometry{};
   bool m_dvImportUsable{};
@@ -291,6 +314,7 @@ private:
   CDVBridgeState m_cb1ConnectorState;
   bool m_cb1RestoringPreferences{};
   std::optional<bool> m_cb1LimitedRange, m_cb1OrdinaryLimitedRange;
+  std::optional<uint64_t> m_sdrBroadcastRange;
   DVBRIDGE::DiagnosticFailures m_dvSetupFailures;
   DVBRIDGE::DiagnosticFailures m_dvScreenshotFailures;
   DVBRIDGE::DiagnosticInterval m_dvGuiDiagnostic;
@@ -298,12 +322,19 @@ private:
   bool m_cb1FramePending{};
   bool m_dvEndPending{};
   bool m_dvStopPending{};
-  bool PrepareHDR10Scanout() override;
-  bool RetainHDR10ScanoutOnTransition() const override { return m_priorPascalHDRActive; }
+  enum class PascalHDRMode { None, Conversion, Native };
+  void SelectPascalHDRMode(PascalHDRMode mode);
+  bool PrepareHDR10Scanout(const VideoPicture* picture) override;
+  bool RetainHDR10ScanoutOnTransition() const override
+  {
+    return m_priorPascalHDRMode != PascalHDRMode::None;
+  }
   unsigned int HDR10Framebuffer() const;
+  std::shared_ptr<gbm_bo> BlitNativePascalHDRFrame();
+  bool StageNativePascalHDR10();
   std::unique_ptr<CPascalHDR10Scanout> m_pascalHDRScanout;
-  bool m_pascalHDRActive{};
-  bool m_priorPascalHDRActive{};
+  PascalHDRMode m_pascalHDRMode{PascalHDRMode::None};
+  PascalHDRMode m_priorPascalHDRMode{PascalHDRMode::None};
   bool m_hdrConversion = false;
   bool m_sdrConversion = false;
   bool m_dvPriorSDRConversion = false;

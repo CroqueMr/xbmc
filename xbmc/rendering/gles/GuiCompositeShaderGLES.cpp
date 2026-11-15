@@ -64,6 +64,7 @@ void CGuiCompositeShaderGLES::OnCompiledAndLinked()
   m_hProj = glGetUniformLocation(ProgramHandle(), "u_proj");
   m_hOotfGamma = glGetUniformLocation(ProgramHandle(), "u_ootfGamma");
   m_hInputPQ = glGetUniformLocation(ProgramHandle(), "u_inputPQ");
+  m_hSDRBT2020 = glGetUniformLocation(ProgramHandle(), "u_sdrBT2020");
   m_hOutputRange = glGetUniformLocation(ProgramHandle(), "u_outputRange");
   m_hPlayerLedScale = glGetUniformLocation(ProgramHandle(), "u_playerLedScale");
   m_hPlayerLedGui = glGetUniformLocation(ProgramHandle(), "u_playerLedGui");
@@ -82,6 +83,7 @@ bool CGuiCompositeShaderGLES::OnEnabled()
 
   glUniform1f(m_hOotfGamma, m_ootfGamma);
   glUniform1i(m_hInputPQ, m_inputPQ);
+  glUniform1i(m_hSDRBT2020, m_sdrBT2020);
   glUniform2f(m_hOutputRange, m_outputScale, m_outputOffset);
   glUniform1f(m_hPlayerLedScale, m_playerLedScale);
   if (m_playerLedScale > 0)

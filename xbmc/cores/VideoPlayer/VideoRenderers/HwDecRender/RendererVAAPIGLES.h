@@ -42,21 +42,22 @@ public:
   static CBaseRenderer* Create(CVideoBuffer *buffer);
   static void Register(VAAPI::IVaapiWinSystem *winSystem, VADisplay vaDpy, EGLDisplay eglDisplay, bool &general, bool &deepColor);
 
-  bool Configure(const VideoPicture &picture, float fps, unsigned int orientation) override;
+  bool Configure(const VideoPicture& picture, float fps, unsigned int orientation) override;
+  bool Configure(const VideoPicture& picture, float fps, unsigned int orientation,
+                 RetainedOutput retainedOutput);
 
   // Player functions
   bool ConfigChanged(const VideoPicture &picture) override;
 #ifdef CB1_HAS_HDR10_AI
   CRenderInfo GetRenderInfo() override;
+  enum class DVHandoff { None, HDR10AI, Native, HDR10 };
+  DVHandoff RetainDVOutput(const VideoPicture& picture, float fps, unsigned int orientation);
+  bool ConfigureWithHandoff(const VideoPicture& picture, float fps, unsigned int orientation,
+                            DVHandoff handoff);
   bool HDR10AIQueueEligible() const override { return m_aiBuffers > NUM_BUFFERS; }
   bool HDR10AILookahead() const override;
-  bool HDR10AIFrameCommitted() const override;
-  bool PrepareHDR10AIQueue(const std::deque<int>& queue, bool end, bool paused,
-      uint64_t presentationDeadline = 0) override;
-  HDR10AIQueuePreparation CaptureHDR10AIQueue(const std::deque<int>& queue, bool end,
-      bool paused, uint64_t presentationDeadline) override;
+  bool HDR10AITextureReady(int index) const override { return m_vaapiTextures[index] != nullptr; }
   unsigned m_aiBuffers{6};
-  bool m_aiLookahead{};
 #endif
   void ReleaseBuffer(int idx) override;
   bool NeedBuffer(int idx) override;

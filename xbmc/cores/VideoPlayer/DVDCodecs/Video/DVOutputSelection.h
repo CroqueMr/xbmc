@@ -3,6 +3,7 @@
 #include "DVOutputSettings.h"
 #include "DVPlaybackInfo.h"
 #ifdef HAVE_DVBRIDGE
+#include <algorithm>
 #include <array>
 
 namespace DVBRIDGE
@@ -14,6 +15,8 @@ struct OutputSelection
   dvbridge_policy policy{};
   OutputReason reason{OutputReason::None};
   int lldvFormat{};
+  uint64_t lldvEdidGeneration{};
+  bool lldvRgb10Scanout{};
 };
 
 inline OutputSelection SelectOutput(const OutputPreferences& preferences,
@@ -22,27 +25,15 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
   OutputSelection result;
   if (caps.stereoSource)
     return {OutputRoute::Vanilla, {}, OutputReason::SourceIneligible};
-  if (caps.sourceKnown && caps.isHLG && !caps.isDV)
+  if (caps.sourceKnown && (caps.isHLG || caps.isHDR10) && !caps.isDV)
   {
-    if (preferences.hlgSource == HLGSourceMode::Native) return result;
-    auto policy=preferences.Policy();
-    policy.mode=DVBRIDGE_MODE_STANDARD; policy.master_ipt=false; policy.tv={};
-    policy.adaptive=DVBRIDGE_ADAPTIVE_A; policy.expert_black_nits=0;
-    if (!caps.nativeDV) return {OutputRoute::Vanilla,{},OutputReason::NoDVTransport};
-    if (!caps.processingKnown || !caps.processing[DVBRIDGE_MODE_STANDARD].usable)
-      return {OutputRoute::Vanilla,{},!caps.processingKnown ? OutputReason::ProcessingPending : caps.processing[policy.mode].reason!=OutputReason::None ?
-          caps.processing[policy.mode].reason : OutputReason::NoGPUProcessing};
-    return {OutputRoute::NativeDV,policy,OutputReason::None};
-  }
-  if (caps.sourceKnown && caps.isHDR10 && !caps.isDV)
-  {
-    const auto source = preferences.HDR10Mode(caps.hdr10PlusSource);
+    const auto source = caps.isHLG ? preferences.HLGMode() : preferences.HDR10Mode(caps.hdr10PlusSource);
     if (source == HDR10SourceMode::Native) return result;
     if (caps.hdr10PlusSource && source != HDR10SourceMode::HDR10PlusDV && source != HDR10SourceMode::SDR)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
     if (source == HDR10SourceMode::HDR10PlusDV && !caps.isHDR10Plus)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
-    auto policy = preferences.HDR10Policy(caps.hdr10PlusSource);
+    auto policy = preferences.HDR10PolicyFor(source);
     if (policy.mode == DVBRIDGE_MODE_DISABLED)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
     if (policy.mode == DVBRIDGE_MODE_SDR)
@@ -69,11 +60,21 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
   if (policy.mode == DVBRIDGE_MODE_PLAYER_LED)
   {
     if (!caps.playerLed) result.reason = OutputReason::NoPlayerLedTransport;
-    else if (!preferences.ProfileValid(policy.mode)) result.reason = OutputReason::TVProfileRequired;
     else if (!caps.processingKnown) result.reason = OutputReason::ProcessingPending;
     else if (const auto& mode = caps.processing[policy.mode]; !mode.usable)
       result.reason = mode.reason == OutputReason::None ? OutputReason::NoGPUProcessing : mode.reason;
-    else result.route = OutputRoute::PlayerLed;
+    else
+    {
+      result.route = OutputRoute::PlayerLed;
+      const auto& display = caps.lldvDisplay;
+      result.policy.tv = {display.peak, DVBRIDGE_PANEL_UNSET, DVBRIDGE_GAMUT_BT2020};
+      result.policy.expert_black_nits = display.black;
+      result.policy.lldv_edid_generation = caps.lldvEdidGeneration;
+      result.policy.lldv_edid_version = display.sink.version;
+      std::copy(display.primaries.begin(), display.primaries.end(), result.policy.lldv_primaries);
+      result.lldvEdidGeneration = caps.lldvEdidGeneration;
+      result.lldvRgb10Scanout = caps.lldvRgb10Scanout;
+    }
     result.lldvFormat = preferences.lldvFormat;
     return result;
   }
