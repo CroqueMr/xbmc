@@ -117,6 +117,10 @@ protected:
   virtual void ReleaseShaders();
   void SetTextureFilter(GLenum method);
   ESCALINGMETHOD SelectScalingMethod() const;
+  ESCALINGMETHOD ResolveScalingMethod(ESCALINGMETHOD method) const;
+#ifdef HAVE_DVBRIDGE
+  ESCALINGMETHOD AutoUpscalingOverride() const;
+#endif
   void UpdateVideoFilter();
   void CheckVideoParameters(int index);
   void UpdateActiveArea(int index);
@@ -145,6 +149,12 @@ protected:
   // renderers
   void RenderToFBO(int index, int field);
   void RenderFromFBO();
+#ifdef HAVE_DVBRIDGE
+  bool RunRCAS();
+  CFrameBufferObject m_rcasInput;
+  std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> m_rcasShader;
+  int m_rcasWidth{}, m_rcasHeight{};
+#endif
   void RenderSinglePass(int index, int field); // single pass glsl renderer
 
   // hooks for HwDec rendering
@@ -156,6 +166,12 @@ protected:
   virtual bool BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer);
   dvbridge_geometry DVBridgeGeometry();
   bool m_dvRequested{false};
+  struct ShaderUpscaler;
+  std::unique_ptr<ShaderUpscaler> m_shaderUpscaler;
+  bool RenderShaderUpscaler(int index, int preset);
+
+  int m_reportedUpscaler{-2};
+  uint64_t m_reportedUpscalerGeneration{};
 #endif
   virtual void AfterRenderHook(int idx) {}
 
@@ -231,6 +247,7 @@ protected:
     std::shared_ptr<AVFrame> doviEnhancement;
     DVBRIDGE::SourceBinding doviEnhancementBinding{};
     std::shared_ptr<VideoPicture> doviSourcePicture;
+    uint64_t informationGeneration{};
 #endif
     double doviPts = DVD_NOPTS_VALUE;
   };

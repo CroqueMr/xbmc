@@ -299,6 +299,7 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
     default: return false;
   }
   layer.scalingMethod = SelectScalingMethod();
+  layer.autoScalingMethod = AutoUpscalingOverride();
   layer.width = m_sourceWidth;
   layer.height = m_sourceHeight;
   // AI follows Kodi's repaired presentation timestamps; DV pairing keeps source timestamps.
