@@ -227,6 +227,7 @@ public:
   BLURAY_TITLE_INFO* GetTitleFile(const std::string& name);
 
   void ProcessEvent();
+  bool CanContinuePlayItem(uint32_t next) const;
   bool HoldEvent();
 
   void SaveCurrentState(const CStreamDetails& details) override;
