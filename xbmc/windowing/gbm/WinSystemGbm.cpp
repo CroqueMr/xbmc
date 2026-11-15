@@ -965,11 +965,14 @@ bool CWinSystemGbm::RefreshDisplayInfoForVideo()
   auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
   if (!connector) return false;
   auto edid = connector->GetEDID(true);
-  if (edid.empty() || edid == m_displayEdid) return false;
-  auto information = UTILS::CDisplayInfo::Create(edid);
-  if (!information) return false;
+  if (edid == m_displayEdid)
+    return false;
+  // An absent or invalid EDID withdraws the previous sink's capabilities.
+  auto information = edid.empty() ? nullptr : UTILS::CDisplayInfo::Create(edid);
+  if (!information && !m_info)
+    return false;
+  m_displayEdid = information ? std::move(edid) : std::vector<uint8_t>{};
   m_info = std::move(information);
-  m_displayEdid = std::move(edid);
   DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge display refresh: connector={} changed=true",connector->GetId());
   return true;
 }
