@@ -6,6 +6,7 @@
 #include <bitset>
 #include <array>
 #include <cstdint>
+#include "utils/DVBridgeLldv.h"
 
 namespace DVBRIDGE
 {
@@ -25,6 +26,9 @@ struct OutputCapabilities
   bool isHDR10Plus{}; // Selected decoded picture, not receiver HDR10+ transport.
   std::array<ModeAdmission, 9> hdr10Processing{};
   bool hdr10plus{}, playerLed{};
+  LldvDisplay lldvDisplay;
+  uint64_t lldvEdidGeneration{};
+  int lldvUnavailableLabel{41280};
   uint64_t hdr10MaxBpc{}; // Zero means the HDMI ceiling is unknown.
 
   bool HDR10DepthLimited() const { return hdr10MaxBpc != 0 && hdr10MaxBpc < 10; }

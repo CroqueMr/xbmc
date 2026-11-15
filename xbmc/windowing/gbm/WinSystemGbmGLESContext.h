@@ -297,6 +297,7 @@ private:
   bool m_dvAvailableNativeDV{}, m_dvAvailableHDR10{};
   std::atomic<uint64_t> m_hdr10MaxBpc{0};
   DVBRIDGE::LldvConnectorStatus m_dvLldvStatus{};
+  XbmcThreads::EndTime<> m_lldvEdidRefresh;
   DVBRIDGE::SourceBinding m_dvImportBinding{};
   dvbridge_geometry m_dvImportGeometry{};
   bool m_dvImportUsable{};

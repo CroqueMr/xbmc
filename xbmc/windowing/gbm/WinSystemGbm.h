@@ -263,6 +263,14 @@ private:
 
   std::unique_ptr<UTILS::CDisplayInfo> m_info;
   std::vector<uint8_t> m_displayEdid;
+#ifdef HAVE_DVBRIDGE
+  mutable std::mutex m_lldvEdidMutex;
+  std::vector<uint8_t> m_lldvEdid;
+  DVBRIDGE::LldvDisplay m_lldvDisplay;
+  uint32_t m_lldvEdidConnector{};
+  uint64_t m_lldvEdidGeneration{};
+  DVBRIDGE::LldvTransport m_lldvRejected;
+#endif
 };
 
 } // namespace GBM

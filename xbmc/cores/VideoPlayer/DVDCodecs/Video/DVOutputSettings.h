@@ -98,7 +98,7 @@ struct OutputPreferences
         cmv40Headroom == other.cmv40Headroom &&
         felUpscaling == other.felUpscaling &&
         processingOptimizations == other.processingOptimizations &&
-        ((output!=OutputMode::PlayerLed && (output!=OutputMode::HDR10 || method!=1)) ||
+        ((output!=OutputMode::HDR10 || method!=1) ||
          (expertPeak == other.expertPeak && expertBlack == other.expertBlack && expertGamut == other.expertGamut)) &&
         (output!=OutputMode::PlayerLed || lldvFormat==other.lldvFormat) &&
         std::bit_cast<uint64_t>(peak) == std::bit_cast<uint64_t>(other.peak);
@@ -114,8 +114,7 @@ struct OutputPreferences
           std::isfinite(sdrGamma) && sdrGamma>=1.8 && sdrGamma<=2.8 &&
           std::isfinite(sdrBlack) && sdrBlack>=0 && sdrBlack<=5 && sdrBlack<sdrPeak;
     }
-    return mode==DVBRIDGE_MODE_HDR10_EXPERT || mode==DVBRIDGE_MODE_PLAYER_LED ?
-        ExpertProfileValid() : ProfileValid();
+    return mode==DVBRIDGE_MODE_HDR10_EXPERT ? ExpertProfileValid() : ProfileValid();
   }
   bool L2TrimsDisabled(dvbridge_mode mode, bool hdr10AI = false) const
   {
@@ -128,7 +127,7 @@ struct OutputPreferences
     if (hdr10AI || (mode != DVBRIDGE_MODE_STANDARD && mode != DVBRIDGE_MODE_MASTER_REFERENCE &&
                     mode != DVBRIDGE_MODE_PLAYER_LED)) return {};
     return {static_cast<cb1_cmv40_mode>(cmv40Mode), static_cast<unsigned>(cmv40Trigger),
-        static_cast<unsigned>(cmv40Headroom), mode==DVBRIDGE_MODE_PLAYER_LED ? expertPeak : peak};
+        static_cast<unsigned>(cmv40Headroom), peak};
   }
   dvbridge_policy Policy() const
   {
@@ -156,7 +155,7 @@ struct OutputPreferences
     }
     // Basic/native paths never consume calibration. Keep invalid user values
     // in this snapshot, rather than silently completing the stored profile.
-    if (result.mode == DVBRIDGE_MODE_HDR10_EXPERT || result.mode == DVBRIDGE_MODE_PLAYER_LED)
+    if (result.mode == DVBRIDGE_MODE_HDR10_EXPERT)
     {
       result.tv={expertPeak,DVBRIDGE_PANEL_OLED,static_cast<dvbridge_gamut>(expertGamut)};
       result.expert_black_nits=expertBlack;
