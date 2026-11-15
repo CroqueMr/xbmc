@@ -164,7 +164,7 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
                          nativeSource==StreamHdrType::HDR_TYPE_HDR10PLUS;
   const bool hlgSource=nativeSource==StreamHdrType::HDR_TYPE_HLG;
   if (!hdr10Source && !hlgSource && nativeSource!=StreamHdrType::HDR_TYPE_DOLBYVISION) return false;
-  constexpr Choice hlgChoices[]={{1,0,40867},{0,0,40866}};
+  constexpr Choice hlgChoices[]={{1,0,40867},{0,0,40866},{2,0,41130}};
   const auto source=DVBRIDGE::StreamTelemetry::Read().transaction.capabilities;
 #ifdef CB1_HAS_HDR10_AI
   constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,40866},{4,0,41130}};
@@ -256,7 +256,7 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
         else {active.output=static_cast<DVBRIDGE::OutputMode>(choice.output);active.method=choice.method;}
       }
 #ifdef CB1_HAS_HDR10_AI
-      if (!settingsMenu && hdr10Source && choice.output != 0) ++DVBRIDGE::hdr10Reselection;
+      if (!settingsMenu && (hdr10Source || hlgSource) && choice.output != 0) ++DVBRIDGE::hdr10Reselection;
 #endif
     }
     if (settingsMenu) settings->Save();

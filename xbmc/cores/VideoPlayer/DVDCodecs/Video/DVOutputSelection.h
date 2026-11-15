@@ -22,27 +22,15 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
   OutputSelection result;
   if (caps.stereoSource)
     return {OutputRoute::Vanilla, {}, OutputReason::SourceIneligible};
-  if (caps.sourceKnown && caps.isHLG && !caps.isDV)
+  if (caps.sourceKnown && (caps.isHLG || caps.isHDR10) && !caps.isDV)
   {
-    if (preferences.hlgSource == HLGSourceMode::Native) return result;
-    auto policy=preferences.Policy();
-    policy.mode=DVBRIDGE_MODE_STANDARD; policy.master_ipt=false; policy.tv={};
-    policy.adaptive=DVBRIDGE_ADAPTIVE_A; policy.expert_black_nits=0;
-    if (!caps.nativeDV) return {OutputRoute::Vanilla,{},OutputReason::NoDVTransport};
-    if (!caps.processingKnown || !caps.processing[DVBRIDGE_MODE_STANDARD].usable)
-      return {OutputRoute::Vanilla,{},!caps.processingKnown ? OutputReason::ProcessingPending : caps.processing[policy.mode].reason!=OutputReason::None ?
-          caps.processing[policy.mode].reason : OutputReason::NoGPUProcessing};
-    return {OutputRoute::NativeDV,policy,OutputReason::None};
-  }
-  if (caps.sourceKnown && caps.isHDR10 && !caps.isDV)
-  {
-    const auto source = preferences.HDR10Mode(caps.hdr10PlusSource);
+    const auto source = caps.isHLG ? preferences.HLGMode() : preferences.HDR10Mode(caps.hdr10PlusSource);
     if (source == HDR10SourceMode::Native) return result;
     if (caps.hdr10PlusSource && source != HDR10SourceMode::HDR10PlusDV && source != HDR10SourceMode::SDR)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
     if (source == HDR10SourceMode::HDR10PlusDV && !caps.isHDR10Plus)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
-    auto policy = preferences.HDR10Policy(caps.hdr10PlusSource);
+    auto policy = preferences.HDR10PolicyFor(source);
     if (policy.mode == DVBRIDGE_MODE_DISABLED)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
     if (policy.mode == DVBRIDGE_MODE_SDR)
