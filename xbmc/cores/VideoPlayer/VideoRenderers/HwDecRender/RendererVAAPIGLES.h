@@ -56,13 +56,8 @@ public:
                             DVHandoff handoff);
   bool HDR10AIQueueEligible() const override { return m_aiBuffers > NUM_BUFFERS; }
   bool HDR10AILookahead() const override;
-  bool HDR10AIFrameCommitted() const override;
-  bool PrepareHDR10AIQueue(const std::deque<int>& queue, bool end, bool paused,
-      uint64_t presentationDeadline = 0) override;
-  HDR10AIQueuePreparation CaptureHDR10AIQueue(const std::deque<int>& queue, bool end,
-      bool paused, uint64_t presentationDeadline) override;
+  bool HDR10AITextureReady(int index) const override { return m_vaapiTextures[index] != nullptr; }
   unsigned m_aiBuffers{6};
-  bool m_aiLookahead{};
 #endif
   void ReleaseBuffer(int idx) override;
   bool NeedBuffer(int idx) override;

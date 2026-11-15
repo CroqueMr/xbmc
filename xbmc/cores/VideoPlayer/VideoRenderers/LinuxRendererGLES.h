@@ -83,6 +83,13 @@ public:
   CRenderInfo GetRenderInfo() override;
   bool ConfigChanged(const VideoPicture& picture) override;
 #ifdef CB1_HAS_HDR10_AI
+  bool HDR10AIQueueEligible() const override { return m_softwareAIBuffers > NUM_BUFFERS; }
+  bool HDR10AILookahead() const override { return HDR10AIQueueEligible() && m_aiLookahead; }
+  bool HDR10AIFrameCommitted() const override;
+  bool PrepareHDR10AIQueue(const std::deque<int>& queue, bool end, bool paused,
+                          uint64_t presentationDeadline = 0) override;
+  HDR10AIQueuePreparation CaptureHDR10AIQueue(const std::deque<int>& queue, bool end,
+                                             bool paused, uint64_t presentationDeadline) override;
   bool HDR10AIFramePending() const override { return HDR10AILookahead() && !m_aiFrameRendered; }
 #endif
 
@@ -98,6 +105,9 @@ protected:
                  RetainedOutput retainedOutput);
   bool ConfigureVideoOutput(const VideoPicture& picture);
 #ifdef CB1_HAS_HDR10_AI
+  virtual bool HDR10AITextureReady(int index) const { return m_buffers[index].loaded; }
+  unsigned m_softwareAIBuffers{NUM_BUFFERS};
+  bool m_aiLookahead{};
   bool m_aiOutputPending{false};
   bool m_aiFrameRendered{true};
 #endif
