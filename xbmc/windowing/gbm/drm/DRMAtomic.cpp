@@ -378,7 +378,7 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (CServiceBroker::GetLogging().CanLogComponent(LOGWINDOWING))
     m_req->LogAtomicRequest();
 
-  if ((strict || m_req->sdrRestore) && m_propertyFailure)
+  if ((strict || m_req->sdrRestore || m_colorRangeTransition) && m_propertyFailure)
   {
     return reject("properties", EINVAL);
   }
@@ -659,6 +659,24 @@ bool CDRMAtomic::FlipPageTransactional(struct gbm_bo* bo, bool restore, bool asy
     if (fd >= 0) close(fd);
   }
   return accepted;
+}
+
+bool CDRMAtomic::FlipPageWithHDR10Metadata(struct gbm_bo* bo, uint32_t blob)
+{
+  auto* fb = DrmFbGetFromBo(bo);
+  if (!fb)
+    return false;
+
+  // Treat a new static packet and framebuffer as one color transition.
+  // Ordinary fallback would submit the new framebuffer with the old packet.
+  if (!AddProperty(m_connector, "HDR_OUTPUT_METADATA", blob))
+  {
+    FinishRequest(false);
+    return false;
+  }
+  m_colorRangeTransition = true;
+  m_lastPageAccepted = DrmAtomicCommit(fb->fb_id, 0, true, false);
+  return m_lastPageAccepted;
 }
 
 bool CDRMAtomic::TestFramebuffer(struct gbm_bo* bo)

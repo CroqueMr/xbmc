@@ -1671,6 +1671,55 @@ void CVideoPlayer::Prepare()
   SetCaching(CACHESTATE_FLUSH);
 }
 
+void CVideoPlayer::ProcessBdjPresentation()
+{
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+  if (!IsBlurayInput())
+    return;
+  auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
+  const double pts = m_VideoPlayerVideo->GetCurrentPts();
+  while (!m_bdjPresentationEvents.empty())
+  {
+    const auto event = m_bdjPresentationEvents.front();
+    if (event.seq == bluray.BdjEndSequence())
+      break;
+    if (event.pts != DVD_NOPTS_VALUE && (pts == DVD_NOPTS_VALUE || pts < event.pts))
+      break;
+    bluray.ReleaseBdjEvents(event.seq);
+    m_bdjPresentationEvents.pop_front();
+    CLog::Log(LOGDEBUG, "BD-J presentation: released seq {} at video pts {}", event.seq, pts);
+  }
+
+  if (m_bdjDraining && bluray.WaitingForBdjPlaylist() &&
+      !m_VideoPlayerVideo->HasData() && !m_VideoPlayerAudio->HasData())
+  {
+    int late, queued, discarded;
+    double renderPts;
+    m_renderManager.GetStats(late, renderPts, queued, discarded);
+    if (queued == 0)
+    {
+      if (const auto seq = bluray.BdjEndSequence())
+      {
+        bluray.ReleaseBdjEnd();
+        CLog::Log(LOGDEBUG, "BD-J presentation: drained through sequence {}", seq);
+      }
+      m_bdjPresentationEvents.clear();
+    }
+  }
+  bluray.PollBdjEvents();
+#endif
+}
+
+void CVideoPlayer::ResetBdjPresentation()
+{
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+  if (IsBlurayInput())
+    static_cast<CDVDInputStreamBluray&>(*m_pInputStream).ResetBdjPresentation();
+#endif
+  m_bdjPresentationEvents.clear();
+  m_bdjDraining = false;
+}
+
 void CVideoPlayer::Process()
 {
   // Try to resolve the correct mime type. This can take some time, for example if a requested
@@ -1724,6 +1773,8 @@ void CVideoPlayer::Process()
     if (m_bAbortRequest)
       break;
 
+    ProcessBdjPresentation();
+
     // UserInput can publish selection while paused or before full queues drain.
     closeDeselectedBluraySubtitle();
 
@@ -1746,10 +1797,41 @@ void CVideoPlayer::Process()
       if (m_pInputStream->IsEOF())
         break;
 
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+      auto* bluray = IsBlurayInput() ? static_cast<CDVDInputStreamBluray*>(m_pInputStream.get())
+                                    : nullptr;
+      if (bluray)
+        bluray->TakeBdjPlaylistJump();
+#endif
       if (OpenDemuxStream() == false)
       {
         m_bAbortRequest = true;
         break;
+      }
+
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+      if (bluray)
+      {
+        bluray->PollBdjEvents();
+        // Java can replace the playlist while FFmpeg probes it, even with the same ID.
+        if (bluray->TakeBdjPlaylistJump() || bluray->HasPendingBdjSelection())
+        {
+          CLog::Log(LOGDEBUG, "BD-J presentation: discard demuxer superseded during probing");
+          CloseDemuxer();
+          continue;
+        }
+      }
+#endif
+
+      if (m_bdjAudioHandoff)
+      {
+        const auto streams = m_pDemuxer->GetStreams();
+        const bool hasAudio = std::ranges::any_of(streams, [this](const CDemuxStream* stream) {
+          return stream->type == StreamType::AUDIO && !stream->disabled &&
+                 (m_dvd.iSelectedAudioStream < 0 || stream->dvdNavId == m_dvd.iSelectedAudioStream);
+        });
+        if (!hasAudio)
+          CloseStream(m_CurrentAudio, false);
       }
 
       if (m_processInfo)
@@ -1762,6 +1844,11 @@ void CVideoPlayer::Process()
         OpenDefaultStreams();
 
       UpdatePlayState(0);
+
+      // Probing a Blu-ray can emit PLAYLIST_STOP. Process its pending flush
+      // before delivering packets from the new demuxer to the decoder.
+      if (IsBlurayInput() && m_messenger.GetPacketCount(CDVDMsg::GENERAL_FLUSH) > 0)
+        continue;
     }
 
     // handle eventual seeks due to playspeed
@@ -1870,10 +1957,35 @@ void CVideoPlayer::Process()
       {
         CloseDemuxer();
 
+#ifdef CB1_HAS_HDR10_AI
+        // CloseStream(audio) can wait while AI is still holding the outgoing
+        // video's last second. Signal the end to the video decoder first.
+        if (m_CurrentVideo.inited && m_renderManager.HDR10AILookahead())
+          m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN));
+#endif
         SetCaching(CACHESTATE_DONE);
-        CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
-        CloseStream(m_CurrentAudio, true);
-        CloseStream(m_CurrentVideo, true);
+        bool drain = true;
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+        if (IsBlurayInput())
+          drain = !static_cast<CDVDInputStreamBluray&>(*m_pInputStream).TakeBdjPlaylistJump();
+#endif
+        CLog::Log(LOGINFO, "VideoPlayer: next stream, {}",
+                  drain ? "wait for old streams to be finished" : "discard abandoned BD-J playlist");
+        if (drain && m_bdjDraining && m_playSpeed == DVD_PLAYSPEED_NORMAL &&
+            m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+            !m_VideoPlayerAudio->IsPassthrough())
+        {
+          // Finish the outgoing audio on its worker. The next decoder can reuse its PCM sink.
+          m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_EOF));
+          m_bdjAudioHandoff = true;
+          m_HasAudio = false;
+        }
+        else
+          CloseStream(m_CurrentAudio, drain);
+        CloseStream(m_CurrentVideo, drain);
+        CloseStream(m_CurrentSubtitle, false);
+        m_bdjPresentationEvents.clear();
+        m_bdjDraining = false;
 
         m_syncStartPtsWait.reset();
         m_CurrentAudio.Clear();
@@ -1885,6 +1997,17 @@ void CVideoPlayer::Process()
       // input stream asked us to just retry
       if(next == CDVDInputStream::NEXTSTREAM_RETRY)
       {
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+        if (!m_bdjDraining && IsBlurayInput() &&
+            static_cast<CDVDInputStreamBluray&>(*m_pInputStream).WaitingForBdjPlaylist())
+        {
+          m_bdjDraining = true;
+          CLog::Log(LOGDEBUG, "BD-J presentation: draining the outgoing playlist");
+          SetCaching(CACHESTATE_DONE);
+          if (m_CurrentVideo.inited)
+            m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN));
+        }
+#endif
         // The disc ended this still's video input. Unlike an ordinary read
         // timeout, release its delayed pictures before waiting for navigation.
         if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY) &&
@@ -2273,8 +2396,10 @@ void CVideoPlayer::HandlePlaySpeed()
   }
 #endif
   const bool isInMenu = IsInMenuInternal();
+  // At a natural BD-J end, the demuxer cannot refill the queues until Java
+  // receives the playlist-end event. Keep draining on the playback clock.
   const bool tolerateStall =
-      isInMenu || (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES);
+      m_bdjDraining || isInMenu || (m_CurrentVideo.hint.flags & StreamFlags::FLAG_STILL_IMAGES);
 
   if (tolerateStall && m_caching != CACHESTATE_DONE)
     SetCaching(CACHESTATE_DONE);
@@ -4528,7 +4653,12 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
      m_CurrentAudio.hint != hint)
   {
     if (!player->OpenStream(hint))
+    {
+      if (m_bdjAudioHandoff)
+        CloseStream(m_CurrentAudio, false);
       return false;
+    }
+    m_bdjAudioHandoff = false;
 
     player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, m_displayLost), 1);
 
@@ -4853,8 +4983,12 @@ bool CVideoPlayer::OpenAudioID3Stream(CDVDStreamInfo& hint)
 
 bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 {
-  if (current.id < 0)
+  const bool retainedAudio = current.type == StreamType::AUDIO && m_bdjAudioHandoff;
+  if (current.id < 0 && !retainedAudio)
     return false;
+
+  if (retainedAudio)
+    m_bdjAudioHandoff = false;
 
   CLog::Log(LOGINFO, "Closing stream player {}", current.player);
 
@@ -4883,6 +5017,9 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
+  if (m_bdjAudioHandoff)
+    CloseStream(m_CurrentAudio, false);
+  ResetBdjPresentation();
   m_syncStartPtsWait.reset();
   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");
 
@@ -4947,10 +5084,19 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
       m_processInfo->IsTempoAllowed(static_cast<float>(m_playSpeed) / DVD_PLAYSPEED_NORMAL))
   {
     // make sure players are properly flushed, should put them in stalled state
-    auto msg = std::make_shared<CDVDMsgGeneralSynchronize>(1s, SYNCSOURCE_AUDIO | SYNCSOURCE_VIDEO);
-    m_VideoPlayerAudio->SendMessage(msg, 1);
-    m_VideoPlayerVideo->SendMessage(msg, 1);
-    msg->Wait(m_bStop, 0);
+    const bool audioReady = m_VideoPlayerAudio->IsInited();
+    const bool videoReady = m_VideoPlayerVideo->IsInited();
+    const unsigned int sources = (audioReady ? SYNCSOURCE_AUDIO : 0) |
+                                 (videoReady ? SYNCSOURCE_VIDEO : 0);
+    if (sources)
+    {
+      auto msg = std::make_shared<CDVDMsgGeneralSynchronize>(1s, sources);
+      if (audioReady)
+        m_VideoPlayerAudio->SendMessage(msg, 1);
+      if (videoReady)
+        m_VideoPlayerVideo->SendMessage(msg, 1);
+      msg->Wait(m_bStop, 0);
+    }
 
     // purge any pending PLAYER_STARTED messages
     m_messenger.Flush(CDVDMsg::PLAYER_STARTED);
@@ -4984,6 +5130,18 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
   {
     switch (iMessage)
     {
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+    case BD_EVENT_BDJ_PRESENTATION_STAMP:
+    {
+      const auto seq = *static_cast<const uint32_t*>(pData);
+      const auto pts = m_CurrentVideo.dts;
+      if (!m_bdjPresentationEvents.empty() && m_bdjPresentationEvents.back().pts == pts)
+        m_bdjPresentationEvents.back().seq = seq;
+      else
+        m_bdjPresentationEvents.push_back({pts, seq});
+      break;
+    }
+#endif
     case BD_EVENT_MENU_OVERLAY:
       m_overlayContainer.ProcessAndAddOverlayIfValid(
           *static_cast<std::shared_ptr<CDVDOverlay>*>(pData));

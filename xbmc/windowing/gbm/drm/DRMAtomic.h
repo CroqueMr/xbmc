@@ -61,6 +61,7 @@ public:
   bool SupportsFencing() override { return true; }
   bool AddProperty(CDRMObject* object, const char* name, uint64_t value);
   bool FlipPageTransactional(struct gbm_bo* bo, bool restore = false, bool async = false);
+  bool FlipPageWithHDR10Metadata(struct gbm_bo* bo, uint32_t blob);
   bool HasPendingCB1Page() const { return m_cb1Pending; }
   bool HasPendingRequest() const { return m_need_modeset || (m_req && !m_req->Empty()); }
   bool CompleteCB1Page(int timeoutMs = 0);

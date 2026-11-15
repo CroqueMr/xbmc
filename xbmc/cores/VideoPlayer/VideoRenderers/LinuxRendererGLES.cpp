@@ -175,7 +175,13 @@ bool CLinuxRendererGLES::ValidateRenderTarget()
   return false;
 }
 
-bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsigned int orientation)
+bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps, unsigned int orientation)
+{
+  return Configure(picture, fps, orientation, RetainedOutput::None);
+}
+
+bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps,
+                                   unsigned int orientation, RetainedOutput retainedOutput)
 {
   auto colorimetry = KODI::UTILS::GetColorimetry(picture);
   bool inferred = (picture.color_space == AVCOL_SPC_UNSPECIFIED);
@@ -220,12 +226,35 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
   m_bValidated = false;
 
 #ifdef CB1_HAS_HDR10_AI
+  if (retainedOutput == RetainedOutput::HDR10)
+  {
+    auto& window = static_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext&>(
+        *CServiceBroker::GetWinSystem());
+    m_passthroughHDR = true;
+    m_hdrFboActive = window.IsHdrComposite();
+    m_reloadShaders = true;
+    window.BeginHDR10Handoff();
+    return true;
+  }
   m_aiOutputPending = HDR10AILookahead() &&
       DVBRIDGE::FrameOutputSettings(picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS, picture.hdrType == StreamHdrType::HDR_TYPE_HLG).hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
   if (m_aiOutputPending)
   {
-    // Keep the GUI output until AI preparation selects DV or native HDR10.
-    m_dvRequested = m_passthroughHDR = m_hdrFboActive = false;
+    // An already committed HDR10-to-DV output can outlive the renderer.
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    m_dvRequested = window && window->OwnsHDR10DVOutput();
+    m_passthroughHDR = m_hdrFboActive = false;
+    return true;
+  }
+#endif
+#ifdef HAVE_DVBRIDGE
+  if (retainedOutput == RetainedOutput::NativeDV)
+  {
+    // The renderer owns cleanup now. Source admission happens after import.
+    m_dvRequested = m_hdrFboActive = true;
+    m_passthroughHDR = false;
+    CLog::Log(LOGDEBUG, "DVBridge: retained Master Reference HDMI output across renderer replacement");
     return true;
   }
 #endif
@@ -351,6 +380,8 @@ void CLinuxRendererGLES::AddVideoPicture(const VideoPicture &picture, int index)
   buf.hasDisplayMetadata = picture.hasDisplayMetadata;
   buf.displayMetadata = picture.displayMetadata;
   buf.lightMetadata = picture.lightMetadata;
+  buf.hasHDR10LightMetadata = picture.hasLightMetadata;
+  buf.hdrType = picture.hdrType;
   if (picture.hasLightMetadata && picture.lightMetadata.MaxCLL)
   {
     buf.hasLightMetadata = picture.hasLightMetadata;
@@ -1497,6 +1528,29 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 #ifdef HAVE_DVBRIDGE
   DVBRIDGE::PlaybackNotification::RenderedOrdinary(
       m_buffers[index].videoBuffer ? m_buffers[index].videoBuffer->PlaybackGeneration() : 0);
+#ifdef CB1_HAS_HDR10_AI
+  if (m_passthroughHDR)
+  {
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    if (window && window->HDR10HandoffPending())
+    {
+      const auto& buffer = m_buffers[index];
+      VideoPicture signal{};
+      signal.hdrType = buffer.hdrType;
+      signal.color_transfer = buffer.m_srcColTransfer;
+      signal.color_space = buffer.m_srcColSpace;
+      signal.color_primaries = buffer.m_srcPrimaries;
+      signal.color_range = buffer.m_srcFullRange;
+      signal.colorBits = buffer.m_srcBits;
+      signal.hasDisplayMetadata = buffer.hasDisplayMetadata;
+      signal.displayMetadata = buffer.displayMetadata;
+      signal.hasLightMetadata = buffer.hasHDR10LightMetadata;
+      signal.lightMetadata = buffer.lightMetadata;
+      window->StageHDR10Handoff(signal);
+    }
+  }
+#endif
 #endif
   return true;
 }

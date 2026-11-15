@@ -132,6 +132,8 @@ protected:
   virtual bool ConnectorPreferencesAllowed() const { return true; }
   void DeferConnectorPreferences();
   void ApplyColorspace();
+  bool CanKeepHDR10Signal(const VideoPicture& picture) const;
+  bool PresentHDR10Handoff(const VideoPicture& picture);
   virtual std::optional<bool> TransportLimitedColor() const { return {}; }
   bool OrdinaryShaderLimitedColor();
   bool RequestedLimitedColor() const { return GetColorRange() == ColorRange::LIMITED; }
