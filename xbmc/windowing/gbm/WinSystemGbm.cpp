@@ -1675,6 +1675,18 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
   return accepted;
 }
 
+CWinSystemGbm::SDRBT2020Support CWinSystemGbm::GetSDRBT2020Support() const
+{
+  // CB1's existing SDR scanout stages RGB via CaptureColorPreferences.
+  auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (!connector || !connector->GetType().starts_with("HDMI") ||
+      !connector->GetPropertyEnumValue("Colorspace", "BT2020_RGB"))
+    return SDRBT2020Support::Driver;
+  if (!m_info || !m_info->SupportsColorimetry(KODI::UTILS::Colorimetry::BT2020_RGB))
+    return SDRBT2020Support::Display;
+  return SDRBT2020Support::Available;
+}
+
 DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
 {
   DVBRIDGE::LldvConnectorStatus status;

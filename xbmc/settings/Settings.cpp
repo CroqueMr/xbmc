@@ -220,12 +220,15 @@ bool CSettings::Load(const TiXmlElement* root, bool& updated)
 
 #ifdef HAVE_DVBRIDGE
   std::unique_ptr<TiXmlElement> migrated;
-  bool hasHDR10PlusPreference = false;
+  bool hasHDR10PlusPreference = false, hasSDRTarget = false;
   for (const auto* setting = root->FirstChildElement("setting"); setting;
        setting = setting->NextSiblingElement("setting"))
-    if (setting->Attribute("id") &&
-        std::string_view(setting->Attribute("id")) == "dvbridge.hdr10plussource")
-      hasHDR10PlusPreference = true;
+  {
+    const char* id = setting->Attribute("id");
+    if (!id) continue;
+    hasHDR10PlusPreference |= std::string_view(id) == "dvbridge.hdr10plussource";
+    hasSDRTarget |= std::string_view(id) == "dvbridge.sdrpreset";
+  }
   for (const auto* setting = root->FirstChildElement("setting"); setting;
        setting = setting->NextSiblingElement("setting"))
   {
@@ -236,7 +239,7 @@ bool CSettings::Load(const TiXmlElement* root, bool& updated)
                                std::string_view(value) == "3";
     const auto legacy = legacyHDR10Plus ? std::optional<int>{0} :
             std::string_view(id) == "dvbridge.outputmode" &&
-            (std::string_view(value) == "3" || std::string_view(value) == "6") ?
+            (std::string_view(value) == "3" || (!hasSDRTarget && std::string_view(value) == "6")) ?
             std::optional<int>{5} : std::nullopt;
     if (!legacy) continue;
     if (!migrated) migrated.reset(root->Clone()->ToElement());
@@ -724,7 +727,7 @@ void CSettings::InitializeISettingCallbacks()
       {KODI::VIDEO::UPSCALER::SDR, KODI::VIDEO::UPSCALER::HDR});
   GetSettingsManager()->RegisterCallback(&CDVPlaybackModes::GetInstance(),
       {"dvbridge.configureprofile","dvbridge.expertblack","dvbridge.expertblackcustom",
-       "dvbridge.playback", "dvbridge.lldvformat"});
+       "dvbridge.playback", "dvbridge.lldvformat", "dvbridge.sdrgamut"});
 #endif
   // register any ISettingCallback implementations
   GetSettingsManager()->RegisterCallback(

@@ -56,6 +56,16 @@
           <constraints><options><option label="41135">0</option><option label="41136">1</option><option label="41137">2</option></options></constraints>
           <control type="list" format="string" />
         </setting>
+        <setting id="dvbridge.sdrgamut" type="action" label="41270" help="41271">
+          <requirement>HAVE_DVBRIDGE</requirement><level>0</level>
+          <control type="button" format="action" />
+        </setting>
+        <setting id="dvbridge.sdrgamutvalue" type="integer" label="41270">
+          <requirement>HAVE_DVBRIDGE</requirement><level>3</level><visible>false</visible>
+          <default>0</default>
+          <constraints><options><option label="41272">0</option><option label="41273">1</option></options></constraints>
+          <control type="list" format="string" />
+        </setting>
         <setting id="dvbridge.sdrpeak" type="number" label="41138" help="41134">
           <requirement>HAVE_DVBRIDGE</requirement><level>0</level><default>100</default>
           <dependencies><dependency type="visible"><condition setting="dvbridge.sdrpreset" operator="is">2</condition></dependency></dependencies>

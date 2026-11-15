@@ -222,6 +222,7 @@ public:
   bool PlayerLed() const { return m_playerLed; }
   bool SetHDR10Session(const dvbridge_hdr10_session& session, uint64_t stream = 0,
                       bool limited = false);
+  bool SetSDROutputRange(bool limited);
   bool RebindOutputSurface(bool hdr10, bool sdr = false, unsigned int framebuffer = 0);
   void Reset();
   bool Prepare(const Layer& base, const Layer* enhancement,
@@ -342,6 +343,7 @@ private:
   dvbridge_geometry m_sourceGeometry{};
   ESCALINGMETHOD m_spatialMethod{VS_SCALINGMETHOD_MAX};
   uint64_t m_geometryRevision{1};
+  dvbridge_gamut m_sdrGamut{DVBRIDGE_GAMUT_UNSET};
   bool m_geometryKnown{};
   bool Failure(const char* stage);
   void PreparedAudit(std::string_view sdr = {});

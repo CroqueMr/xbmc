@@ -45,6 +45,7 @@ struct OutputPreferences
   HDR10SourceMode hdr10PlusSource{HDR10SourceMode::Native};
   HLGSourceMode hlgSource{HLGSourceMode::Native};
   int sdrPreset{0};
+  bool sdrBT2020{};
   double sdrPeak{100}, sdrGamma{2.4}, sdrBlack{0};
   int method{0}, panel{0}, gamut{0};
   double peak{0};
@@ -86,7 +87,7 @@ struct OutputPreferences
   {
     return output == other.output && hdr10Source == other.hdr10Source &&
         hdr10PlusSource == other.hdr10PlusSource && hlgSource == other.hlgSource &&
-        sdrPreset == other.sdrPreset &&
+        sdrPreset == other.sdrPreset && sdrBT2020 == other.sdrBT2020 &&
         std::bit_cast<uint64_t>(sdrPeak) == std::bit_cast<uint64_t>(other.sdrPeak) &&
         std::bit_cast<uint64_t>(sdrGamma) == std::bit_cast<uint64_t>(other.sdrGamma) &&
         std::bit_cast<uint64_t>(sdrBlack) == std::bit_cast<uint64_t>(other.sdrBlack) && method == other.method &&
@@ -133,7 +134,8 @@ struct OutputPreferences
   {
     dvbridge_policy result{};
     result.revision = revision;
-    result.sdr={static_cast<dvbridge_sdr_preset>(sdrPreset),sdrPeak,sdrGamma,sdrBlack};
+    result.sdr={static_cast<dvbridge_sdr_preset>(sdrPreset),sdrPeak,sdrGamma,sdrBlack,
+        sdrBT2020 ? DVBRIDGE_GAMUT_BT2020 : DVBRIDGE_GAMUT_BT709};
     switch (output)
     {
       case OutputMode::PlayerLed: result.mode = DVBRIDGE_MODE_PLAYER_LED; break;
@@ -255,6 +257,7 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = 
   if (settings)
   {
     next.sdrPreset=settings->GetInt("dvbridge.sdrpreset");
+    next.sdrBT2020=settings->GetInt("dvbridge.sdrgamutvalue")==1;
     next.sdrPeak=settings->GetNumber("dvbridge.sdrpeak");
     next.sdrGamma=settings->GetNumber("dvbridge.sdrgamma");
     next.sdrBlack=settings->GetNumber("dvbridge.sdrblack");
