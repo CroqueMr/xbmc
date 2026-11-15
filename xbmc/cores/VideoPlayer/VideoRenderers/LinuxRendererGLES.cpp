@@ -41,6 +41,11 @@
 
 #include <mutex>
 
+extern "C"
+{
+#include <libavutil/dovi_meta.h>
+}
+
 using namespace Shaders;
 using namespace Shaders::GLES;
 
@@ -582,6 +587,26 @@ void CLinuxRendererGLES::Update()
   ValidateRenderTarget();
 }
 
+void CLinuxRendererGLES::UpdateActiveArea(int index)
+{
+  CRect area;
+  // The decoder retains only bounded metadata. Without L5, the whole frame is active.
+  const auto* metadata =
+      reinterpret_cast<const AVDOVIMetadata*>(m_buffers[index].doviMetadata.Data());
+  for (int i = 0; metadata && i < metadata->num_ext_blocks; ++i)
+  {
+    const AVDOVIDmData* block = av_dovi_get_ext(metadata, i);
+    if (block->level != 5)
+      continue;
+    const unsigned left = block->l5.left_offset, right = block->l5.right_offset;
+    const unsigned top = block->l5.top_offset, bottom = block->l5.bottom_offset;
+    if (left + right < m_sourceWidth && top + bottom < m_sourceHeight)
+      area.SetRect(left, top, m_sourceWidth - right, m_sourceHeight - bottom);
+    break;
+  }
+  SetActiveArea(area);
+}
+
 void CLinuxRendererGLES::ClearBackBuffer()
 {
   //set the entire backbuffer to black
@@ -746,6 +771,7 @@ void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigne
     return;
   }
 
+  UpdateActiveArea(index);
   ManageRenderArea();
 
   if (clear)
@@ -821,6 +847,7 @@ void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsig
   if (!buf.fields[FIELD_FULL][0].id)
     return;
 
+  UpdateActiveArea(index);
   ManageRenderArea();
 
   if (clear)

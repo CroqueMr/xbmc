@@ -722,6 +722,7 @@ std::map<std::string, ViewMode> viewModes =
 {
   {"normal", ViewModeNormal},
   {"auto", ViewModeAuto},
+  {"activearea", ViewModeActiveArea},
   {"zoom", ViewModeZoom},
   {"stretch4x3", ViewModeStretch4x3},
   {"widezoom", ViewModeWideZoom, },

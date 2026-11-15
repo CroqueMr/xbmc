@@ -30,6 +30,7 @@ static const ViewModeProperties viewModes[] =
 {
   { 630,   ViewModeNormal },
   { 16316, ViewModeAuto },
+  { 41276, ViewModeActiveArea },
   { 631,   ViewModeZoom },
   { 39008, ViewModeZoom120Width },
   { 39009, ViewModeZoom110Width },
