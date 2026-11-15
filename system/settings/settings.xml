@@ -3925,6 +3925,65 @@
           </dependencies>
           <control type="toggle" />
         </setting>
+        <setting id="audiooutput.dolbydialnorm" type="boolean" label="41260" help="41261">
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible">
+              <and>
+                <condition setting="audiooutput.passthrough" operator="is">true</condition>
+                <or>
+                  <condition setting="audiooutput.ac3passthrough" operator="is">true</condition>
+                  <condition setting="audiooutput.eac3passthrough" operator="is">true</condition>
+                </or>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
+        <setting id="audiooutput.jocdialnorm" type="boolean" parent="audiooutput.dolbydialnorm" label="41262" help="41263">
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible">
+              <and>
+                <condition setting="audiooutput.passthrough" operator="is">true</condition>
+                <condition setting="audiooutput.eac3passthrough" operator="is">true</condition>
+                <condition setting="audiooutput.dolbydialnorm" operator="is">true</condition>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
+        <setting id="audiooutput.truehddialnorm" type="boolean" label="41264" help="41265">
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible">
+              <and>
+                <condition setting="audiooutput.passthrough" operator="is">true</condition>
+                <condition setting="audiooutput.truehdpassthrough" operator="is">true</condition>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
+        <setting id="audiooutput.dtsdialnorm" type="boolean" label="41266" help="41267">
+          <level>2</level>
+          <default>false</default>
+          <dependencies>
+            <dependency type="visible">
+              <and>
+                <condition setting="audiooutput.passthrough" operator="is">true</condition>
+                <or>
+                  <condition setting="audiooutput.dtspassthrough" operator="is">true</condition>
+                  <condition setting="audiooutput.dtshdpassthrough" operator="is">true</condition>
+                </or>
+              </and>
+            </dependency>
+          </dependencies>
+          <control type="toggle" />
+        </setting>
       </group>
     </category>
     <category id="input" label="14125" help="36374">
