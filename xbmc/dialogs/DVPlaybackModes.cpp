@@ -41,7 +41,7 @@
 namespace
 {
 struct Choice { int output,method,label; };
-constexpr Choice dvChoices[]={{0,0,40812},{4,0,40913},
+constexpr Choice dvChoices[]={{4,0,40913},{0,0,40812},
     {5,0,40914},
     {2,0,40814},{1,0,40822},{1,1,40823},{1,2,40922},{6,0,41130},{7,0,41221}};
 }
