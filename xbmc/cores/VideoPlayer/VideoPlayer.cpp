@@ -845,6 +845,18 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
 {
   CLog::Log(LOGINFO, "VideoPlayer::OpenFile: {}", CURL::GetRedacted(file.GetPath()));
 
+#ifdef HAVE_DVBRIDGE
+  // Refresh on the open request, before the demuxer worker needs the sink.
+  // SendMsg runs immediately when playback is opened by the application thread.
+  MESSAGING::ThreadMessageCallback refresh{
+      [](void*) {
+        auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+            CServiceBroker::GetWinSystem());
+        if (window && window->RefreshDisplayInfoForVideo())
+          window->RefreshDVOutputCapabilities();
+      }, nullptr};
+  CServiceBroker::GetAppMessenger()->SendMsg(TMSG_CALLBACK, 0, 0, &refresh);
+#endif
   if (IsRunning())
   {
     CDVDMsgOpenFile::FileParams params;
@@ -947,14 +959,6 @@ void CVideoPlayer::OnStartup()
 
 bool CVideoPlayer::OpenInputStream()
 {
-#ifdef HAVE_DVBRIDGE
-  MESSAGING::ThreadMessageCallback refresh{
-      [](void*) {
-        auto* window=dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
-        if (window && window->RefreshDisplayInfoForVideo()) window->RefreshDVOutputCapabilities();
-      },nullptr};
-  CServiceBroker::GetAppMessenger()->SendMsg(TMSG_CALLBACK,0,0,&refresh);
-#endif
   if (m_pInputStream.use_count() > 1)
     throw std::runtime_error("m_pInputStream reference count is greater than 1");
   m_pInputStream.reset();
@@ -1678,6 +1682,16 @@ void CVideoPlayer::ProcessBdjPresentation()
     return;
   auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
   const double pts = m_VideoPlayerVideo->GetCurrentPts();
+#if defined(BD_BDJ_PLAYBACK_CLOCK)
+  if (pts != DVD_NOPTS_VALUE && m_CurrentVideo.dts != DVD_NOPTS_VALUE &&
+      m_CurrentVideo.dispTime > 0)
+  {
+    // The demux position and DTS describe the same packet. Use them to put
+    // the rendered PTS on the playlist timeline, even when the reader is ahead.
+    const double time = DVD_MSEC_TO_TIME(m_CurrentVideo.dispTime) + pts - m_CurrentVideo.dts;
+    bluray.SetBdjPlaybackTime(static_cast<uint64_t>(std::max(0.0, time) * 90000.0 / DVD_TIME_BASE));
+  }
+#endif
   while (!m_bdjPresentationEvents.empty())
   {
     const auto event = m_bdjPresentationEvents.front();
@@ -4714,6 +4728,10 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   std::shared_ptr<CDVDInputStream::IMenus> pMenus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
   if(pMenus && pMenus->IsInMenu())
     hint.stills = true;
+#ifdef HAVE_DVBRIDGE
+  if (pMenus && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+    hint.codecOptions |= CODEC_BLURAY_NAVIGATION;
+#endif
 
   if (hint.stereo_mode.empty())
   {
@@ -4761,14 +4779,48 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
                                                    (hint.fpsrate * (hint.interlaced ? 2 : 1)));
 
       const bool nativeDV = WantsNativePresentation(hint);
-      RESOLUTION res = CResolutionUtils::ChooseBestResolution(static_cast<float>(framerate), hint.width, hint.height, !hint.stereo_mode.empty());
+      // Disc navigation can reopen video while the GUI is joining this thread.
+      // Let the render thread change the mode without a synchronous GUI message.
+      if (!pMenus)
+      {
+        RESOLUTION res = CResolutionUtils::ChooseBestResolution(static_cast<float>(framerate), hint.width, hint.height, !hint.stereo_mode.empty());
 #ifdef HAVE_DVBRIDGE
-      DVBRIDGE::modeChangeResolution.store(nativeDV ? static_cast<int>(res) : -1);
+        using HDRSignal = DVBRIDGE::NativeHDRSignal;
+        auto hdrSignal = HDRSignal::None;
+        if (!nativeDV && !hint.dovi.dv_profile && !hint.interlaced &&
+            hint.stereo_mode.empty())
+        {
+          const bool hlg = hint.hdrType == StreamHdrType::HDR_TYPE_HLG;
+          const bool hdr10 = hint.hdrType == StreamHdrType::HDR_TYPE_HDR10;
+          // The demuxer may learn the transfer only after decoding the first picture.
+          const bool unknown = hint.hdrType == StreamHdrType::HDR_TYPE_NONE &&
+              hint.colorTransferCharacteristic == AVCOL_TRC_UNSPECIFIED &&
+              (hint.codec == AV_CODEC_ID_HEVC || hint.codec == AV_CODEC_ID_AV1 ||
+               hint.codec == AV_CODEC_ID_VP9);
+          const auto native = DVBRIDGE::HDR10SourceMode::Native;
+          if (hlg || hdr10)
+          {
+            if (DVBRIDGE::FrameOutputSettings(false, hlg).hdr10Source == native)
+              hdrSignal = hlg ? HDRSignal::HLG : HDRSignal::HDR10;
+          }
+          else if (unknown)
+          {
+            const auto preferences = DVBRIDGE::FrameOutputSettings();
+            if (preferences.hdr10Source == native && preferences.HDR10Mode(true) == native &&
+                preferences.HLGMode() == native)
+              hdrSignal = HDRSignal::Unknown;
+          }
+        }
+        DVBRIDGE::modeChangeNativeHDR.store(hdrSignal);
+        DVBRIDGE::modeChangeResolution.store(
+            nativeDV || hdrSignal != HDRSignal::None ? static_cast<int>(res) : -1);
 #endif
-      CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
+        CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
 #ifdef HAVE_DVBRIDGE
-      DVBRIDGE::modeChangeResolution.store(-1);
+        DVBRIDGE::modeChangeResolution.store(-1);
+        DVBRIDGE::modeChangeNativeHDR.store(HDRSignal::None);
 #endif
+      }
       m_renderManager.TriggerUpdateResolution(framerate, hint.width, hint.height, hint.stereo_mode,
                                               nativeDV);
     }

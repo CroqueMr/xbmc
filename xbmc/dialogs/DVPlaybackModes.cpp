@@ -3,6 +3,7 @@
 #ifdef HAVE_DVBRIDGE
 #include "FileItem.h"
 #include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "cores/VideoPlayer/Interface/StreamInfo.h"
@@ -34,6 +35,7 @@
 #endif
 #include "utils/log.h"
 #include "threads/IRunnable.h"
+#include <algorithm>
 #include <cstdio>
 
 namespace
@@ -164,14 +166,14 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
                          nativeSource==StreamHdrType::HDR_TYPE_HDR10PLUS;
   const bool hlgSource=nativeSource==StreamHdrType::HDR_TYPE_HLG;
   if (!hdr10Source && !hlgSource && nativeSource!=StreamHdrType::HDR_TYPE_DOLBYVISION) return false;
-  constexpr Choice hlgChoices[]={{1,0,40867},{0,0,40866},{2,0,41130}};
+  constexpr Choice hlgChoices[]={{1,0,40867},{0,0,41311},{2,0,41130}};
   const auto source=DVBRIDGE::StreamTelemetry::Read().transaction.capabilities;
 #ifdef CB1_HAS_HDR10_AI
-  constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,40866},{4,0,41130}};
-  constexpr Choice hdr10PlusChoices[]={{3,0,40970},{0,0,41014},{4,0,41130}};
+  constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,41310},{4,0,41130}};
+  constexpr Choice hdr10PlusChoices[]={{3,0,40970},{5,0,41014},{0,0,40866},{4,0,41130}};
 #else
-  constexpr Choice hdr10Choices[]={{0,0,40866}};
-  constexpr Choice hdr10PlusChoices[]={{0,0,41014}};
+  constexpr Choice hdr10Choices[]={{0,0,41310}};
+  constexpr Choice hdr10PlusChoices[]={{5,0,41014},{0,0,40866}};
 #endif
   const Choice* choices=hlgSource ? hlgChoices : hdr10PlusSource ? hdr10PlusChoices : hdr10Source ? hdr10Choices : dvChoices;
   const int count=hlgSource ? std::size(hlgChoices) : hdr10PlusSource ? std::size(hdr10PlusChoices) : hdr10Source ? std::size(hdr10Choices) : std::size(dvChoices);
@@ -191,7 +193,9 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
     {
       options.emplace_back(strings.Get(choices[i].label),i);
       const auto& choice=choices[i];
-      if (hlgSource ? (int(preferences.hlgSource)==choice.output) : hdr10Source ? (int(preferences.hdr10Source)==choice.output) :
+      if (hlgSource ? (int(preferences.hlgSource)==choice.output) :
+          hdr10PlusSource ? (int(preferences.hdr10PlusSource)==choice.output) :
+          hdr10Source ? (int(preferences.hdr10Source)==choice.output) :
           (int(preferences.output)==choice.output &&
           (choice.output!=1 || preferences.method==choice.method))) current=i;
     }
@@ -201,24 +205,79 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
         int(nativeSource), source.sourceKnown, source.isDV, source.isHDR10, source.isHDR10Plus, source.processingKnown,
         int(preferences.output), int(preferences.hdr10Source));
     dialog->Reset();
-    dialog->SetHeading(settingsMenu ? strings.Get(40811) :
-        StringUtils::Format(strings.Get(40876), hlgSource ? "HLG" : hdr10PlusSource ? "HDR10+" : hdr10Source ? "HDR10" : "Dolby Vision"));
-    dialog->SetUseDetails(!settingsMenu);
+    dialog->SetHeading(strings.Get(settingsMenu ? 40811 : 40876));
+    bool cb1Active = false;
+    if (!settingsMenu)
+    {
+      const auto video = CServiceBroker::GetDataCacheCore().GetVideoProcessingInfo();
+      cb1Active = video.output.flags != 0;
+      dialog->SetProperty("CB1.SwitchInput", hlgSource ? "HLG" : hdr10PlusSource ? "HDR10+" : hdr10Source ? "HDR10" : "Dolby Vision");
+      const char* output = nullptr;
+      if (video.outputType)
+      {
+        switch (*video.outputType)
+        {
+          case VideoOutputType::DolbyVision:
+            output = video.output.lldv ? strings.Get(41221).c_str() :
+                (video.output.flags & CDVPlaybackInfo::HDMI) ? "Dolby Vision · TV-Led" : "Dolby Vision";
+            break;
+          case VideoOutputType::HDR10: output = "HDR10"; break;
+          case VideoOutputType::HDR10Plus: output = "HDR10+"; break;
+          case VideoOutputType::HLG: output = "HLG"; break;
+          case VideoOutputType::SDR: output = "SDR"; break;
+        }
+      }
+      dialog->SetProperty("CB1.SwitchOutput", output ? output : strings.Get(40877));
+    }
+    bool recommendMaster = false;
+#ifdef HAVE_GBM
+    if (!settingsMenu && nativeSource == StreamHdrType::HDR_TYPE_DOLBYVISION)
+    {
+      const auto* window =
+          dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
+      recommendMaster = window && window->GetLldvConnectorStatus().sink.status == DV_EDID_STANDARD &&
+          std::ranges::any_of(options, [choices](const auto& option) {
+            return choices[option.value].output ==
+                       static_cast<int>(DVBRIDGE::OutputMode::MasterReference) &&
+                   std::ranges::none_of(option.properties, [](const auto& property) {
+                     return property.first == "disabled" && property.second.asBoolean();
+                   });
+          });
+    }
+#endif
+    dialog->SetUseDetails(true);
     for(const auto& option : options)
     {
       DVBRIDGE::DiagnosticLog(LOGINFO, "Playback mode option: value={} label={} reason={}",
           option.value, option.label, option.label2);
-      CFileItem item(option.label);
+      const auto& choice = choices[option.value];
+      const bool gray = settingsMenu && std::ranges::any_of(option.properties, [](const auto& property) {
+        return property.first == "disabled" && property.second.asBoolean();
+      });
+      CFileItem item(settingsMenu ? (gray ? "[COLOR grey]" + option.label + "[/COLOR]" : option.label)
+                                  : strings.Get(choice.label));
       item.SetLabel2(option.label2);
       for(const auto& [name,value] : option.properties) item.SetProperty(name,value);
-      item.SetProperty("CB1.TextColor", item.GetProperty("disabled").asBoolean() ?
-                                      "FFA0A0A0" : "FFF0F0F0");
+      const bool disabled = item.GetProperty("disabled").asBoolean();
+      const bool active = !settingsMenu && option.value == current;
+      item.SetProperty("CB1.TextColor", disabled ? "FFBEC7CB" :
+                                      active && cb1Active ? "FF65E18D" : "FFF2F5F6");
+      if (!settingsMenu)
+      {
+        item.SetProperty("CB1.SwitchStatus", disabled ? strings.Get(40851) :
+                                            active ? strings.Get(40878) : std::string{});
+        if (recommendMaster && !disabled && option.label2.empty() &&
+            choice.output == static_cast<int>(DVBRIDGE::OutputMode::PlayerLed))
+          item.SetLabel2(strings.Get(40881));
+      }
       dialog->Add(item);
     }
     dialog->SetSelected(current);
     if (!settingsMenu) dialog->SetProperty("CB1.PlaybackModes",true);
     dialog->Open();
     dialog->SetProperty("CB1.PlaybackModes", CVariant{});
+    dialog->SetProperty("CB1.SwitchInput", CVariant{});
+    dialog->SetProperty("CB1.SwitchOutput", CVariant{});
     if (!dialog->IsConfirmed()) return true;
     const int selected=dialog->GetSelectedItem();
     if (selected<0 || selected>=count) return true;
@@ -356,63 +415,95 @@ void ShowLldvFormatMenu()
   const auto saved = settings->GetInt("dvbridge.lldvformatvalue");
   dialog->Reset();
   dialog->SetHeading(strings.Get(41200));
-  dialog->SetUseDetails(true);
-  int firstFormat = 0;
-  const auto addDetail = [dialog, &firstFormat](const std::string& label, const std::string& value) {
-    CFileItem item(label);
-    item.SetLabel2(value);
-    item.SetProperty("disabled", true);
-    dialog->Add(item);
-    ++firstFormat;
+  // Estuary fits all formats in its simple list and displays the notes inline.
+  const bool estuary = settings->GetString(CSettings::SETTING_LOOKANDFEEL_SKIN) == "skin.estuary";
+  dialog->SetUseDetails(!estuary);
+  dialog->EnableButton(!estuary, 41320);
+
+  const int summary = LldvUnavailableLabel(status, 0, true);
+  std::string summaryText = strings.Get(summary ? 41322 : 41321);
+  if (summary)
+    summaryText += '\n' + strings.Get(summary);
+  dialog->SetProperty("CB1.LldvStatus", summaryText);
+
+  std::string details, labels, values;
+  const auto addDetail = [&](int id, const std::string& value) {
+    const auto label = strings.Get(id);
+    if (!details.empty())
+    {
+      details += '\n';
+      labels += '\n';
+      values += '\n';
+    }
+    details += label + ": " + value;
+    labels += label;
+    values += value;
   };
-  const auto summary = LldvUnavailableLabel(status, saved, true);
-  const auto requested = saved ? LldvFormatPreference(saved) : preferred;
-  addDetail(strings.Get(41288), strings.Get(summary ? summary :
-      status.rejected != LldvFormat::Auto && status.rejected == requested ? 41298 : 41289));
   const auto& display = status.display;
   if (display.sink.length)
-    addDetail(strings.Get(41290), StringUtils::Format("v{} Â· {}", display.sink.version,
-        strings.Get(display.sink.status == DV_EDID_LLDV_ONLY ? 41291 :
-                    dvbridge_lldv_422(display.sink) ? 41292 : 41293)));
+  {
+    addDetail(41323, StringUtils::Format("v{}", display.sink.version));
+    addDetail(41324, strings.Get(display.sink.status == DV_EDID_LLDV_ONLY ? 41291 :
+                                dvbridge_lldv_422(display.sink) ? 41292 : 41293));
+  }
+  else
+    addDetail(41323, strings.Get(40851));
   if (display.status == LldvEdidStatus::Incomplete)
-    addDetail(strings.Get(41281), StringUtils::Format("{} / {} bytes", display.received, display.expected));
+    addDetail(41330, StringUtils::Format("{} / {} bytes", display.received, display.expected));
   if (display.peak > 0)
   {
-    addDetail(strings.Get(41294), StringUtils::Format("{:.0f} / {:.4f} nits", display.peak, display.black));
-    addDetail(strings.Get(41295), StringUtils::Format("R {:.4f},{:.4f}  G {:.4f},{:.4f}  B {:.4f},{:.4f}",
-        display.reported[0], display.reported[1], display.reported[2], display.reported[3],
-        display.reported[4], display.reported[5]));
+    addDetail(41325, StringUtils::Format("{:.0f} nits", display.peak));
+    addDetail(41326, StringUtils::Format("{:g} nits", display.black));
+    for (unsigned i = 0; i < 3; ++i)
+      addDetail(41327 + i, StringUtils::Format("{:.4f}, {:.4f}",
+                                             display.reported[i * 2], display.reported[i * 2 + 1]));
   }
-  addDetail(strings.Get(41296), strings.Get((status.driverFormats || status.forced42210) ? 41289 : 41211));
-  addDetail(strings.Get(41299), strings.Get(status.currentTiming ? 41289 : status.availableTiming ? 41297 : 41212));
+  dialog->SetProperty("CB1.LldvDetails", details);
+  dialog->SetProperty("CB1.LldvDetailLabels", labels);
+  dialog->SetProperty("CB1.LldvDetailValues", values);
   for (int i = 0; i <= static_cast<int>(LldvFormat::Y444_12); ++i)
   {
     const auto format = static_cast<LldvFormat>(i);
     const int reason = LldvUnavailableLabel(status, i, true);
-    const bool disabled = reason != 0;
-    const auto label = strings.Get(LldvFormatLabel(format, requiresForcing(format)));
+    const bool disabled = format != LldvFormat::Auto && reason != 0;
+    const bool forced = requiresForcing(format);
+    const auto label = strings.Get(LldvFormatLabel(format, !estuary && forced));
     CFileItem item(disabled ? "[COLOR grey]" + label + "[/COLOR]" : label);
     item.SetProperty("disabled", disabled);
-    if (disabled)
+    if (reason)
       item.SetLabel2(strings.Get(reason));
     else if (format != LldvFormat::Auto && format == status.rejected)
       item.SetLabel2(strings.Get(41298));
     else if (i == 0)
       item.SetLabel2(preferred == LldvFormat::Auto ? strings.Get(41213)
-          : strings.Get(LldvFormatLabel(preferred, requiresForcing(preferred))));
+          : strings.Get(LldvFormatLabel(preferred, !estuary && requiresForcing(preferred))));
     else if (format == status.active)
       item.SetLabel2(strings.Get(status.activeForced && !requiresForcing(format) ? 41218 : 41214));
     else
       item.SetLabel2(strings.Get(format == LldvFormat::Y422_10 ? 41216 : 41215));
+    if (estuary)
+    {
+      if (disabled)
+        item.SetProperty("CB1.LldvFocusNote", strings.Get(reason == 41210 ? 41332 : reason));
+      else if (format != LldvFormat::Auto && format == status.rejected)
+        item.SetProperty("CB1.LldvFocusNote", item.GetLabel2());
+      else if (i == 0 || forced)
+        item.SetProperty("CB1.LldvNote", i == 0 ? item.GetLabel2() : strings.Get(41331));
+    }
     dialog->Add(item);
   }
-  dialog->SetSelected(firstFormat + saved);
+  dialog->SetSelected(saved);
   dialog->Open();
+  for (const char* key : {"CB1.LldvStatus", "CB1.LldvDetails", "CB1.LldvDetailLabels",
+                          "CB1.LldvDetailValues"})
+    dialog->SetProperty(key, CVariant{});
   const auto current = ReadLldvConnector();
-  const int choice = dialog->GetSelectedItem() - firstFormat;
+  const int choice = dialog->GetSelectedItem();
   if (dialog->IsConfirmed() && choice >= 0 && choice <= static_cast<int>(LldvFormat::Y444_12) &&
-      current.connectorId == status.connectorId && current.edidGeneration == status.edidGeneration &&
-      !LldvUnavailableLabel(current, choice, true) && settings->SetInt("dvbridge.lldvformatvalue", choice))
+      (choice == static_cast<int>(LldvFormat::Auto) ||
+       (current.connectorId == status.connectorId && current.edidGeneration == status.edidGeneration &&
+        !LldvUnavailableLabel(current, choice, true))) &&
+      settings->SetInt("dvbridge.lldvformatvalue", choice))
     settings->Save();
 }
 } // namespace
@@ -422,12 +513,13 @@ std::string CDVPlaybackModes::LldvPreferenceLabel()
   using namespace DVBRIDGE;
   const auto status = ReadLldvConnector();
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  const auto format = status.active == LldvFormat::Auto ?
-      LldvFormatPreference(settings->GetInt("dvbridge.lldvformatvalue")) : status.active;
-  const bool forced = status.active != LldvFormat::Auto ? status.activeForced :
-      LldvRequiresForcing(format, status.driverFormats, status.forced42210);
-  return CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(
-      LldvFormatLabel(format, forced));
+  const int saved = settings->GetInt("dvbridge.lldvformatvalue");
+  const auto format = LldvFormatPreference(saved);
+  const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
+  if (format != LldvFormat::Auto && LldvUnavailableLabel(status, saved, true))
+    return strings.Get(40851);
+  return strings.Get(LldvFormatLabel(format,
+      LldvRequiresForcing(format, status.driverFormats, status.forced42210)));
 }
 
 std::string CDVPlaybackModes::SDRGamutLabel()

@@ -142,6 +142,13 @@ public:
   bool GetVideoPresentationWindow(bool& required, int64_t& first, int64_t& last) const;
 #if defined(BD_BDJ_PRESENTATION_TIMING)
   void PollBdjEvents();
+#if defined(BD_BDJ_PLAYBACK_CLOCK)
+  void SetBdjPlaybackTime(uint64_t time)
+  {
+    if (IsBdjTitle() && m_titleInfo)
+      bd_bdj_set_playback_time(m_bd, std::min(time, m_titleInfo->duration));
+  }
+#endif
   void ReleaseBdjEvents(uint32_t seq);
   void ReleaseBdjEnd();
   void ResetBdjPresentation();

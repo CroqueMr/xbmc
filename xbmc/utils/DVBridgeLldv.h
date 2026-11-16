@@ -234,6 +234,7 @@ struct LldvTransport
   LldvFormat format{LldvFormat::Auto};
   bool forced{false};
   uint64_t edidGeneration{};
+  bool rgb10Scanout{false};
 };
 
 struct LldvConnectorStatus
@@ -244,12 +245,15 @@ struct LldvConnectorStatus
   LldvFormat active{LldvFormat::Auto};
   bool forced42210{false};
   bool activeForced{false};
+  bool rgb10Scanout{false};
+  bool activeRgb10Scanout{false};
   uint32_t connectorId{0};
   bool timingCommitted{false};
   bool availableTiming{false};
   LldvDisplay display;
   uint64_t edidGeneration{};
   LldvFormat rejected{LldvFormat::Auto};
+  bool amdDriverDisabled{};
 };
 
 inline int LldvUnavailableLabel(const LldvConnectorStatus& status, int preference,
@@ -258,6 +262,7 @@ inline int LldvUnavailableLabel(const LldvConnectorStatus& status, int preferenc
   if (status.display.status != LldvEdidStatus::Ready)
     return status.display.status == LldvEdidStatus::UnsupportedGamut ? 41300 :
         41280 + static_cast<int>(status.display.status);
+  if (status.amdDriverDisabled) return 41333;
   if (!status.connectorId || (!status.driverFormats && !status.forced42210)) return 41211;
   auto format = LldvFormatPreference(preference);
   if (format == LldvFormat::Auto)
@@ -281,7 +286,8 @@ inline LldvTransport SelectLldvTransport(const LldvConnectorStatus& status, int 
   if (LldvUnavailableLabel(status, preference, allowModeSwitch) || !(LldvBit(format) & LLDV_422))
     return {};
   return {status.connectorId, format,
-          LldvRequiresForcing(format, status.driverFormats, status.forced42210), status.edidGeneration};
+          LldvRequiresForcing(format, status.driverFormats, status.forced42210), status.edidGeneration,
+          status.rgb10Scanout && format == LldvFormat::Y422_10};
 }
 
 inline const char* LldvCompatibilityReason(const LldvConnectorStatus& status, int preference)
@@ -293,6 +299,7 @@ inline const char* LldvCompatibilityReason(const LldvConnectorStatus& status, in
     case 41210: return "format-not-advertised-by-tv";
     case 41211: return "format-not-supported-by-driver-or-port";
     case 41212: return "hdmi-timing-unavailable";
+    case 41333: return "ll-dv-disabled-by-amdgpu";
     default: return "no-common-format";
   }
 }

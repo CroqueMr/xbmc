@@ -121,10 +121,15 @@ public:
     return hdrOnScreen && modeChangeFollows && Possible(c);
   }
 
-  void Start(int64_t nowMs) { Begin(Kind::START, nowMs + START_MS); }
+  void Start(int64_t nowMs, bool ordinaryPicture = false)
+  {
+    Begin(Kind::START, nowMs + START_MS);
+    m_ordinaryPicture = ordinaryPicture;
+  }
   void Stop(int64_t nowMs) { Begin(Kind::STOP, nowMs + STOP_MS); }
 
   Kind Holding() const { return m_kind; }
+  bool AwaitsOrdinaryPicture() const { return m_kind == Kind::START && m_ordinaryPicture; }
 
   //! A commit of the ordinary output would be made now: false while a hold lasts. At its deadline
   //! the hold ends (End::DEADLINE) and the commit goes.
@@ -201,6 +206,7 @@ private:
   }
 
   Kind m_kind = Kind::NONE;
+  bool m_ordinaryPicture = false;
   int64_t m_until = 0;
   Kind m_endedKind = Kind::NONE;
   End m_ended = End::NONE;

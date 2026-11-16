@@ -19,7 +19,11 @@
 namespace DVBRIDGE
 {
 enum class OutputMode : int { Standard = 0, HDR10 = 1, Disabled = 2, EnhancedDV = 3, MasterReference = 4, AdaptiveB = 5, SDR = 6, PlayerLed = 7 };
-enum class HDR10SourceMode : int { Native = 0, ReferenceDV = 1, EnhancedDV = 2, HDR10PlusDV = 3, SDR = 4 };
+enum class HDR10SourceMode : int
+{
+  Native = 0, ReferenceDV = 1, EnhancedDV = 2, HDR10PlusDV = 3, SDR = 4, HDR10PlusPassthrough = 5
+};
+
 enum class HLGSourceMode : int { Native = 0, ReferenceDV = 1, SDR = 2 };
 
 // Decoder ingress sees the last complete frame-boundary preference snapshot.
@@ -81,6 +85,15 @@ struct OutputPreferences
       case HLGSourceMode::SDR: return HDR10SourceMode::SDR;
       default: return HDR10SourceMode::Native;
     }
+  }
+
+  HDR10SourceMode HDR10Mode(bool hdr10Plus) const
+  {
+    if (!hdr10Plus)
+      return hdr10Source;
+    // Passthrough uses Kodi's native renderer. HDMI signalling uses the saved selector.
+    return hdr10PlusSource == HDR10SourceMode::HDR10PlusPassthrough ?
+        HDR10SourceMode::Native : hdr10PlusSource;
   }
 
   bool SameValues(const OutputPreferences& other) const
@@ -164,10 +177,6 @@ struct OutputPreferences
       result.tv = {peak, static_cast<dvbridge_panel>(panel), static_cast<dvbridge_gamut>(gamut)};
     return result;
   }
-  HDR10SourceMode HDR10Mode(bool hdr10Plus) const
-  {
-    return hdr10Plus ? hdr10PlusSource : hdr10Source;
-  }
   dvbridge_policy HDR10Policy(bool hdr10Plus = false) const
   {
     return HDR10PolicyFor(HDR10Mode(hdr10Plus));
@@ -232,7 +241,8 @@ inline OutputSelectors ReadDefaultOutputSelectors()
       static_cast<HDR10SourceMode>(hdr10) : HDR10SourceMode::Native;
   const int plus=settings->GetInt("dvbridge.hdr10plussource");
   result.hdr10PlusSource=plus==3 ? HDR10SourceMode::HDR10PlusDV :
-      plus==4 ? HDR10SourceMode::SDR : HDR10SourceMode::Native;
+      plus==4 ? HDR10SourceMode::SDR :
+      plus==5 ? HDR10SourceMode::HDR10PlusPassthrough : HDR10SourceMode::Native;
   const int hlg=settings->GetInt("dvbridge.hlgsource");
   if (hlg==1 || hlg==2) result.hlgSource=static_cast<HLGSourceMode>(hlg);
   return result;
@@ -298,7 +308,7 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = 
   hdr10PlusPlaybackMode.store(next.hdr10PlusSource);
   hlgPlaybackMode.store(next.HLGMode());
   // Resolve only the returned copy; alternating inputs must not churn revisions.
-  if (hdr10Plus) next.hdr10Source = next.hdr10PlusSource;
+  if (hdr10Plus) next.hdr10Source = next.HDR10Mode(true);
   if (hlg) next.hdr10Source = next.HLGMode();
   return next;
 }
@@ -321,12 +331,6 @@ inline bool EnhancedInfoEnabled()
 inline bool PlaybackMenuEnabled()
 {
   return true;
-}
-inline bool AsyncPreparationEnabled()
-{
-  const auto component = CServiceBroker::GetSettingsComponent();
-  const auto settings = component ? component->GetSettings() : nullptr;
-  return settings && settings->GetBool("dvbridge.asyncpreparation");
 }
 inline bool FELHardwareUpscalingEnabled()
 {

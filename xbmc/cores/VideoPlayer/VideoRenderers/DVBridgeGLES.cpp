@@ -205,7 +205,7 @@ ESCALINGMETHOD OutputScalingMethod(const CDVBridgeGLES::Layer& layer,
                 geometry.placement[2] - geometry.placement[0],
                 geometry.placement[3] - geometry.placement[1]))
     return layer.scalingMethod;
-  const int method = Get(mode != DVBRIDGE_MODE_SDR, layer.scalingMethod);
+  const int method = Get(geometry.source_width, geometry.source_height, layer.scalingMethod);
   if (mode != DVBRIDGE_MODE_MASTER_REFERENCE &&
       (method == VS_SCALINGMETHOD_FSR1_RCAS || UsesShaderHooks(method)))
     return layer.scalingMethod;
@@ -715,7 +715,7 @@ bool CDVBridgeGLES::Context::AsyncPreparation(uint64_t stream)
   if (stream && stream != m_state->preparationStream)
   {
     m_state->preparationStream = stream;
-    m_state->asyncPreparation = DVBRIDGE::AsyncPreparationEnabled();
+    m_state->asyncPreparation = true;
   }
   return stream && m_state->asyncPreparation;
 }
@@ -1615,7 +1615,8 @@ struct CDVBridgeGLES::PlayerLedCpu
     const cb1_lldv_cpu_frame input{reinterpret_cast<const float*>(slot.host->data),
         slot.carrier->data, slot.carrier->stride, identity ? nullptr : &matrix.m[0][0],
         slot.policy.tv.peak_nits,
-        slot.frame->transport.format == DVBRIDGE::LldvFormat::Y422_10 ? 10u : 12u, true, true,
+        // The host rows already follow scanout order.
+        slot.frame->transport.format == DVBRIDGE::LldvFormat::Y422_10 ? 10u : 12u, true, false,
         slot.activeRows[0], slot.activeRows[1]};
     const bool packed = cb1_lldv_cpu_submit(worker, &input) && cb1_lldv_cpu_ready(worker, true);
     return slot.carrier->Sync(DMA_BUF_SYNC_END) && packed;
@@ -1775,7 +1776,8 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int frame
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
       ((sdr && hdr10 && red >= 8 && green >= 8 && blue >= 8 && red <= 16 && green <= 16 && blue <= 16) ||
        (!sdr && hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
-       (!sdr && !hdr10 && red == 8 && green == 8 && blue == 8)) &&
+       (!sdr && !hdr10 && red == green && green == blue &&
+        (red == 8 || (m_playerLed && red == 10)))) &&
       samples <= 1 && encoding == GL_LINEAR)
     candidate = pl_opengl_wrap(m_gl->gpu, &output);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
@@ -3049,6 +3051,17 @@ bool CDVBridgeGLES::PackPlayerLed(DVBRIDGE::LldvTransport transport)
       (transport.format != DVBRIDGE::LldvFormat::Y422_10 &&
        transport.format != DVBRIDGE::LldvFormat::Y422_12))
     return Failure("player-led-pack-target");
+
+  if (transport.rgb10Scanout)
+  {
+    m_packed = m_outputBits == 10 && dvbridge_resolve_player_led_rgb10(
+        m_renderer, &m_playerLedPolicy, m_playerLedPicture, m_scanout, true) &&
+        m_context->FenceLastUse();
+    if (!m_packed) return Failure("player-led-rgb10");
+    m_playerLedTransport = transport;
+    m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,m_asyncEligible};
+    return true;
+  }
 
   const auto gpu = m_gl->gpu;
   const int w = m_scanout->params.w, h = m_scanout->params.h;

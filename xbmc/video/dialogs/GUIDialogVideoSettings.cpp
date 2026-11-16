@@ -95,7 +95,7 @@ void CGUIDialogVideoSettings::OnSettingChanged(const std::shared_ptr<const CSett
     appPlayer->SetVideoSettings(vs);
   }
 #ifdef HAVE_DVBRIDGE
-  else if (settingId == KODI::VIDEO::UPSCALER::SDR || settingId == KODI::VIDEO::UPSCALER::HDR)
+  else if (settingId == KODI::VIDEO::UPSCALER::AT_LEAST_1080P || settingId == KODI::VIDEO::UPSCALER::BELOW_1080P)
   {
     const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
     settings->SetInt(settingId, std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
@@ -425,8 +425,10 @@ void CGUIDialogVideoSettings::InitializeSettings()
   upscalers.emplace_back(41309, VS_SCALINGMETHOD_FSR1_RCAS);
   upscalers.emplace_back(41307, VS_SCALINGMETHOD_FSRCNNX);
   upscalers.emplace_back(41308, VS_SCALINGMETHOD_ANIME4K);
-  AddSpinner(groupVideo, SDR, 41302, SettingLevel::Basic, settings->GetInt(SDR), upscalers);
-  AddSpinner(groupVideo, HDR, 41303, SettingLevel::Basic, settings->GetInt(HDR), upscalers);
+  AddSpinner(groupVideo, AT_LEAST_1080P, 41302, SettingLevel::Basic,
+             settings->GetInt(AT_LEAST_1080P), upscalers);
+  AddSpinner(groupVideo, BELOW_1080P, 41303, SettingLevel::Basic,
+             settings->GetInt(BELOW_1080P), upscalers);
 #else
   /* remove unsupported methods */
   for(TranslatableIntegerSettingOptions::iterator it = entries.begin(); it != entries.end(); )

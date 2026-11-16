@@ -28,6 +28,7 @@ struct OutputCapabilities
   bool hdr10plus{}, playerLed{};
   LldvDisplay lldvDisplay;
   uint64_t lldvEdidGeneration{};
+  bool lldvRgb10Scanout{};
   int lldvUnavailableLabel{41280};
   uint64_t hdr10MaxBpc{}; // Zero means the HDMI ceiling is unknown.
 
@@ -92,51 +93,49 @@ struct CDVPlaybackInfo
 
   template<class Output> static const char* Policy(const Output& output)
   {
-    if (IsHDR10PlusDV(output)) return "Dolby Vision Rendering";
+    if (IsHDR10PlusDV(output)) return "Dolby Vision : Rendering";
     switch (output.effective)
     {
-      case 2: return "HDR10 Rendering";
-      case 3: return "HDR10 Rendering Reference";
-      case 4: return "Dolby Vision Adaptive HDR Mapping";
-      case 5: return "Dolby Vision Master Reference";
-      case 6: return "Dolby Vision Adaptive HDR Mapping";
-      case 8: return "SDR Rendering";
-      case 7: return output.flags & HDR10PLUS ? "HDR10+ Rendering" : "HDR10 Rendering";
-      default: return output.flags & HDR10 ? "HDR10 Rendering" : "Dolby Vision Reference";
+      case 2: return "HDR10 : Rendering";
+      case 3: return "HDR10 : LLDV Reference conversion";
+      case 4: return "Dolby Vision : Adaptive HDR Mapping";
+      case 5: return "Dolby Vision : Master Reference";
+      case 6: return "Dolby Vision : Adaptive HDR Mapping";
+      case 8: return "SDR : Conversion";
+      case 7: return output.flags & HDR10PLUS ? "HDR10+ : Conversion" : "HDR10 : Rendering";
+      default: return output.flags & HDR10 ? "HDR10 : Rendering" : "Dolby Vision : Reference";
     }
   }
   static const char* RequestedPolicy(int mode, bool hdr10AI = false, bool hdr10PlusDV = false)
   {
-    if (hdr10PlusDV && mode == 1) return "Dolby Vision Rendering";
-    if (hdr10AI && mode == 1) return "Dolby Vision Rendering";
-    if (hdr10AI && mode == 4) return "Dolby Vision Adaptive HDR Mapping (AI)";
+    if ((hdr10PlusDV || hdr10AI) && mode == 1) return "Dolby Vision : Rendering";
     switch(mode)
     {
-      case 0:return "Dolby Vision Disabled (native Kodi)";
-      case 1:return "Dolby Vision Reference";
-      case 2:return "HDR10 Rendering";
-      case 3:return "HDR10 Rendering Reference";
-      case 4:return "Dolby Vision Adaptive HDR Mapping";
-      case 5:return "Dolby Vision Master Reference";
-      case 6:return "Dolby Vision Adaptive HDR Mapping";
-      case 7:return "HDR10+ Rendering";
-      case 8:return "SDR Rendering";
-      case PlayerLedMode:return "Dolby Vision Player-Led";
+      case 0:return "Kodi : Default";
+      case 1:return "Dolby Vision : Reference";
+      case 2:return "HDR10 : Rendering";
+      case 3:return "HDR10 : LLDV Reference conversion";
+      case 4:return "Dolby Vision : Adaptive HDR Mapping";
+      case 5:return "Dolby Vision : Master Reference";
+      case 6:return "Dolby Vision : Adaptive HDR Mapping";
+      case 7:return "HDR10+ : Conversion";
+      case 8:return "SDR : Conversion";
+      case PlayerLedMode:return "Dolby Vision : LLDV Reference";
       default:return "";
     }
   }
 
   template<class Output> static std::string Mode(const Output& output)
   {
-    if (output.effective==8 && (output.flags & SDR)) return "SDR Rendering";
+    if (output.effective==8 && (output.flags & SDR)) return "SDR : Conversion";
     if (!output.flags) return "Kodi default";
     if constexpr (requires { output.lldv; })
       if (output.lldv) return RequestedPolicy(PlayerLedMode);
     if (IsHDR10PlusDV(output)) return Policy(output);
     std::string mode = output.flags & HDR10 ? Policy(output) :
-        output.effective == 6 ? "Dolby Vision Adaptive HDR Mapping" :
-        output.effective == 5 ? "Dolby Vision Master Reference" :
-        output.effective == 4 ? "Dolby Vision Adaptive HDR Mapping" : "Dolby Vision Reference";
+        output.effective == 6 ? "Dolby Vision : Adaptive HDR Mapping" :
+        output.effective == 5 ? "Dolby Vision : Master Reference" :
+        output.effective == 4 ? "Dolby Vision : Adaptive HDR Mapping" : "Dolby Vision : Reference";
     if (output.fallback)
       mode += " / compatibility fallback";
     return mode;

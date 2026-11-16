@@ -7,8 +7,8 @@
 
 namespace KODI::VIDEO::UPSCALER
 {
-inline constexpr auto SDR = "videoplayer.sdrupscaler";
-inline constexpr auto HDR = "videoplayer.hdrupscaler";
+inline constexpr auto AT_LEAST_1080P = "videoplayer.upscaler1080pandabove";
+inline constexpr auto BELOW_1080P = "videoplayer.upscalerbelow1080p";
 inline constexpr int KODI_DEFAULT = -1;
 
 constexpr int Select(int method, int kodi)
@@ -22,7 +22,12 @@ constexpr bool Enlarges(float width, float height, float targetWidth, float targ
          (targetWidth - width >= 0.5f || targetHeight - height >= 0.5f);
 }
 
-int Get(bool hdr, int kodi);
+constexpr bool IsAtLeast1080p(unsigned int width, unsigned int height)
+{
+  return width >= 1920 || height >= 1080;
+}
+
+int Get(unsigned int sourceWidth, unsigned int sourceHeight, int kodi);
 constexpr bool UsesFSR1(int method)
 {
   return method == VS_SCALINGMETHOD_FSR1 || method == VS_SCALINGMETHOD_FSR1_RCAS;

@@ -12,6 +12,8 @@
 #include "OptionalsReg.h"
 #include "ServiceBroker.h"
 #include "VideoSyncGbm.h"
+
+#include <fstream>
 #include "cores/VideoPlayer/VideoReferenceClock.h"
 #include "drm/DRMAtomic.h"
 #ifdef HAVE_DVBRIDGE
@@ -211,6 +213,15 @@ bool CWinSystemGbm::InitWindowSystem()
     std::vector<uint8_t> edid = connector->GetEDID();
 #ifdef HAVE_DVBRIDGE
     std::lock_guard lock(m_lldvEdidMutex);
+    m_lldvAmdDriverDisabled = false;
+    if (auto* version = drmGetVersion(m_DRM->GetFileDescriptor()))
+    {
+      char enabled{};
+      if (version->name && std::string_view(version->name) == "amdgpu" &&
+          (std::ifstream("/sys/module/amdgpu/parameters/dv_lldv") >> enabled))
+        m_lldvAmdDriverDisabled = enabled == 'N';
+      drmFreeVersion(version);
+    }
     m_lldvEdid = edid;
     m_lldvDisplay = DVBRIDGE::ReadLldvDisplay(edid.data(), edid.size());
     m_lldvEdidConnector = *connector->GetConnectorId();
@@ -1103,6 +1114,12 @@ bool CWinSystemGbm::FlipDVBridgePage(CDVBridgeState& state, bool restore, bool a
 
 void CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async)
 {
+  FlipPage(rendered, videoLayer, async, {});
+}
+
+bool CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async,
+                             const std::shared_ptr<gbm_bo>& carrier)
+{
   if (m_videoLayerBridge && !videoLayer)
   {
     // disable video plane when video layer no longer is active
@@ -1113,24 +1130,25 @@ void CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async)
     DeferConnectorPreferences();
 
   auto atomic = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-  const bool colourTransition = rendered && atomic && atomic->HasColorRangeTransition();
+  const bool transactional = rendered && atomic && (carrier || atomic->HasColorRangeTransition());
   struct gbm_bo* bo = nullptr;
 
   if (rendered)
   {
     auto& surface = m_GBM->GetDevice().GetSurface();
-    bo = colourTransition ? surface.LockTransactionalBuffer() : surface.LockFrontBuffer().Get();
-    if (colourTransition && !bo)
+    bo = carrier ? surface.AdoptTransactionalBuffer(carrier.get(), carrier)
+                 : transactional ? surface.LockTransactionalBuffer() : surface.LockFrontBuffer().Get();
+    if (transactional && !bo)
     {
       if (auto gui = CServiceBroker::GetGUI()) gui->GetWindowManager().MarkDirty();
-      return;
+      return false;
     }
   }
 
   // A refused colour request keeps the old scanout. Release its GBM buffers
   // only after a blocking replacement has completed, as in CB1 restoration.
-  m_DRM->FlipPage(bo, rendered, videoLayer, colourTransition ? false : async);
-  if (colourTransition)
+  m_DRM->FlipPage(bo, rendered, videoLayer, transactional ? false : async);
+  if (transactional)
   {
     auto& surface = m_GBM->GetDevice().GetSurface();
     surface.CompleteTransactionalBuffer(atomic->LastPageAccepted());
@@ -1156,6 +1174,9 @@ void CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async)
     auto* gui = m_DRM->GetGuiPlane();
     m_DRM->FindGuiPlane(gui->GetFormat(), gui->GetModifier());
   }
+  if (atomic)
+    return atomic->LastPageAccepted();
+  return false;
 }
 
 bool CWinSystemGbm::OrdinaryShaderLimitedColor()
@@ -1661,12 +1682,14 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
   if (!packed.connectorId || packed.connectorId != status.connectorId ||
       packed.edidGeneration != status.edidGeneration || status.display.status != LldvEdidStatus::Ready ||
       (packed.format != LldvFormat::Y422_10 && packed.format != LldvFormat::Y422_12) ||
+      (packed.rgb10Scanout && (!status.rgb10Scanout || packed.forced)) ||
       (packed.forced && (packed.format != LldvFormat::Y422_10 || !status.forced42210)) ||
       LldvFormatReason(status.sink, packed.format, status.driverFormats,
                        status.currentTiming, packed.forced) != LldvReason::Ready)
     return reject();
 
-  const char* name = packed.forced ? "YCbCr 4:2:2 10 bits forced" :
+  const char* name = packed.rgb10Scanout ? "YCbCr 4:2:2 10 bits RGB10 lab" :
+      packed.forced ? "YCbCr 4:2:2 10 bits forced" :
       packed.format == LldvFormat::Y422_10 ? "YCbCr 4:2:2 10 useful bits" : "YCbCr 4:2:2 12 bits";
   auto* connector = drm->GetConnector();
   const auto value = connector ? connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", name) :
@@ -1679,11 +1702,16 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
                        surface.LockTransactionalBuffer();
   if (!bo) return reject();
   const auto format = gbm_bo_get_format(bo);
-  const bool ready = (format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888) &&
+  const bool validFormat = packed.rgb10Scanout ?
+      (format == DRM_FORMAT_XRGB2101010 || format == DRM_FORMAT_ARGB2101010 ||
+       format == DRM_FORMAT_XBGR2101010 || format == DRM_FORMAT_ABGR2101010) :
+      (format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888);
+  const bool ready = validFormat &&
       gbm_bo_get_width(bo) == 3840 && gbm_bo_get_height(bo) == 2160 &&
-      state.StagePlayerLed(*drm, *value) && StageTransportPreferences();
+      state.StagePlayerLed(*drm, *value, packed.rgb10Scanout ? 10 : 8) && StageTransportPreferences();
   const bool stable = status.timingCommitted && status.active == packed.format &&
-                      status.activeForced == packed.forced;
+                      status.activeForced == packed.forced &&
+                      status.activeRgb10Scanout == packed.rgb10Scanout;
   if (ready)
   {
     drm->StageHDR10Plus(std::nullopt, 0);
@@ -1730,16 +1758,20 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
         status.edidGeneration == m_lldvRejected.edidGeneration)
       status.rejected = m_lldvRejected.format;
     status.sink = status.display.sink;
+    status.amdDriverDisabled = m_lldvAmdDriverDisabled && connector->GetType() == "HDMI-A" &&
+                               !connector->SupportsProperty("CB1_LLDV_FORMAT");
   }
-  if (connector && connector->IsConnected() && connector->SupportsProperty("CB1_LLDV_FORMAT"))
+  if (status.connectorId && connector->SupportsProperty("CB1_LLDV_FORMAT"))
   {
     const auto native10 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 useful bits");
     const auto native12 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 12 bits");
+    const auto rgb10 = connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 bits RGB10 lab");
+    status.rgb10Scanout = rgb10.has_value();
     const auto forced10 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 bits forced");
-    if (native10)
+    if (native10 || rgb10)
       status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_10);
     if (native12)
       status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_12);
@@ -1765,8 +1797,11 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
     status.timingCommitted = status.currentTiming && atomic && atomic->IsActive() &&
                              !atomic->HasPendingCB1Page() && atomic->IsSelectedModeCommitted();
     const auto active = connector->ReadPropertyValue("CB1_LLDV_FORMAT");
-    if (active && active == native10)
+    if (active && (active == native10 || active == rgb10))
+    {
       status.active = DVBRIDGE::LldvFormat::Y422_10;
+      status.activeRgb10Scanout = active == rgb10;
+    }
     else if (active && active == native12)
       status.active = DVBRIDGE::LldvFormat::Y422_12;
     else if (active && active == forced10)

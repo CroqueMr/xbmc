@@ -367,7 +367,9 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.FEL", active ? (active & CDVPlaybackInfo::FEL ? "Full FEL" : "No FEL") : "");
     SetProperty("DV.FELUpscaling", active & CDVPlaybackInfo::FEL ?
         (data.output.felUpscaling == 2 ? "Reference GPU" : data.output.felUpscaling == 0 ? "VAAPI" : data.output.felUpscaling == 1 ? "Bilinear GPU" : "") : "");
-    SetProperty("DV.Mode", active ? VideoProcessingInfoGUI::Mode(data) : "Kodi default");
+    const auto actualMode = VideoProcessingInfoGUI::Mode(data,
+        CServiceBroker::GetDataCacheCore().HasVideoHDR10PlusSource());
+    SetProperty("DV.Mode", actualMode.empty() ? "Kodi : Default" : actualMode);
     const int upscaler = CServiceBroker::GetDataCacheCore().GetVideoUpscaler();
     const int upscalerLabel = upscaler < 0 ? 0 : KODI::VIDEO::UPSCALER::Label(upscaler);
     SetProperty("DV.VideoUpscaler", upscalerLabel ?
@@ -383,7 +385,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.PartialBlocks", hdr10 && data.output.effective==3 && metadata ?
         std::string(data.blocks[1] ? "L1 max/avg" : "")+
         (data.blocks[3] ? (data.blocks[1] ? "; L3 max/avg" : "L3 max/avg") : "") : "");
-    SetProperty("DV.ActivePolicy", active ? std::string(CDVPlaybackInfo::RequestedPolicy(data.output.effective)) : "Kodi default");
+    SetProperty("DV.ActivePolicy", actualMode.empty() ? "Kodi : Default" : actualMode);
     if (active && data.output.hdr10AI)
     {
       const auto& localizer=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
@@ -420,11 +422,14 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
       const int id=CDVPlaybackInfo::ReasonLabel(static_cast<DVBRIDGE::OutputReason>(reason));
       return id ? localizer.Get(id) : std::string{};
     };
-    SetProperty("DV.Fallback", active && data.output.fallback ? reasonText(data.output.reason) : "");
+    SetProperty("DV.Fallback", active && data.output.fallback ? reasonText(data.output.reason) :
+        data.nativeHDR10PlusFallbackLabel ? localizer.Get(data.nativeHDR10PlusFallbackLabel) : "");
     SetProperty("DV.MinimumLinkBits", active && data.output.minimumLinkBits ?
         StringUtils::Format("{}-bit",data.output.minimumLinkBits) : "");
     SetProperty("DV.Transport", active ? CDVPlaybackInfo::Transport(data.output.format) : "");
-    SetProperty("DV.SignalIntent", lldv ? "LLDV / YCbCr 4:2:2" : active & CDVPlaybackInfo::HDMI ?
+    SetProperty("DV.HdmiFormat", lldv ?
+        (data.output.lldv->forcedTransport ? localizer.Get(41339) : "YCbCr 4:2:2") : "");
+    SetProperty("DV.SignalIntent", lldv ? "LLDV" : active & CDVPlaybackInfo::HDMI ?
         (data.output.iptTransport ? "TV-Led / IPT-PQc2 tunnel" : "TV-Led / YCbCr tunnel") :
         active & CDVPlaybackInfo::HDR10PLUS ? "PQ / BT.2020 / HDR10+" :
         hdr10 ? "PQ / BT.2020" : "");
@@ -443,7 +448,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
           data.transaction.effective!=data.output.effective ||
           data.transaction.reason!=data.output.reason) :
           (data.transaction.requested || data.transaction.reason!=VideoProcessingReason::None)));
-    SetProperty("DV.ProcessingVisible", bool(active) || transaction);
+    SetProperty("DV.ProcessingVisible", bool(active) || transaction || data.nativeHDR10PlusFallbackLabel);
     SetProperty("DV.RequestedPolicy", transaction ? PolicyText(CDVPlaybackInfo::RequestedPolicy(data.transaction.requested,
         data.transaction.hdr10AI)) :
         active ? PolicyText(CDVPlaybackInfo::RequestedPolicy(data.output.requested,data.output.hdr10AI)) : "");
@@ -454,7 +459,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.OutputStage", transaction ?
         std::string(data.transaction.stage) : "");
     SetProperty("DV.ReferenceWarning", data.referenceWarning ? "Consider Reference" : "");
-    SetProperty("DV.TVProfile", lldv ? StringUtils::Format("EDID v{} · {:.0f} nits",
+    SetProperty("DV.TVProfile", lldv ? StringUtils::Format("EDID v{} / {:.0f} nits",
         data.output.lldv->edidVersion, data.output.target) : active && data.output.effective==8 ?
         StringUtils::Format("{} / {:g} nits / {:g}",
             data.output.gamut == 3 ? "BT.2020" : "BT.709", data.output.target, data.output.sdrGamma) :
@@ -475,10 +480,6 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         const auto& display = *data.output.lldv;
         const auto j = i * 2;
         value = StringUtils::Format("{:.4f}, {:.4f}", display.primaries[j], display.primaries[j + 1]);
-        if (display.reportedPrimaries[j] != display.primaries[j] ||
-            display.reportedPrimaries[j + 1] != display.primaries[j + 1])
-          value = StringUtils::Format("{:.4f}, {:.4f} â†’ {}", display.reportedPrimaries[j],
-                                      display.reportedPrimaries[j + 1], value);
       }
       SetProperty(keys[i], value);
     }
