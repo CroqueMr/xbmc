@@ -128,7 +128,7 @@ constexpr uint32_t SYSTEM_BUILD_VERSION              = 120;
 constexpr uint32_t SYSTEM_BUILD_DATE                 = 121;
 constexpr uint32_t SYSTEM_ETHERNET_LINK_ACTIVE       = 122;
 constexpr uint32_t SYSTEM_FPS                        = 123;
-// unused id 124
+constexpr uint32_t SYSTEM_SUPPORTS_BLUR_FONT         = 124;
 constexpr uint32_t SYSTEM_ALWAYS_TRUE                = 125;   // useful for <visible fade="10" start="hidden">true</visible>, to fade in a control
 constexpr uint32_t SYSTEM_ALWAYS_FALSE               = 126;   // used for <visible fade="10">false</visible>, to fade out a control (ie not particularly useful!;
 constexpr uint32_t SYSTEM_MEDIA_DVD                  = 127;

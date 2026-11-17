@@ -533,11 +533,8 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   caps.hdr10=available.hdr10;
   caps.hdr10MaxBpc=available.hdr10MaxBpc;
   caps.hdr10plus=available.hdr10plus;
-  if (!menu || !caps.sourceKnown || available.lldvUnavailableLabel)
-  {
-    caps.playerLed=available.playerLed;
-    caps.lldvUnavailableLabel=available.lldvUnavailableLabel;
-  }
+  caps.playerLed=available.playerLed;
+  caps.lldvUnavailableLabel=available.lldvUnavailableLabel;
   if (caps.isDV && preferences.output==DVBRIDGE::OutputMode::Disabled)
   {
     caps.processingKnown=available.processingKnown;
@@ -614,13 +611,17 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
           gamut<1 || gamut>3 ? 40912 : 40845;
     }
     const bool profile=reason==DVBRIDGE::OutputReason::TVProfileRequired || reason==DVBRIDGE::OutputReason::SDRTargetInvalid;
-    if (reasonId && !profile && reason!=DVBRIDGE::OutputReason::ProcessingPending)
+    const bool chooseLldv = reasonId == DVBRIDGE::LLDV_CHOOSE_FORMAT_LABEL &&
+        (!caps.sourceKnown || caps.isDV) && processing[DVBRIDGE_MODE_PLAYER_LED].usable;
+    if (reasonId && !profile && !chooseLldv && reason!=DVBRIDGE::OutputReason::ProcessingPending)
       option.label+=" / "+localizer.Get(40851);
     option.label2=reasonId ? localizer.Get(reasonId) :
         guided ? localizer.Get(40971) : mode==3 ? localizer.Get(40864) : "";
     // Settings must allow selection before the required profile controls appear.
     const bool configure=profile && !menu && !hdr10Menu && !hdr10PlusMenu && !hlgMenu;
-    option.properties.emplace_back("disabled",reasonId!=0 && !configure);
+    option.properties.emplace_back("disabled",reasonId!=0 && !configure && !chooseLldv);
+    if (chooseLldv)
+      option.properties.emplace_back("cb1ChooseLldv", true);
   }
 }
 #endif

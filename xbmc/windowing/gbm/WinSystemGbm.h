@@ -104,7 +104,7 @@ public:
 
   bool SetVideoOutput(const VideoPicture* videoPicture) override;
 
-  void SetColorimetry(const VideoPicture* videoPicture) override;
+  void SetColorimetry(const VideoPicture* videoPicture, bool sdrToBT709 = false) override;
   KODI::UTILS::Colorimetry GetColorimetry() const override { return m_colorimetry; }
   KODI::UTILS::Eotf GetEotf() const override { return m_eotf; }
   bool SetHDR(const VideoPicture* videoPicture) override;
@@ -268,7 +268,6 @@ private:
   mutable std::mutex m_lldvEdidMutex;
   std::vector<uint8_t> m_lldvEdid;
   DVBRIDGE::LldvDisplay m_lldvDisplay;
-  bool m_lldvAmdDriverDisabled{};
   uint32_t m_lldvEdidConnector{};
   uint64_t m_lldvEdidGeneration{};
   DVBRIDGE::LldvTransport m_lldvRejected;

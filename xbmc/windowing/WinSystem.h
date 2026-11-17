@@ -237,10 +237,11 @@ public:
 
   /*!
    * \brief Set colorimetry (BT.709, BT.2020, etc). Passing nullptr as the
-   * parameter resets to "Default" (display then decides based on rez)
+   * parameter resets to "Default" (display then decides based on rez). Native
+   * YUV shaders set sdrToBT709 when they render SDR into the BT.709 gamut.
    *
    */
-  virtual void SetColorimetry(const VideoPicture* videoPicture) {}
+  virtual void SetColorimetry(const VideoPicture* videoPicture, bool sdrToBT709 = false) {}
 
   /*!
    * \brief Set the HDR metadata. Passing nullptr as the parameter should

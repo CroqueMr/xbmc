@@ -261,7 +261,9 @@ bool CGUIFont::ClippedRegionIsEmpty(
   if (alignment & XBFONT_CENTER_Y)
     y -= m_font->GetLineHeight(m_lineSpacing);
 
-  return !context.SetClipRegion(x, y, width, m_font->GetTextHeight(1, 2) * context.GetGUIScaleY());
+  const CPoint padding = GetRenderPadding();
+  return !context.SetClipRegion(x - padding.x, y - padding.y, width + 2 * padding.x,
+                                m_font->GetTextHeight(1, 2) * context.GetGUIScaleY() + 2 * padding.y);
 }
 
 float CGUIFont::GetTextWidth(std::span<const character_t> text)
@@ -313,6 +315,17 @@ float CGUIFont::GetLineHeight() const
     return 0;
 
   return m_font->GetLineHeight(m_lineSpacing) * winSystem->GetGfxContext().GetGUIScaleY();
+}
+
+CPoint CGUIFont::GetRenderPadding() const
+{
+  CWinSystemBase* const winSystem = CServiceBroker::GetWinSystem();
+  if (!m_font || !winSystem)
+    return {};
+
+  const float padding = 3.0f * m_font->m_blurRadius;
+  const CGraphicContext& context = winSystem->GetGfxContext();
+  return {padding * context.GetGUIScaleX(), padding * context.GetGUIScaleY()};
 }
 
 float CGUIFont::GetScaleFactor() const

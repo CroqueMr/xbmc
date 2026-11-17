@@ -26766,10 +26766,6 @@ msgctxt "#41332"
 msgid "Not advertised by TV"
 msgstr ""
 
-msgctxt "#41333"
-msgid "LLDV disabled by AMD driver"
-msgstr ""
-
 msgctxt "#41334"
 msgid "HDR10+ needs 10-bit output"
 msgstr ""
@@ -26792,6 +26788,10 @@ msgstr ""
 
 msgctxt "#41339"
 msgid "4:2:2 · Forced, experimental"
+msgstr ""
+
+msgctxt "#41340"
+msgid "Choose a compatible HDMI format"
 msgstr ""
 
 msgctxt "#41300"

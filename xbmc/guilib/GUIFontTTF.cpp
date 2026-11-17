@@ -259,8 +259,12 @@ void CGUIFontTTF::Clear()
   m_fontFileInMemory.clear();
 }
 
-bool CGUIFontTTF::Load(
-    const std::string& strFilename, float height, float aspect, float lineSpacing, bool border)
+bool CGUIFontTTF::Load(const std::string& strFilename,
+                       float height,
+                       float aspect,
+                       float lineSpacing,
+                       bool border,
+                       bool blur)
 {
   // we now know that this object is unique - only the GUIFont objects are non-unique, so no need
   // for reference tracking these fonts
@@ -320,6 +324,8 @@ bool CGUIFontTTF::Load(
   m_cellHeight = cellAscender - cellDescender;
 
   m_height = height;
+  // three box blurs approach a gaussian; its spread follows the font's size
+  m_blurRadius = blur ? std::max(1, MathUtils::round_int(static_cast<double>(height) / 7)) : 0;
 
   m_texture.reset();
   m_texture = nullptr;
@@ -732,8 +738,9 @@ float CGUIFontTTF::GetTextWidthInternal(std::span<const character_t> text,
       // If last character in line, we want to add render width
       // and not advance distance - this makes sure that italic text isn't
       // choped on the end (as render width is larger than advance then).
+      // (without a blurred glyph's margin: blurred text breaks into lines as the sharp one)
       if (std::next(it) == glyphs.end())
-        width += std::max(c->m_right - c->m_left + c->m_offsetX, c->m_advance);
+        width += std::max(c->m_right - c->m_left + c->m_offsetX - 3 * m_blurRadius, c->m_advance);
       else if ((ch & 0xffff) == static_cast<character_t>('\t'))
         width += GetTabSpaceLength();
       else
@@ -773,7 +780,9 @@ float CGUIFontTTF::GetLineHeight(float lineSpacing) const
 
 unsigned int CGUIFontTTF::GetTextureLineHeight() const
 {
-  return m_cellHeight + SPACING_BETWEEN_CHARACTERS_IN_TEXTURE;
+  // a blurred glyph is larger than its cell: room for its margins in the texture only, the
+  // text's layout (cell, base line, line height) is the sharp font's
+  return m_cellHeight + 6 * m_blurRadius + SPACING_BETWEEN_CHARACTERS_IN_TEXTURE;
 }
 
 unsigned int CGUIFontTTF::GetMaxFontHeight() const
@@ -1007,6 +1016,25 @@ bool CGUIFontTTF::CacheCharacter(FT_UInt glyphIndex, uint32_t style, Character* 
   }
 
   FT_BitmapGlyph bitGlyph = (FT_BitmapGlyph)glyph;
+  // FONT_STYLE_BLUR: the glyph's coverage, blurred into a larger bitmap centred on it. FreeType
+  // frees its own buffer with the glyph, so its bitmap points back to it on every return.
+  std::vector<uint8_t> blurred;
+  const FT_Bitmap sharp = bitGlyph->bitmap;
+  auto restoreBitmap = [&]() { bitGlyph->bitmap = sharp; };
+  // (a font with FONT_STYLE_BLUR has its own CGUIFontTTF: its characters carry only bold,
+  // italics and light)
+  if (m_blurRadius > 0 && sharp.width > 0 && sharp.rows > 0 &&
+      sharp.pixel_mode == FT_PIXEL_MODE_GRAY)
+  {
+    const int pad = 3 * m_blurRadius;
+    blurred = BlurGlyph(sharp, m_blurRadius);
+    bitGlyph->bitmap.buffer = blurred.data();
+    bitGlyph->bitmap.width = sharp.width + 2 * pad;
+    bitGlyph->bitmap.rows = sharp.rows + 2 * pad;
+    bitGlyph->bitmap.pitch = static_cast<int>(sharp.width + 2 * pad);
+    bitGlyph->left -= pad;
+    bitGlyph->top += pad;
+  }
   FT_Bitmap bitmap = bitGlyph->bitmap;
   bool isEmptyGlyph = (bitmap.width == 0 || bitmap.rows == 0);
 
@@ -1034,6 +1062,7 @@ bool CGUIFontTTF::CacheCharacter(FT_UInt glyphIndex, uint32_t style, Character* 
         {
           CLog::LogF(LOGDEBUG, "New cache texture is too large ({} > {} pixels long)", newHeight,
                      m_renderSystem->GetMaxTextureSize());
+          restoreBitmap();
           FT_Done_Glyph(glyph);
           return false;
         }
@@ -1041,6 +1070,7 @@ bool CGUIFontTTF::CacheCharacter(FT_UInt glyphIndex, uint32_t style, Character* 
         std::unique_ptr<CTexture> newTexture = ReallocTexture(newHeight);
         if (!newTexture)
         {
+          restoreBitmap();
           FT_Done_Glyph(glyph);
           CLog::LogF(LOGDEBUG, "Failed to allocate new texture of height {}", newHeight);
           return false;
@@ -1052,6 +1082,7 @@ bool CGUIFontTTF::CacheCharacter(FT_UInt glyphIndex, uint32_t style, Character* 
 
     if (!m_texture)
     {
+      restoreBitmap();
       FT_Done_Glyph(glyph);
       CLog::LogF(LOGDEBUG, "no texture to cache character to");
       return false;
@@ -1086,9 +1117,57 @@ bool CGUIFontTTF::CacheCharacter(FT_UInt glyphIndex, uint32_t style, Character* 
   }
 
   // free the glyph
+  restoreBitmap();
   FT_Done_Glyph(glyph);
 
   return true;
+}
+
+std::vector<uint8_t> CGUIFontTTF::BlurGlyph(const FT_Bitmap& bitmap, int radius)
+{
+  // three box blurs of this radius, horizontal then vertical, in a margin three times as wide
+  const int pad = 3 * radius;
+  const int width = static_cast<int>(bitmap.width) + 2 * pad;
+  const int height = static_cast<int>(bitmap.rows) + 2 * pad;
+  std::vector<float> plane(static_cast<size_t>(width) * height, 0.0f);
+  for (unsigned int y = 0; y < bitmap.rows; y++)
+  {
+    const uint8_t* row = bitmap.buffer + static_cast<ptrdiff_t>(y) * bitmap.pitch;
+    for (unsigned int x = 0; x < bitmap.width; x++)
+      plane[(y + pad) * width + x + pad] = row[x];
+  }
+
+  std::vector<float> line(std::max(width, height));
+  const float span = static_cast<float>(2 * radius + 1);
+  auto pass = [&](int count, int length, int step, int stride) {
+    for (int n = 0; n < count; n++)
+    {
+      float* start = plane.data() + static_cast<ptrdiff_t>(n) * stride;
+      for (int i = 0; i < length; i++)
+        line[i] = start[static_cast<ptrdiff_t>(i) * step];
+      float sum = 0.0f; // the window [i - radius, i + radius], zero outside the line
+      for (int i = 0; i < radius && i < length; i++)
+        sum += line[i];
+      for (int i = 0; i < length; i++)
+      {
+        if (i + radius < length)
+          sum += line[i + radius];
+        if (i - radius - 1 >= 0)
+          sum -= line[i - radius - 1];
+        start[static_cast<ptrdiff_t>(i) * step] = sum / span;
+      }
+    }
+  };
+  for (int i = 0; i < 3; i++)
+  {
+    pass(height, width, 1, width); // each row
+    pass(width, height, width, 1); // each column
+  }
+
+  std::vector<uint8_t> result(plane.size());
+  for (size_t i = 0; i < plane.size(); i++)
+    result[i] = static_cast<uint8_t>(std::min(255.0f, plane[i] + 0.5f));
+  return result;
 }
 
 void CGUIFontTTF::RenderCharacter(CGraphicContext& context,

@@ -258,7 +258,7 @@ bool CLinuxRendererGL::Configure(const VideoPicture &picture, float fps, unsigne
   if (!CServiceBroker::GetWinSystem()->SetVideoOutput(&picture))
     CLog::Log(LOGWARNING, "LinuxRendererGL::Configure: SetVideoOutput failed");
 
-  CServiceBroker::GetWinSystem()->SetColorimetry(&picture);
+  CServiceBroker::GetWinSystem()->SetColorimetry(&picture, !m_ColorManager->IsEnabled());
 
   m_passthroughHDR = CServiceBroker::GetWinSystem()->SetHDR(&picture);
   CLog::Log(LOGDEBUG, "LinuxRendererGL::Configure: HDR passthrough: {}",
@@ -816,6 +816,7 @@ void CLinuxRendererGL::UpdateVideoFilter()
 
   if (cmsChanged)
   {
+    const bool hadCms = m_cmsOn;
     if (m_ColorManager->IsEnabled())
     {
       if (!m_ColorManager->CheckConfiguration(m_cmsToken, m_srcPrimaries))
@@ -829,6 +830,9 @@ void CLinuxRendererGL::UpdateVideoFilter()
     {
       m_cmsOn = false;
     }
+    const auto& buf = m_buffers[m_iYUVRenderBuffer];
+    if (m_cmsOn != hadCms && buf.videoBuffer)
+      SetBufferColorimetry(buf, m_toneMap);
   }
 
   const ESCALINGMETHOD previousMethod = m_scalingMethod;
@@ -2786,6 +2790,17 @@ void CLinuxRendererGL::DeleteCLUT()
   }
 }
 
+void CLinuxRendererGL::SetBufferColorimetry(const CPictureBuffer& buf, bool toneMap)
+{
+  VideoPicture tmp{};
+  tmp.color_space = toneMap ? AVCOL_SPC_UNSPECIFIED : buf.m_srcColSpace;
+  tmp.color_transfer = buf.m_srcColTransfer;
+  tmp.iWidth = m_sourceWidth;
+  tmp.iHeight = m_sourceHeight;
+  tmp.colorBits = buf.m_srcBits;
+  CServiceBroker::GetWinSystem()->SetColorimetry(&tmp, !m_cmsOn);
+}
+
 void CLinuxRendererGL::CheckVideoParameters(int index)
 {
   const CPictureBuffer& buf = m_buffers[index];
@@ -2812,15 +2827,7 @@ void CLinuxRendererGL::CheckVideoParameters(int index)
 
     //! @todo HACK for #28468; clean up properly in Piers beta 2
     if (toneMap != m_toneMap)
-    {
-      VideoPicture tmp{};
-      tmp.color_space = toneMap ? AVCOL_SPC_UNSPECIFIED : buf.m_srcColSpace;
-      tmp.iWidth = m_sourceWidth;
-      tmp.iHeight = m_sourceHeight;
-      // Keep Adaptive on the format already selected for this source depth.
-      tmp.colorBits = buf.m_srcBits;
-      CServiceBroker::GetWinSystem()->SetColorimetry(&tmp);
-    }
+      SetBufferColorimetry(buf, toneMap);
 
     m_toneMap = toneMap;
     m_toneMapMethod = toneMapMethod;
