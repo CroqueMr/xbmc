@@ -245,7 +245,8 @@ bool CDRMAtomic::PrepareSDRRestore(int& flags)
   return true;
 }
 
-bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer, bool strict)
+bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer, bool strict,
+                                bool* lldvTestRejected)
 {
   CDRMCrtc* oldCrtc = m_old_crtc;
   const auto reject = [&](const char* stage, int error) {
@@ -399,10 +400,13 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   auto ret = TestAtomicFrame(flags, frameMetadata);
   if (ret < 0)
   {
-    const int testError = errno;
+    // libdrm returns a negative errno from the ioctl and -1 for some local failures.
+    const int testError = ret == -1 ? errno : -ret;
     if (strict || m_req->sdrRestore || frameMetadata || m_colorRangeTransition ||
         (m_mode->flags & DRM_MODE_FLAG_3D_MASK))
     {
+      if (lldvTestRejected && !m_req->sdrRestore)
+        *lldvTestRejected = testError == EINVAL || testError == EOPNOTSUPP;
       return reject("atomic-test", testError);
     }
     CLog::LogF(LOGERROR,
@@ -614,8 +618,11 @@ bool CDRMAtomic::CompleteCB1Page(int timeoutMs)
   return true;
 }
 
-bool CDRMAtomic::FlipPageTransactional(struct gbm_bo* bo, bool restore, bool async)
+bool CDRMAtomic::FlipPageTransactional(struct gbm_bo* bo, bool restore, bool async,
+                                      bool* lldvTestRejected)
 {
+  if (lldvTestRejected)
+    *lldvTestRejected = false;
   if (m_cb1Pending) return false;
   // The window owns the bounded retry decision after coherent restoration.
   m_dvRestoring = restore;
@@ -645,7 +652,7 @@ bool CDRMAtomic::FlipPageTransactional(struct gbm_bo* bo, bool restore, bool asy
   const int flags = (m_need_modeset || m_dvActivating || restore)
                         ? DRM_MODE_ATOMIC_ALLOW_MODESET :
                             asynchronous ? DRM_MODE_ATOMIC_NONBLOCK : 0;
-  const bool accepted = DrmAtomicCommit(fb, flags, true, false, true);
+  const bool accepted = DrmAtomicCommit(fb, flags, true, false, true, restore ? nullptr : lldvTestRejected);
   if (!accepted || !asynchronous)
   {
     ResetCB1PresentationTime();

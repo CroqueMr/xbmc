@@ -93,6 +93,8 @@ public:
   void Render(bool clear, DWORD flags = 0, DWORD alpha = 255, bool gui = true);
 
   RESOLUTION GetResolution();
+  static RESOLUTION ChoosePlaybackResolution(double fps, int width, int height, bool stereo,
+                                             bool nativeDV, bool atStartup = false);
   void UpdateResolution();
   void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode,
                                bool nativeDV = false);

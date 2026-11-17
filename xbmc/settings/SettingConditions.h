@@ -24,7 +24,7 @@ public:
   static void Deinitialize();
 #ifdef HAVE_DVBRIDGE
   static void DVOutputOptions(const std::shared_ptr<const CSetting>& setting,
-                              std::vector<IntegerSettingOption>& list);
+                              std::vector<IntegerSettingOption>& list, bool inPlayback = false);
 #endif
 
   static const CProfile& GetCurrentProfile();
