@@ -50,6 +50,11 @@ unsigned BitmapPaletteOutputState();
 //! untouched.
 void ConvertPQPaletteToSRGB(std::vector<uint32_t>& palette);
 
+//! Applies the conversions BitmapPaletteOutputState() reports to straight-alpha PQ pixels (a UHD
+//! disc's BD-J graphics, packed as a palette is), as a PQ palette gets them: bit 0 converts them
+//! with ConvertPQPaletteToSRGB(), once per distinct colour, bit 1 encodes limited range.
+void PreparePQPixels(std::vector<uint32_t>& pixels, unsigned outputState);
+
 //! paletteOverride, when non-null, is used in place of o.palette - e.g.
 //! a palette already converted by ConvertPQPaletteToSRGB() above. o.pixels
 //! (the per-pixel palette indices) is always taken from o itself either way.

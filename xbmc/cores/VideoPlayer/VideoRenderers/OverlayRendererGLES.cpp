@@ -30,6 +30,7 @@
 #endif
 
 #include <cmath>
+#include <cstring>
 
 // GLES2.0 cant do CLAMP, but can do CLAMP_TO_EDGE.
 #define GL_CLAMP GL_CLAMP_TO_EDGE
@@ -169,7 +170,19 @@ COverlayTextureGLES::COverlayTextureGLES(const CDVDOverlayImage& o, CRect& rSour
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
-  if (o.palette.empty())
+  if (o.palette.empty() && m_isHDROverlay && m_paletteOutputState)
+  {
+    // A UHD disc's BD-J graphics are PQ code values; convert them as a PQ palette is.
+    m_pma = false;
+    std::vector<uint32_t> rgba(static_cast<size_t>(o.width) * o.height);
+    for (int y = 0; y < o.height; ++y)
+      std::memcpy(rgba.data() + static_cast<size_t>(y) * o.width,
+                  o.pixels.data() + static_cast<size_t>(y) * o.linesize,
+                  static_cast<size_t>(o.width) * 4);
+    OVERLAY::PreparePQPixels(rgba, m_paletteOutputState);
+    LoadTexture(GL_TEXTURE_2D, o.width, o.height, o.width * 4, &m_u, &m_v, false, rgba.data());
+  }
+  else if (o.palette.empty())
   {
     m_pma = false;
     const uint32_t* rgba = reinterpret_cast<const uint32_t*>(o.pixels.data());

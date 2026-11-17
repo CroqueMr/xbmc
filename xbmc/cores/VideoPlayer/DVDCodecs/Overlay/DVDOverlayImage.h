@@ -30,6 +30,7 @@ public:
     {
       bpp = 1;
       palette = src.palette;
+      alternatePalette = src.alternatePalette;
     }
     else
     {
@@ -76,6 +77,8 @@ public:
 
   std::vector<uint8_t> pixels;
   std::vector<uint32_t> palette;
+  // A retained Blu-ray menu can outlive the play item that selected its colour matrix.
+  std::vector<uint32_t> alternatePalette;
 
   // pixels are already HDR, matching video's colorimetry
   bool m_isHDROverlay{false};
