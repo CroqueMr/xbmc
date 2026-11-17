@@ -4752,7 +4752,10 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     return false;
 
 #ifdef HAVE_DVBRIDGE
-  if (m_CurrentVideo.id < 0 && hint.stereo_mode.empty() &&
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  hint.preferHybridHDR10Plus = hint.HasHDR10PlusCompatibleDolbyVisionBase() &&
+      settings->GetInt("dvbridge.hybridsource") == 1;
+  if (!hint.preferHybridHDR10Plus && m_CurrentVideo.id < 0 && hint.stereo_mode.empty() &&
       (hint.dovi.dv_profile || hint.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION))
   {
     auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
@@ -4783,7 +4786,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
                                                    (double)DVD_TIME_BASE * hint.fpsscale /
                                                    (hint.fpsrate * (hint.interlaced ? 2 : 1)));
 
-      const bool nativeDV = WantsNativePresentation(hint);
+      const bool nativeDV = !hint.preferHybridHDR10Plus && WantsNativePresentation(hint);
       // Disc navigation can reopen video while the GUI is joining this thread.
       // Let the render thread change the mode without a synchronous GUI message.
       if (!pMenus)
@@ -6713,6 +6716,11 @@ void CVideoPlayer::GetVideoStreamInfo(int streamId, VideoStreamInfo& info) const
   if (streamId==m_content.m_videoIndex && info.hdrType==StreamHdrType::HDR_TYPE_HDR10 &&
       CServiceBroker::GetDataCacheCore().HasVideoHDR10PlusSource())
     info.hdrType=StreamHdrType::HDR_TYPE_HDR10PLUS;
+  const bool hybridHDR10Plus = streamId == m_content.m_videoIndex &&
+      info.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+      CServiceBroker::GetDataCacheCore().HasVideoHDR10PlusPrimary();
+  if (hybridHDR10Plus)
+    info.hdrType = StreamHdrType::HDR_TYPE_HDR10PLUS;
   if (info.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
     if (info.hdrDetail.length() == 0)
@@ -6730,7 +6738,8 @@ void CVideoPlayer::GetVideoStreamInfo(int streamId, VideoStreamInfo& info) const
   else
   {
     info.hdrDetail = "";
-    info.hdrTypeAlt = StreamHdrType::HDR_TYPE_NONE;
+    info.hdrTypeAlt = hybridHDR10Plus ? StreamHdrType::HDR_TYPE_DOLBYVISION :
+                                       StreamHdrType::HDR_TYPE_NONE;
   }
   info.fpsRate = s.fpsRate;
   info.fpsScale = s.fpsScale;

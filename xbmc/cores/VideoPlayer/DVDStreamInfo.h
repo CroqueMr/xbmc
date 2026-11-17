@@ -35,6 +35,7 @@ public:
 
   void Clear(); // clears current information
   AE::AudioSourceInfo GetAudioSourceInfo() const;
+  bool HasHDR10PlusCompatibleDolbyVisionBase() const;
   bool Equal(const CDVDStreamInfo& right, int compare);
   bool Equal(const CDemuxStream &right, bool withextradata);
 
@@ -75,6 +76,7 @@ public:
   int bitsperpixel;
   int bitdepth;
   StreamHdrType hdrType;
+  bool preferHybridHDR10Plus{false};
   AVColorSpace colorSpace;
   AVColorRange colorRange;
   AVColorPrimaries colorPrimaries;
