@@ -242,7 +242,7 @@ uint32_t CDRMUtils::DrmOpaqueFbGetFromBo(struct gbm_bo* bo)
                              ? DRM_MODE_FB_MODIFIERS : 0;
   const int result = drmModeAddFB2WithModifiers(
       m_fd, gbm_bo_get_width(bo), gbm_bo_get_height(bo), opaqueFormat,
-      handles, strides, offsets, modifiers, &fb->opaque_fb_id, flags);
+      handles, strides, offsets, flags ? modifiers : nullptr, &fb->opaque_fb_id, flags);
   if (result != 0)
   {
     fb->opaque_fb_id = 0;
