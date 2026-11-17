@@ -57,10 +57,9 @@ public:
 
   int AddData(uint8_t *data, unsigned int size, uint8_t **buffer = NULL, unsigned int *bufferSize = 0);
 
-  void SetDialnorm(bool dolby, bool allowJoc, bool knownJoc, bool trueHd, bool dts)
+  void SetDialnorm(bool dolby, bool knownJoc, bool trueHd, bool dts)
   {
     m_dolbyDialnorm = dolby;
-    m_allowJoc = allowJoc;
     m_knownJoc = knownJoc;
     m_trueHdDialnorm = trueHd;
     m_dtsDialnorm = dts;
@@ -99,7 +98,6 @@ private:
   AVCRC m_crcTrueHD[1024];  /* TrueHD crc table */
 
   bool m_dolbyDialnorm = false;
-  bool m_allowJoc = false;
   bool m_knownJoc = false;
   bool m_trueHdDialnorm = false;
   bool m_dtsDialnorm = false;

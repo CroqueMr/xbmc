@@ -26827,15 +26827,7 @@ msgid "Disable dialogue normalization for Dolby Digital / Dolby Digital Plus"
 msgstr ""
 
 msgctxt "#41261"
-msgid "Keep the original decoded level by neutralizing dialogue normalization in supported AC-3 and E-AC-3 passthrough streams."
-msgstr ""
-
-msgctxt "#41262"
-msgid "Include Dolby Digital Plus Atmos"
-msgstr ""
-
-msgctxt "#41263"
-msgid "Also neutralize dialogue normalization in Dolby Digital Plus Atmos passthrough."
+msgid "Keep the original decoded level by neutralizing dialogue normalization in supported AC-3 and E-AC-3 passthrough streams. Dolby Digital Plus Atmos is passed through unchanged."
 msgstr ""
 
 msgctxt "#41264"

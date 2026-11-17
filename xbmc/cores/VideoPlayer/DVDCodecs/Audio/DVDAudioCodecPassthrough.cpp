@@ -92,7 +92,6 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
   // Keep references to the native settings so changes take effect on the next packet.
   // A codec can be destroyed while Kodi is dispatching settings callbacks.
   m_dolbyDialnorm.reset();
-  m_jocDialnorm.reset();
   m_trueHdDialnorm.reset();
   m_dtsDialnorm.reset();
   m_knownJoc = false;
@@ -105,10 +104,7 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
     if (hints.codec == AV_CODEC_ID_AC3 || hints.codec == AV_CODEC_ID_EAC3)
       m_dolbyDialnorm = getBool(CSettings::SETTING_AUDIOOUTPUT_DOLBYDIALNORM);
     if (hints.codec == AV_CODEC_ID_EAC3)
-    {
       m_knownJoc = hints.profile == AV_PROFILE_EAC3_DDP_ATMOS;
-      m_jocDialnorm = getBool(CSettings::SETTING_AUDIOOUTPUT_JOCDIALNORM);
-    }
     if (hints.codec == AV_CODEC_ID_TRUEHD)
       m_trueHdDialnorm = getBool(CSettings::SETTING_AUDIOOUTPUT_TRUEHDDIALNORM);
     if (hints.codec == AV_CODEC_ID_DTS)
@@ -135,7 +131,7 @@ void CDVDAudioCodecPassthrough::Dispose()
 bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
 {
   const bool dolby = m_dolbyDialnorm && m_dolbyDialnorm->GetValue();
-  m_parser.SetDialnorm(dolby, dolby && m_jocDialnorm && m_jocDialnorm->GetValue(), m_knownJoc,
+  m_parser.SetDialnorm(dolby, m_knownJoc,
                        m_trueHdDialnorm && m_trueHdDialnorm->GetValue(),
                        m_dtsDialnorm && m_dtsDialnorm->GetValue());
   if (m_backlogSize)
