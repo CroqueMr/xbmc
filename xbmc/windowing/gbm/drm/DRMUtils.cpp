@@ -814,8 +814,20 @@ bool CDRMUtils::FindConnector()
 
   if (connectorName == "Default")
   {
-    connector = std::ranges::find_if(m_connectors, [](auto& conn)
-                                     { return conn->GetEncoderId() > 0 && conn->IsConnected(); });
+    const auto connected = [](const auto& conn)
+    { return conn->GetEncoderId() > 0 && conn->IsConnected(); };
+    connector = std::ranges::find_if(m_connectors, connected);
+    if (connector != m_connectors.end())
+    {
+      const auto type = (*connector)->GetType();
+      if (type == "eDP" || type == "LVDS")
+      {
+        const auto hdmi = std::ranges::find_if(m_connectors, [&](const auto& conn)
+        { return conn->GetType() == "HDMI-A" && connected(conn); });
+        if (hdmi != m_connectors.end())
+          connector = hdmi;
+      }
+    }
   }
 
   if (connector == m_connectors.end())
