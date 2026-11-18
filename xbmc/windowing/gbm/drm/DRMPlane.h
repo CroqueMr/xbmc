@@ -49,7 +49,7 @@ public:
   uint64_t GetModifier() const { return m_modifier; }
   std::vector<uint64_t>& GetModifiersForFormat(uint32_t format) { return m_modifiers_map[format]; }
 
-  bool SupportsFormat(uint32_t format);
+  bool SupportsFormat(uint32_t format) const;
   bool SupportsFormatAndModifier(uint32_t format, uint64_t modifier);
   bool Check(
       uint64_t w, uint64_t h, uint32_t format, uint64_t modifier, CDRMCrtc* crtc, PlaneType type);
