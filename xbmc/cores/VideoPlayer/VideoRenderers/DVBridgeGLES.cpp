@@ -1772,12 +1772,18 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int frame
   glGetFramebufferAttachmentParameteriv(
       GL_FRAMEBUFFER, framebuffer ? GL_COLOR_ATTACHMENT0 : GL_BACK,
       GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+  GLint componentType{};
+  if (m_playerLed && red == 16)
+    glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, framebuffer ? GL_COLOR_ATTACHMENT0 : GL_BACK,
+        GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &componentType);
   pl_tex candidate{};
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
       ((sdr && hdr10 && red >= 8 && green >= 8 && blue >= 8 && red <= 16 && green <= 16 && blue <= 16) ||
        (!sdr && hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
        (!sdr && !hdr10 && red == green && green == blue &&
-        (red == 8 || (m_playerLed && red == 10)))) &&
+        (red == 8 || (m_playerLed &&
+            (red == 10 || (red == 16 && componentType == GL_UNSIGNED_NORMALIZED)))))) &&
       samples <= 1 && encoding == GL_LINEAR)
     candidate = pl_opengl_wrap(m_gl->gpu, &output);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
@@ -3061,16 +3067,17 @@ bool CDVBridgeGLES::PackPlayerLed(DVBRIDGE::LldvTransport transport)
 {
   m_packed = false;
   if (!m_playerLed || !m_prepared || !m_playerLedPicture || !m_scanout ||
-      (transport.format != DVBRIDGE::LldvFormat::Y422_10 &&
-       transport.format != DVBRIDGE::LldvFormat::Y422_12))
+      !(DVBRIDGE::LldvBit(transport.format) & DVBRIDGE::LLDV_IMPLEMENTED))
     return Failure("player-led-pack-target");
 
-  if (transport.rgb10Scanout)
+  if (transport.rgbScanoutBits > 8)
   {
-    m_packed = m_outputBits == 10 && dvbridge_resolve_player_led_rgb10(
+    // The existing RGB resolve writes full-precision PQ into the selected target.
+    m_packed = m_outputBits == transport.rgbScanoutBits &&
+        dvbridge_resolve_player_led_rgb10(
         m_renderer, &m_playerLedPolicy, m_playerLedPicture, m_scanout, true) &&
         m_context->FenceLastUse();
-    if (!m_packed) return Failure("player-led-rgb10");
+    if (!m_packed) return Failure("player-led-deep-rgb");
     m_playerLedTransport = transport;
     m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,m_asyncEligible};
     return true;

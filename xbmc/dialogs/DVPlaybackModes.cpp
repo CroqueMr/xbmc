@@ -442,17 +442,24 @@ bool ShowLldvFormatMenu(bool forCircuit, bool inPlayback)
         (format == LldvFormat::Y422_10 &&
          SelectLldvTransport(status, LLDV_FORCE_422_10, allowModeSwitch).forced);
   };
+  const auto preferenceFor = [&status, &requiresForcing, allowModeSwitch](LldvFormat format) {
+    if (requiresForcing(format))
+      return LLDV_FORCE_422_10;
+    if (format == LldvFormat::Y422_12 &&
+        SelectLldvTransport(status, LLDV_PACKED_422_12, allowModeSwitch).experimentalPacked12)
+      return LLDV_PACKED_422_12;
+    return static_cast<int>(format);
+  };
   const auto saved = settings->GetInt("dvbridge.lldvformatvalue");
   dialog->Reset();
   dialog->SetHeading(strings.Get(41200));
-  // Estuary fits all formats in its simple list and displays the notes inline.
+  // Estuary displays the format notes inline.
   const bool estuary = settings->GetString(CSettings::SETTING_LOOKANDFEEL_SKIN) == "skin.estuary";
   dialog->SetUseDetails(!estuary);
   dialog->EnableButton(!estuary, 41320);
 
   const int summary = LldvUnavailableLabel(status, saved, allowModeSwitch);
-  const bool chooseFormat = summary && (!LldvUnavailableLabel(status, 0, allowModeSwitch) ||
-      !LldvUnavailableLabel(status, LLDV_FORCE_422_10, allowModeSwitch));
+  const bool chooseFormat = summary && LldvCanChooseFormat(status, allowModeSwitch);
   std::string summaryText = strings.Get(summary ? 41322 : 41321);
   if (summary)
     summaryText += '\n' + strings.Get(chooseFormat ? LLDV_CHOOSE_FORMAT_LABEL : summary);
@@ -480,6 +487,8 @@ bool ShowLldvFormatMenu(bool forCircuit, bool inPlayback)
   }
   else
     addDetail(41323, strings.Get(40851));
+  if (const unsigned bits = dvbridge_lldv_444_bits(display.sink))
+    addDetail(41341, StringUtils::Format("{}-bit", bits));
   if (display.status == LldvEdidStatus::Incomplete)
     addDetail(41330, StringUtils::Format("{} / {} bytes", display.received, display.expected));
   if (display.peak > 0)
@@ -497,8 +506,8 @@ bool ShowLldvFormatMenu(bool forCircuit, bool inPlayback)
   {
     const auto format = static_cast<LldvFormat>(i);
     const bool forced = requiresForcing(format);
-    const int reason = LldvUnavailableLabel(status, forced ? LLDV_FORCE_422_10 : i,
-                                             allowModeSwitch);
+    const int preference = preferenceFor(format);
+    const int reason = LldvUnavailableLabel(status, preference, allowModeSwitch);
     const bool disabled = reason != 0 &&
         (format != LldvFormat::Auto || forCircuit || status.active != LldvFormat::Auto);
     const auto label = strings.Get(LldvFormatLabel(format, !estuary && forced));
@@ -509,6 +518,8 @@ bool ShowLldvFormatMenu(bool forCircuit, bool inPlayback)
     else if (i == 0)
       item.SetLabel2(preferred == LldvFormat::Auto ? strings.Get(41213)
           : strings.Get(LldvFormatLabel(preferred, !estuary && requiresForcing(preferred))));
+    else if (preference == LLDV_PACKED_422_12)
+      item.SetLabel2(strings.Get(41342));
     else if (format == status.active)
       item.SetLabel2(strings.Get(status.activeForced && !requiresForcing(format) ? 41218 : 41214));
     else
@@ -517,12 +528,15 @@ bool ShowLldvFormatMenu(bool forCircuit, bool inPlayback)
     {
       if (disabled)
         item.SetProperty("CB1.LldvFocusNote", strings.Get(reason == 41210 ? 41332 : reason));
-      else if (i == 0 || forced)
-        item.SetProperty("CB1.LldvNote", i == 0 ? item.GetLabel2() : strings.Get(41331));
+      else if (i == 0 || preference == LLDV_PACKED_422_12)
+        item.SetProperty("CB1.LldvNote", item.GetLabel2());
+      else if (forced)
+        item.SetProperty("CB1.LldvNote", strings.Get(41331));
     }
     dialog->Add(item);
   }
-  dialog->SetSelected(static_cast<int>(LldvFormatPreference(saved)));
+  const auto selected = LldvFormatPreference(saved);
+  dialog->SetSelected(selected <= LldvFormat::Y444_12 ? static_cast<int>(selected) : 0);
   dialog->Open();
   for (const char* key : {"CB1.LldvStatus", "CB1.LldvDetails", "CB1.LldvDetailLabels",
                           "CB1.LldvDetailValues"})
@@ -532,7 +546,7 @@ bool ShowLldvFormatMenu(bool forCircuit, bool inPlayback)
   if (!dialog->IsConfirmed() || choice < 0 || choice > static_cast<int>(LldvFormat::Y444_12))
     return false;
   const auto format = static_cast<LldvFormat>(choice);
-  const int preference = requiresForcing(format) ? LLDV_FORCE_422_10 : choice;
+  const int preference = preferenceFor(format);
   if ((current.connectorId != status.connectorId || current.edidGeneration != status.edidGeneration) ||
       ((format != LldvFormat::Auto || forCircuit || current.active != LldvFormat::Auto) &&
        LldvUnavailableLabel(current, preference, !inPlayback && current.active == LldvFormat::Auto)) ||

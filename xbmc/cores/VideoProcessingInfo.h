@@ -72,6 +72,8 @@ struct VideoProcessingInfo
     std::array<double, 6> primaries{};
     std::array<double, 6> reportedPrimaries{};
     bool forcedTransport{};
+    enum class Encoding { YCbCr422, RGB, YCbCr444 };
+    Encoding encoding{Encoding::YCbCr422};
   };
   struct Output
   {

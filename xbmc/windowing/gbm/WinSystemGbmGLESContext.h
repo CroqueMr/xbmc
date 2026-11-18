@@ -99,6 +99,7 @@ public:
   bool CompleteDVModeSwitch(const VideoPicture& picture);
   std::optional<RESOLUTION> PlayerLedResolution(double fps, bool atStartup = false) const;
   int PlayerLedResolutionReason(RESOLUTION resolution, int preference) const;
+  bool LldvSupportsPlaybackTiming(double fps, bool requireCurrentMode = false) const;
   bool DVModeSwitchDeferred()
   {
     return !m_dvRollbackFailed && m_dvShutdownFence && m_dvContext &&

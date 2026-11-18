@@ -427,8 +427,11 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.MinimumLinkBits", active && data.output.minimumLinkBits ?
         StringUtils::Format("{}-bit",data.output.minimumLinkBits) : "");
     SetProperty("DV.Transport", active ? CDVPlaybackInfo::Transport(data.output.format) : "");
+    using LldvEncoding = VideoProcessingInfo::PlayerLed::Encoding;
     SetProperty("DV.HdmiFormat", lldv ?
-        (data.output.lldv->forcedTransport ? localizer.Get(41339) : "YCbCr 4:2:2") : "");
+        (data.output.lldv->encoding == LldvEncoding::RGB ? "RGB" :
+         data.output.lldv->encoding == LldvEncoding::YCbCr444 ? "YCbCr 4:4:4" :
+         data.output.lldv->forcedTransport ? localizer.Get(41339) : "YCbCr 4:2:2") : "");
     SetProperty("DV.SignalIntent", lldv ? "LLDV" : active & CDVPlaybackInfo::HDMI ?
         (data.output.iptTransport ? "TV-Led / IPT-PQc2 tunnel" : "TV-Led / YCbCr tunnel") :
         active & CDVPlaybackInfo::HDR10PLUS ? "PQ / BT.2020 / HDR10+" :

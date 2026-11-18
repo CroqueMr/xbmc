@@ -148,6 +148,7 @@ private:
                                                 {DRM_FORMAT_XRGB2101010, 10, 0, false, {}},
                                                 {DRM_FORMAT_ABGR2101010, 10, 2, false, {}},
                                                 {DRM_FORMAT_XBGR2101010, 10, 0, false, {}},
+                                                {DRM_FORMAT_ABGR16161616, 16, 16, false, {}},
                                                 {DRM_FORMAT_ABGR16161616F, 16, 16, false, {}}};
 };
 
