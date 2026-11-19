@@ -1015,7 +1015,7 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
     return;
   }
 
-  if (ov->cmd == BD_OVERLAY_CLEAR)
+  if (ov->cmd == BD_OVERLAY_CLEAR || ov->cmd == BD_OVERLAY_HIDE)
   {
     plane.o.clear();
     return;
@@ -1024,6 +1024,27 @@ void CDVDInputStreamBluray::OverlayCallback(const BD_OVERLAY * const ov)
   if (ov->cmd == BD_OVERLAY_INIT)
   {
     OverlayInit(plane, ov->w, ov->h);
+    return;
+  }
+
+  if (ov->cmd == BD_OVERLAY_DRAW && ov->palette_update_flag && !ov->img)
+  {
+    if (ov->palette)
+    {
+      std::vector<uint32_t> palette(256);
+      for (unsigned i = 0; i < 256; ++i)
+        palette[i] = build_rgba(ov->palette[i]);
+      for (SOverlay& overlay : plane.o)
+      {
+        if (overlay->palette.empty())
+          continue;
+        // Keep previously committed pages immutable and invalidate the cached texture.
+        auto copy = std::make_shared<CDVDOverlayImage>(
+            *overlay, overlay->x, overlay->y, overlay->width, overlay->height);
+        copy->palette = palette;
+        overlay = copy;
+      }
+    }
     return;
   }
 
