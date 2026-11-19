@@ -397,6 +397,8 @@ void CVideoPlayerVideo::Process()
   bool bRequestDrop = false;
   int iDropDirective;
   bool onlyPrioMsgs = false;
+  enum class DrainState { Idle, Draining, Complete };
+  DrainState drain = DrainState::Idle;
 
   m_videoStats.Start();
   m_droppingStats.Reset();
@@ -428,7 +430,7 @@ void CVideoPlayerVideo::Process()
     if (m_paused)
       iPriority = 1;
 
-    if (onlyPrioMsgs)
+    if (onlyPrioMsgs || (drain == DrainState::Draining && !m_paused && m_speed != DVD_PLAYSPEED_PAUSE))
     {
       iPriority = 1;
       timeout = 1ms;
@@ -462,8 +464,8 @@ void CVideoPlayerVideo::Process()
       if (m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC)
         continue;
 
-      if (m_outputSate == OUTPUT_AGAIN &&
-          m_picture.videoBuffer)
+      const bool retryOutput = m_outputSate == OUTPUT_AGAIN && m_picture.videoBuffer;
+      if (retryOutput)
       {
         m_outputSate = OutputPicture(&m_picture);
         if (m_outputSate == OUTPUT_AGAIN)
@@ -472,8 +474,25 @@ void CVideoPlayerVideo::Process()
           continue;
         }
       }
+      if (drain == DrainState::Draining)
+      {
+        if (m_paused || m_speed == DVD_PLAYSPEED_PAUSE)
+          continue;
+        if (m_pVideoCodec)
+          m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
+        if (!m_pVideoCodec || m_outputSate == OUTPUT_ABORT ||
+            !ProcessDecoderOutput(frametime, pts))
+        {
+          drain = DrainState::Complete;
+          --m_drainPending;
+        }
+        continue;
+      }
+      if (drain == DrainState::Complete)
+        continue;
+
       // don't ask for a new frame if we can't deliver it to renderer
-      else if ((m_speed != DVD_PLAYSPEED_PAUSE ||
+      if (!retryOutput && (m_speed != DVD_PLAYSPEED_PAUSE ||
 #ifdef CB1_HAS_HDR10_AI
                 m_renderManager.HDR10AIPriming() ||
 #endif
@@ -547,6 +566,9 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
+      if (drain == DrainState::Draining)
+        --m_drainPending;
+      drain = DrainState::Idle;
       const auto generation=CServiceBroker::GetDataCacheCore().ResetVideoProcessingInfo();
       if (m_pVideoCodec) m_pVideoCodec->SetVideoProcessingGeneration(generation);
       if(m_pVideoCodec)
@@ -595,6 +617,7 @@ void CVideoPlayerVideo::Process()
 
       m_renderManager.DiscardBuffer();
       FlushMessages();
+      drain = DrainState::Idle;
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
@@ -606,6 +629,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_STREAMCHANGE))
     {
+      drain = DrainState::Idle;
       auto msg = std::static_pointer_cast<CDVDMsgVideoCodecChange>(pMsg);
 
       while (!m_bStop && m_pVideoCodec)
@@ -627,13 +651,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::VIDEO_DRAIN))
     {
-      while (!m_bStop && m_pVideoCodec)
-      {
-        m_pVideoCodec->SetCodecControl(DVD_CODEC_CTRL_DRAIN);
-        if (!ProcessDecoderOutput(frametime, pts))
-          break;
-      }
-      --m_drainPending;
+      drain = DrainState::Draining;
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_PAUSE))
     {
@@ -654,6 +672,7 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::DEMUXER_PACKET))
     {
+      drain = DrainState::Idle;
       DemuxPacket* pPacket = std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->GetPacket();
       bool bPacketDrop = std::static_pointer_cast<CDVDMsgDemuxerPacket>(pMsg)->GetPacketDrop();
 
