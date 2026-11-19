@@ -220,7 +220,7 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
 
 #ifdef CB1_HAS_HDR10_AI
   m_aiOutputPending = HDR10AILookahead() &&
-      DVBRIDGE::FrameOutputSettings().hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
+      DVBRIDGE::FrameOutputSettings(picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS).hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
   if (m_aiOutputPending)
   {
     // Keep the GUI output until AI preparation selects DV or native HDR10.
@@ -296,6 +296,8 @@ bool CLinuxRendererGLES::ConfigureVideoOutput(const VideoPicture& picture)
     CLog::Log(LOGWARNING, "LinuxRendererGLES::Configure: HDR passthrough active but GUI "
                           "compositing not supported by windowing system");
 
+  // AI priming may have compiled the ordinary shader before HDR was selected.
+  m_reloadShaders = true;
   m_bConfigured = true;
   return true;
 }
@@ -1291,9 +1293,96 @@ bool CLinuxRendererGLES::UploadTexture(int index)
   {
     CalculateTextureSourceRects(index, 3);
   }
-
+#ifdef HAVE_DVBRIDGE
+  if (auto* window=dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
+  {
+    CDVBridgeGLES::Layer layer{};
+    const bool usable=ret && BuildDVBridgeLayer(index,layer);
+    const auto& buffer=m_buffers[index];
+    const auto binding=buffer.doviSourcePicture && buffer.doviSourcePicture->doviSourceBinding.Valid() ?
+        buffer.doviSourcePicture->doviSourceBinding : buffer.doviMetadata.Binding();
+    window->ObserveDVImport(binding,DVBridgeGeometry(),usable);
+  }
+#endif
   return ret;
 }
+
+#ifdef HAVE_DVBRIDGE
+bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& layer)
+{
+  auto& buffer=m_buffers[index];
+  if (!buffer.doviSourcePicture || !buffer.doviMetadata.Data() ||
+      buffer.doviPts==DVD_NOPTS_VALUE || !std::isfinite(buffer.doviPts) ||
+      m_textureTarget!=GL_TEXTURE_2D || m_renderOrientation!=0)
+    return false;
+  if (m_sourceWidth<=0 || m_sourceWidth>3840 || m_sourceHeight<=0 || m_sourceHeight>2160)
+    return false;
+  switch (m_format)
+  {
+    case AV_PIX_FMT_YUV420P10LE: layer.layout=DVBRIDGE_YUV420P10; break;
+    case AV_PIX_FMT_YUV444P10LE: layer.layout=DVBRIDGE_YUV444P10; break;
+    default: return false;
+  }
+  layer.width=m_sourceWidth; layer.height=m_sourceHeight;
+  layer.scalingMethod=SelectScalingMethod();
+  layer.pts=buffer.doviPts;
+  layer.binding=buffer.doviMetadata.Binding();
+  layer.lease=buffer.doviSourcePicture;
+  layer.sourceInfo=buffer.doviSourcePicture->doviSourceInfo;
+  layer.sourceSideData=buffer.doviSourcePicture->sourceSideData;
+  layer.chromaLocation=buffer.doviSourcePicture->chroma_position;
+  for (int p=0;p<3;++p)
+  {
+    const auto& plane=buffer.fields[FIELD_FULL][p];
+    const bool subsampled=p && m_format==AV_PIX_FMT_YUV420P10LE;
+    const unsigned width=subsampled ? (m_sourceWidth+1)/2 : m_sourceWidth;
+    const unsigned height=subsampled ? (m_sourceHeight+1)/2 : m_sourceHeight;
+    if (!plane.id || plane.texwidth!=width || plane.texheight!=height) return false;
+    layer.planes[p]={plane.id,static_cast<int>(plane.texwidth),static_cast<int>(plane.texheight)};
+  }
+  return layer.binding.Valid();
+}
+
+bool CLinuxRendererGLES::RenderDVBridge(int index)
+{
+  auto* window=dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
+  CDVBridgeGLES::Layer layer{};
+  if (!window || !BuildDVBridgeLayer(index,layer)) return false;
+  const auto& buffer=m_buffers[index];
+  return window->RenderDVBridge(layer,buffer.doviEnhancement,buffer.doviEnhancementBinding,
+      buffer.doviMetadata,DVBridgeGeometry());
+}
+
+dvbridge_geometry CLinuxRendererGLES::DVBridgeGeometry()
+{
+  auto* window = CServiceBroker::GetWinSystem();
+  CRect source, dest, view;
+  GetVideoRect(source, dest, view);
+  const int width = window->GetWidth(), height = window->GetHeight();
+  const auto& context = window->GetGfxContext();
+  if (width <= 0 || height <= 0 || context.GetWidth() <= 0 || context.GetHeight() <= 0)
+    return {};
+  const CRect original = dest;
+  dest.Intersect(CRect(0, 0, context.GetWidth(), context.GetHeight()));
+  if (dest.Width() <= 0 || dest.Height() <= 0 || original.Width() <= 0 || original.Height() <= 0)
+    return {};
+  const float sourceX = source.Width() / original.Width();
+  const float sourceY = source.Height() / original.Height();
+  source.x1 += (dest.x1 - original.x1) * sourceX;
+  source.x2 += (dest.x2 - original.x2) * sourceX;
+  source.y1 += (dest.y1 - original.y1) * sourceY;
+  source.y2 += (dest.y2 - original.y2) * sourceY;
+  const float sx = float(width) / context.GetWidth();
+  const float sy = float(height) / context.GetHeight();
+  const float left = dest.x1 * sx, top = dest.y1 * sy;
+  const float right = dest.x2 * sx, bottom = dest.y2 * sy;
+  const int x = std::floor(left), y = std::floor(top);
+  return {static_cast<int>(m_sourceWidth), static_cast<int>(m_sourceHeight),
+          x, y, static_cast<int>(std::ceil(right)) - x,
+          static_cast<int>(std::ceil(bottom)) - y, width, height,
+          {source.x1, source.y1, source.x2, source.y2}, {left, top, right, bottom}, false};
+}
+#endif
 
 bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 {

@@ -69,9 +69,8 @@ protected:
   bool RenderHook(int idx) override;
 #ifdef HAVE_DVBRIDGE
   bool RenderDVBridge(int idx) override;
-  bool BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer);
+  bool BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer) override;
   CDVBridgeGLES::FELSuccessor m_felSuccessor;
-  dvbridge_geometry DVBridgeGeometry();
   bool DVBridgeOrientationSupported(unsigned int orientation) const;
 #endif
   void AfterRenderHook(int idx) override;

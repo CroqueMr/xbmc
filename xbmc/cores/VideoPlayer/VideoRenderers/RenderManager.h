@@ -125,6 +125,7 @@ public:
   bool GetHDR10AIStartTime(double& pts);
   bool PrepareHDR10AIStartup(bool fullscreen);
   bool HDR10AIPriming();
+  bool HDR10AIStartupBuffered();
   void EndHDR10AIQueue();
   void ResetHDR10AIQueue();
 #endif
@@ -182,6 +183,7 @@ protected:
   std::atomic_bool m_aiGUIOwnsRenderer{false};
   bool m_aiQueueReady{true},m_aiEnd{};
   bool m_aiQueuePreparationStale{};
+  bool m_aiStartupBuffered{};
   bool m_aiFullscreenRequested{},m_aiGuiReady{},m_aiFullscreenWanted{};
   double m_aiStartPts{DVD_NOPTS_VALUE};
 #endif

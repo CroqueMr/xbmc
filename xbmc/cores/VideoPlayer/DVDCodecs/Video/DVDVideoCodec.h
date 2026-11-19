@@ -110,6 +110,7 @@ private:
 #define DVD_CODEC_CTRL_DROP         0x08000000  //< drop in decoder or set DVP_FLAG_DROPPED, no render of frame
 #define DVD_CODEC_CTRL_DROP_ANY     0x10000000  //< drop some non-reference frame
 #define DVD_CODEC_CTRL_DRAIN        0x20000000  //< squeeze out pictured without feeding new packets
+#define DVD_CODEC_CTRL_POLL         0x00800000  //< temporary/retiring drain, not source EOF
 #define DVD_CODEC_CTRL_ROTATE       0x40000000  //< rotate if renderer does not support it
 
 // DVP_FLAG 0x00000100 - 0x00000f00 is in use by libmpeg2!

@@ -13,6 +13,9 @@
 #include "system_gl.h"
 
 #include "BaseRenderer.h"
+#ifdef HAVE_DVBRIDGE
+#include "DVBridgeGLES.h"
+#endif
 #include "cores/VideoPlayer/DVDCodecs/Video/DVDVideoCodec.h"
 #include "cores/VideoSettings.h"
 #include "FrameBufferObject.h"
@@ -145,7 +148,9 @@ protected:
   virtual bool RenderHook(int idx) { return false; }
 #ifdef HAVE_DVBRIDGE
   // Failure is terminal for this frame: never silently use the ordinary shader.
-  virtual bool RenderDVBridge(int idx) { return false; }
+  virtual bool RenderDVBridge(int idx);
+  virtual bool BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer);
+  dvbridge_geometry DVBridgeGeometry();
   bool m_dvRequested{false};
 #endif
   virtual void AfterRenderHook(int idx) {}

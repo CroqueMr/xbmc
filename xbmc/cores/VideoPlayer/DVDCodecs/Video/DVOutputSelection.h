@@ -23,15 +23,16 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return {OutputRoute::Vanilla, {}, OutputReason::SourceIneligible};
   if (caps.sourceKnown && caps.isHDR10 && !caps.isDV)
   {
-    if (preferences.hdr10Source == HDR10SourceMode::Native) return result;
-    if (caps.hdr10PlusSource && preferences.hdr10Source != HDR10SourceMode::HDR10PlusDV)
+    const auto source = preferences.HDR10Mode(caps.hdr10PlusSource);
+    if (source == HDR10SourceMode::Native) return result;
+    if (caps.hdr10PlusSource && source != HDR10SourceMode::HDR10PlusDV)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
-    if (preferences.hdr10Source == HDR10SourceMode::HDR10PlusDV && !caps.isHDR10Plus)
+    if (source == HDR10SourceMode::HDR10PlusDV && !caps.isHDR10Plus)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
-    auto policy = preferences.HDR10Policy();
+    auto policy = preferences.HDR10Policy(caps.hdr10PlusSource);
     if (policy.mode == DVBRIDGE_MODE_DISABLED)
       return {OutputRoute::Vanilla,{},OutputReason::SourceIneligible};
-    if (policy.mode != DVBRIDGE_MODE_STANDARD && !preferences.ProfileValid())
+    if (policy.mode != DVBRIDGE_MODE_STANDARD && !preferences.ProfileValid(policy.mode))
       return {OutputRoute::Vanilla,{},OutputReason::TVProfileRequired};
     if (!caps.nativeDV)
       return {OutputRoute::Vanilla,{},OutputReason::NoDVTransport};
@@ -44,7 +45,7 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
   auto policy = preferences.Policy();
   // Display configuration is known before the first GPU import.
   if (preferences.output == OutputMode::HDR10 && policy.mode == DVBRIDGE_MODE_HDR10_EXPERT &&
-      !preferences.ProfileValid())
+      !preferences.ProfileValid(policy.mode))
     return {OutputRoute::Vanilla, {}, OutputReason::TVProfileRequired};
   if (!caps.processingKnown)
   {
@@ -60,7 +61,7 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
   }
   const auto admission = [&](dvbridge_mode mode) {
     if ((mode == DVBRIDGE_MODE_HDR10_EXPERT || mode == DVBRIDGE_MODE_ENHANCED_DV) &&
-        !preferences.ProfileValid())
+        !preferences.ProfileValid(mode))
       return ModeAdmission{false, OutputReason::TVProfileRequired};
     auto value = caps.processing[mode];
     if (!value.usable && value.reason == OutputReason::None)

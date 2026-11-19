@@ -37,7 +37,7 @@ struct VideoProcessingInfo
     float target{};
     bool level6{};
     int requested{}, effective{1}, method{}, panel{}, gamut{};
-    double manualPeak{};
+    double manualPeak{}, displayBlack{};
     uint64_t revision{}, stream{}, picture{};
     uint32_t format{};
     unsigned width{}, height{};
@@ -54,6 +54,8 @@ struct VideoProcessingInfo
     bool hdr10PlusDV{}, untranslatedCurve{}, untranslatedSaturation{};
     unsigned guidedSourceFields{}, guidedEstimatedFields{};
     std::array<unsigned,6> aiL1L3{};
+    std::string aiModel{};
+    std::array<unsigned,3> aiBaseline{};
     std::array<unsigned,3> emittedL1{};
     std::string engine, circuit;
   } output;

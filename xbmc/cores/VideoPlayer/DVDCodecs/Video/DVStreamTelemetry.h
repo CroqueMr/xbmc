@@ -47,7 +47,7 @@ struct StreamSnapshot
     float target{};
     bool level6{};
     int requested{}, effective{1}, method{}, panel{}, gamut{};
-    double manualPeak{};
+    double manualPeak{}, displayBlack{};
     uint64_t revision{};
     bool fallback{};
     uint64_t stream{}, picture{};
@@ -72,6 +72,8 @@ struct StreamSnapshot
     bool hdr10PlusDV{}, untranslatedCurve{}, untranslatedSaturation{};
     unsigned guidedSourceFields{}, guidedEstimatedFields{};
     std::array<unsigned,6> aiL1L3{};
+    std::string aiModel{};
+    std::array<unsigned,3> aiBaseline{};
     bool emittedL1Known{};
     std::array<unsigned,3> emittedL1{};
     const char* Circuit() const

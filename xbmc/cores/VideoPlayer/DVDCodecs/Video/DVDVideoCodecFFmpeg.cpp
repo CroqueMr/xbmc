@@ -779,15 +779,13 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
 #ifdef HAVE_DVBRIDGE
   if (m_dvFel)
   {
-    if (m_dvFailed || dvbridge_fel_failed(m_dvFel.get()))
-      return VC_ERROR;
     auto emit = [&]() -> VCReturn
     {
       if (m_dvPending.empty())
         return VC_NONE;
       auto& base = m_dvPending.front();
       if (base->doviSourcePts == AV_NOPTS_VALUE)
-        return VC_ERROR;
+        return VC_FATAL;
       AVFrame* enhancement = nullptr;
       int result = dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts,
                                      &enhancement);
@@ -798,15 +796,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
       }
       if (result < 0)
       {
-        if (dvbridge_fel_exhausted(m_dvFel.get()))
-        {
-          CLog::Log(LOGWARNING, "DV FEL: enhancement EOF with {} unpaired base pictures; "
-                               "ending video without substituting enhancement frames",
-                    m_dvPending.size());
-          m_dvPending.clear();
-          return VC_EOF;
-        }
-        return VC_ERROR;
+        CLog::Log(LOGERROR, "DV FEL: cannot pair {} pending base pictures; stopping without substitution",
+                  m_dvPending.size());
+        return VC_FATAL;
       }
       if (!result)
         return VC_NONE;
@@ -822,8 +814,12 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
     VCReturn paired = emit();
     if (paired != VC_NONE)
       return paired;
+    if (m_dvFailed || dvbridge_fel_failed(m_dvFel.get()))
+      return VC_FATAL;
+    if (m_codecControlFlags & DVD_CODEC_CTRL_POLL)
+      return VC_BUFFER;
     if (m_dvPending.size() >= DVEnhancementPendingPictures)
-      return VC_ERROR;
+      return VC_FATAL;
     auto base = std::make_shared<VideoPicture>();
     base->Reset();
     VCReturn result = GetBasePicture(base.get());
@@ -831,7 +827,7 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
     {
       auto* frames = reinterpret_cast<AVHWFramesContext*>(m_pCodecContext->hw_frames_ctx->data);
       if (!dvbridge_fel_device(m_dvFel.get(), frames->device_ref))
-        return VC_ERROR;
+        return VC_FATAL;
     }
     if (result == VC_PICTURE)
     {
@@ -840,12 +836,12 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
     }
     if (result == VC_EOF || (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
       if (!dvbridge_fel_drain(m_dvFel.get()))
-        return VC_ERROR;
+        return VC_FATAL;
     paired = emit();
     if (paired != VC_NONE)
       return paired;
     if (result == VC_EOF && !m_dvPending.empty())
-      return VC_ERROR;
+      return VC_FATAL;
     return result == VC_PICTURE ? VC_BUFFER : result;
   }
 #endif
@@ -1844,7 +1840,8 @@ void CDVDVideoCodecFFmpeg::PrepareHDR10AIReopen()
 
 unsigned CDVDVideoCodecFFmpeg::GetHDR10AIBufferCount() const
 {
-  const auto mode = DVBRIDGE::hdr10PlaybackMode.load();
+  const auto mode = m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS ?
+      DVBRIDGE::hdr10PlusPlaybackMode.load() : DVBRIDGE::hdr10PlaybackMode.load();
   const bool hdr10 = DVBRIDGE::IsHDR10AIInput(
       m_hints.hdrType, mode == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
       !m_hints.dovi.rpu_present_flag;
@@ -1885,7 +1882,12 @@ bool CDVDVideoCodecFFmpeg::GetCodecStats(double &pts, int &droppedFrames, int &s
 
 void CDVDVideoCodecFFmpeg::SetCodecControl(int flags)
 {
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel && (flags & DVD_CODEC_CTRL_POLL))
+    flags &= ~DVD_CODEC_CTRL_DRAIN;
+#endif
   m_codecControlFlags = flags;
+  flags &= ~DVD_CODEC_CTRL_POLL;
 #ifdef HAVE_DVBRIDGE
   // Keep the native drop request on the picture, not either layer's decoder.
   if (m_dvFel)

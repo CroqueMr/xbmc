@@ -679,11 +679,12 @@ void CDRMAtomic::FlipPage(struct gbm_bo* bo, bool rendered, bool videoLayer, boo
   if (m_need_modeset)
   {
     flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
-    m_need_modeset = false;
     CLog::LogF(LOGDEBUG, "Execute modeset at next commit");
   }
 
   m_lastPageAccepted=DrmAtomicCommit(!drm_fb ? 0 : drm_fb->fb_id, flags, rendered, videoLayer);
+  if (m_lastPageAccepted && IsSelectedModeCommitted())
+    m_need_modeset = false;
 }
 
 bool CDRMAtomic::InitDrm()

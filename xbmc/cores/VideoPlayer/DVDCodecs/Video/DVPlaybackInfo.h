@@ -70,38 +70,38 @@ struct CDVPlaybackInfo
     if ((output & FEL) && source.find("FEL") == std::string::npos)
       source += " FEL";
     source += (output & CM4) ? " · CM4 metadata" : " · CM2.9 metadata";
-    return source + ((output & HDR10) ? " · HDR10 Basic" : " · HDMI Dolby Vision");
+    return source + ((output & HDR10) ? " · HDR10 Rendering" : " · HDMI Dolby Vision");
   }
 
   template<class Output> static const char* Policy(const Output& output)
   {
-    if (IsHDR10PlusDV(output)) return "HDR10+ to Dolby Vision (metadata-guided)";
+    if (IsHDR10PlusDV(output)) return "Dolby Vision Rendering";
     switch (output.effective)
     {
-      case 2: return "HDR10 Reference Basic";
-      case 3: return "HDR10 Reference Expert";
+      case 2: return "HDR10 Rendering";
+      case 3: return "HDR10 Rendering Reference";
       case 4: return "Dolby Vision Adaptive HDR Mapping";
       case 5: return "Dolby Vision Master Reference";
       case 6: return "Dolby Vision Adaptive HDR Mapping";
-      case 7: return output.flags & HDR10PLUS ? "HDR10+ conversion" : "HDR10 conversion";
-      default: return output.flags & HDR10 ? "HDR10 Reference Basic" : "Dolby Vision Reference";
+      case 7: return output.flags & HDR10PLUS ? "HDR10+ Rendering" : "HDR10 Rendering";
+      default: return output.flags & HDR10 ? "HDR10 Rendering" : "Dolby Vision Reference";
     }
   }
   static const char* RequestedPolicy(int mode, bool hdr10AI = false, bool hdr10PlusDV = false)
   {
-    if (hdr10PlusDV && mode == 1) return "HDR10+ to Dolby Vision (metadata-guided)";
-    if (hdr10AI && mode == 1) return "Dolby Vision Reference (AI)";
+    if (hdr10PlusDV && mode == 1) return "Dolby Vision Rendering";
+    if (hdr10AI && mode == 1) return "Dolby Vision Rendering";
     if (hdr10AI && mode == 4) return "Dolby Vision Adaptive HDR Mapping (AI)";
     switch(mode)
     {
       case 0:return "Dolby Vision Disabled (native Kodi)";
       case 1:return "Dolby Vision Reference";
-      case 2:return "HDR10 Reference Basic";
-      case 3:return "HDR10 Reference Expert";
+      case 2:return "HDR10 Rendering";
+      case 3:return "HDR10 Rendering Reference";
       case 4:return "Dolby Vision Adaptive HDR Mapping";
       case 5:return "Dolby Vision Master Reference";
       case 6:return "Dolby Vision Adaptive HDR Mapping";
-      case 7:return "HDR10+ conversion";
+      case 7:return "HDR10+ Rendering";
       default:return "";
     }
   }

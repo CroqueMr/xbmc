@@ -178,44 +178,12 @@ public:
     ResyncPreroll();
     if (m_base.empty() || m_enhancement.empty())
       return AVERROR(EAGAIN);
-    if (m_resync && ((m_base.front()->pts != m_enhancement.front()->pts &&
-                     IsIrap(*m_base.front(), false)) ||
-        (m_base.front()->dts != AV_NOPTS_VALUE &&
-        m_enhancement.front()->dts != AV_NOPTS_VALUE &&
-        m_enhancement.front()->dts < m_base.front()->dts)))
-    {
-      // An earlier EL decode prefix is not the layer for the first BL picture.
-      // Retire it only at a proven common IRAP; preserve non-IRAP references.
-      const auto& first = m_base.front();
-      if (!IsIrap(*first, false))
-        return AVERROR(EAGAIN);
-      const auto anchor = std::find_if(m_enhancement.begin(), m_enhancement.end(),
-          [&first](const Packet& el) {
-            return el->pts == first->pts && IsIrap(*el, true);
-          });
-      if (anchor == m_enhancement.end() ||
-          !std::all_of(m_enhancement.begin(), anchor, [this, &first, &anchor](const Packet& el) {
-            return el->dts != AV_NOPTS_VALUE && el->dts < (*anchor)->dts &&
-                el->pts < first->pts && std::none_of(m_base.begin(), m_base.end(),
-                    [&el](const Packet& bl) { return bl->pts == el->pts; });
-          }))
-        return AVERROR(EAGAIN);
-      const auto count = static_cast<size_t>(std::distance(m_enhancement.begin(), anchor));
-      if (m_preroll > MAX_PACKETS || count > MAX_PACKETS - m_preroll)
-        return AVERROR(EAGAIN);
-      for (size_t i = 0; i < count; ++i)
-      {
-        const auto rpu = m_rpu.find(m_enhancement.front()->pts);
-        m_bytes -= m_enhancement.front()->size;
-        if (rpu != m_rpu.end())
-        {
-          m_bytes -= rpu->second.size();
-          m_rpu.erase(rpu);
-        }
-        m_enhancement.pop_front();
-        ++m_preroll;
-      }
-    }
+    if (m_resync && m_base.front()->pts != m_enhancement.front()->pts &&
+        (IsIrap(*m_base.front(), false) ||
+         (m_base.front()->dts != AV_NOPTS_VALUE &&
+          m_enhancement.front()->dts != AV_NOPTS_VALUE &&
+          m_enhancement.front()->dts < m_base.front()->dts)))
+      return AVERROR(EAGAIN); // No safe common anchor was proved by ResyncPreroll.
     auto rpu = m_rpu.find(m_base.front()->pts);
     if (rpu == m_rpu.end())
       return AVERROR(EAGAIN);
@@ -240,6 +208,22 @@ public:
 
   bool Pending() const { return !m_base.empty() || !m_enhancement.empty() || !m_rpu.empty(); }
   const char* LastError() const { return m_error; }
+  struct QueueState
+  {
+    int64_t basePts, baseDts, elPts, elDts;
+    size_t basePackets, elPackets, rpuPackets;
+    bool resync, baseIrap, elIrap;
+    int restartPeer;
+  };
+  QueueState GetState() const
+  {
+    const auto* base = m_base.empty() ? nullptr : m_base.front().get();
+    const auto* el = m_enhancement.empty() ? nullptr : m_enhancement.front().get();
+    return {base ? base->pts : AV_NOPTS_VALUE, base ? base->dts : AV_NOPTS_VALUE,
+            el ? el->pts : AV_NOPTS_VALUE, el ? el->dts : AV_NOPTS_VALUE,
+            m_base.size(), m_enhancement.size(), m_rpu.size(),
+            m_resync, base && IsIrap(*base, false), el && IsIrap(*el, true), m_restartPeer};
+  }
   int64_t BasePTS() const { return m_base.empty() ? AV_NOPTS_VALUE : m_base.front()->pts; }
   int64_t RpuPTS() const { return m_rpu.empty() ? AV_NOPTS_VALUE : m_rpu.begin()->first; }
   size_t TakePrerollCount() { const auto count=m_preroll; m_preroll=0; return count; }
@@ -257,6 +241,48 @@ private:
   {
     if (!m_resync)
       return;
+    if (!m_base.empty() && !m_enhancement.empty() &&
+        m_base.front()->pts != m_enhancement.front()->pts)
+    {
+      // A seek may leave an orphan prefix on both layers. Recover only at a
+      // common independent picture, never at an arbitrary timestamp match.
+      for (auto base = m_base.begin(); base != m_base.end(); ++base)
+      {
+        if (!IsIrap(**base, false)) continue;
+        auto el = std::find_if(m_enhancement.begin(), m_enhancement.end(), [&base](const Packet& packet) {
+          return packet->pts == (*base)->pts && IsIrap(*packet, true);
+        });
+        if (el == m_enhancement.end() ||
+            !std::all_of(m_base.begin(), base, [this, &base](const Packet& packet) {
+              return packet->dts != AV_NOPTS_VALUE && packet->dts < (*base)->dts &&
+                  packet->pts < (*base)->pts && !m_rpu.contains(packet->pts);
+            }) || !std::all_of(m_enhancement.begin(), el, [this, &base, &el](const Packet& packet) {
+              return packet->dts != AV_NOPTS_VALUE && packet->dts < (*el)->dts &&
+                  packet->pts < (*el)->pts && std::none_of(m_base.begin(), m_base.end(), [&packet](const Packet& kept) {
+                    return kept->pts == packet->pts;
+                  });
+            })) continue;
+        const size_t baseCount = std::distance(m_base.begin(), base);
+        const size_t elCount = std::distance(m_enhancement.begin(), el);
+        if (!elCount) continue; // Keep the existing full-window proof for BL-only preroll.
+        if (m_preroll > MAX_PACKETS || baseCount + elCount > MAX_PACKETS - m_preroll)
+          return;
+        for (size_t i = 0; i < baseCount; ++i)
+        {
+          m_bytes -= m_base.front()->size;
+          m_base.pop_front();
+        }
+        for (size_t i = 0; i < elCount; ++i)
+        {
+          const auto rpu = m_rpu.find(m_enhancement.front()->pts);
+          m_bytes -= m_enhancement.front()->size;
+          if (rpu != m_rpu.end()) { m_bytes -= rpu->second.size(); m_rpu.erase(rpu); }
+          m_enhancement.pop_front();
+        }
+        m_preroll += baseCount + elCount;
+        return;
+      }
+    }
     if (!m_enhancement.empty() && m_enhancement.front()->dts != AV_NOPTS_VALUE)
     {
       if (m_base.size() < MAX_PACKETS && m_enhancement.size() < MAX_PACKETS)

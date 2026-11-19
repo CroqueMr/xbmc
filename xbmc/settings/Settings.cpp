@@ -219,17 +219,34 @@ bool CSettings::Load(const TiXmlElement* root, bool& updated)
 
 #ifdef HAVE_DVBRIDGE
   std::unique_ptr<TiXmlElement> migrated;
+  bool hasHDR10PlusPreference = false;
+  for (const auto* setting = root->FirstChildElement("setting"); setting;
+       setting = setting->NextSiblingElement("setting"))
+    if (setting->Attribute("id") &&
+        std::string_view(setting->Attribute("id")) == "dvbridge.hdr10plussource")
+      hasHDR10PlusPreference = true;
   for (const auto* setting = root->FirstChildElement("setting"); setting;
        setting = setting->NextSiblingElement("setting"))
   {
     const char* id = setting->Attribute("id");
     const char* value = setting->GetText();
     if (!id || !value) continue;
-    const auto legacy = std::string_view(id) == "dvbridge.outputmode" &&
+    const bool legacyHDR10Plus = std::string_view(id) == "dvbridge.hdr10source" &&
+                               std::string_view(value) == "3";
+    const auto legacy = legacyHDR10Plus ? std::optional<int>{0} :
+            std::string_view(id) == "dvbridge.outputmode" &&
             (std::string_view(value) == "3" || std::string_view(value) == "6") ?
             std::optional<int>{5} : std::nullopt;
     if (!legacy) continue;
     if (!migrated) migrated.reset(root->Clone()->ToElement());
+    if (legacyHDR10Plus && !hasHDR10PlusPreference)
+    {
+      auto* preference = new TiXmlElement("setting");
+      preference->SetAttribute("id", "dvbridge.hdr10plussource");
+      preference->LinkEndChild(new TiXmlText("3"));
+      migrated->LinkEndChild(preference);
+      hasHDR10PlusPreference = true;
+    }
     for (auto* element = migrated->FirstChildElement("setting"); element;
          element = element->NextSiblingElement("setting"))
       if (element->Attribute("id") && std::string_view(element->Attribute("id")) == id)
@@ -239,6 +256,35 @@ bool CSettings::Load(const TiXmlElement* root, bool& updated)
         element->RemoveAttribute("default");
         break;
       }
+  }
+  // Copy an explicitly stored legacy calibration once. Do not rename/delete
+  // it: Adaptive and CM4 continue to own the original TV preferences.
+  bool hasExpertPeak=false;
+  bool hasExpertGamut=false;
+  const TiXmlElement* legacyPeak=nullptr;
+  const TiXmlElement* legacyGamut=nullptr;
+  for(const auto* setting=root->FirstChildElement("setting");setting;
+      setting=setting->NextSiblingElement("setting"))
+  {
+    const char* id=setting->Attribute("id");
+    if(!id)continue;
+    if(std::string_view(id)=="dvbridge.expertpeak")hasExpertPeak=true;
+    if(std::string_view(id)=="dvbridge.expertgamut")hasExpertGamut=true;
+    if(std::string_view(id)=="dvbridge.tvpeak")legacyPeak=setting;
+    if(std::string_view(id)=="dvbridge.tvgamut")legacyGamut=setting;
+  }
+  if(!hasExpertPeak && legacyPeak && legacyPeak->GetText() &&
+     (!legacyPeak->Attribute("default") || std::string_view(legacyPeak->Attribute("default"))!="true"))
+  {
+    if(!migrated)migrated.reset(root->Clone()->ToElement());
+    for(const auto& entry : {std::pair{legacyPeak,"dvbridge.expertpeak"},
+                            std::pair{legacyGamut,"dvbridge.expertgamut"}})
+    {
+      if(!entry.first || (entry.first==legacyGamut && hasExpertGamut))continue;
+      auto* copy=entry.first->Clone()->ToElement();
+      copy->SetAttribute("id",entry.second);copy->RemoveAttribute("default");
+      migrated->LinkEndChild(copy);
+    }
   }
   if (migrated) root = migrated.get();
 #endif
@@ -571,6 +617,7 @@ void CSettings::UninitializeConditions()
 void CSettings::InitializeISettingsHandlers()
 {
 #ifdef HAVE_DVBRIDGE
+  GetSettingsManager()->RegisterSettingsHandler(&CDVPlaybackModes::GetInstance());
 #endif
   // register ISettingsHandler implementations
   // The order of these matters! Handlers are processed in the order they were registered.
@@ -587,6 +634,7 @@ void CSettings::InitializeISettingsHandlers()
 void CSettings::UninitializeISettingsHandlers()
 {
 #ifdef HAVE_DVBRIDGE
+  GetSettingsManager()->UnregisterSettingsHandler(&CDVPlaybackModes::GetInstance());
 #endif
   // unregister ISettingsHandler implementations
   GetSettingsManager()->UnregisterSettingsHandler(&CMediaSettings::GetInstance());
@@ -623,7 +671,8 @@ void CSettings::InitializeISettingCallbacks()
 {
 #ifdef HAVE_DVBRIDGE
   GetSettingsManager()->RegisterCallback(&CDVPlaybackModes::GetInstance(),
-      {"dvbridge.configureprofile"});
+      {"dvbridge.configureprofile","dvbridge.expertblack","dvbridge.expertblackcustom",
+       "dvbridge.playback"});
 #endif
   // register any ISettingCallback implementations
   GetSettingsManager()->RegisterCallback(

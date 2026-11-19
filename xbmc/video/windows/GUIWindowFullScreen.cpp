@@ -382,7 +382,9 @@ void CGUIWindowFullScreen::Process(unsigned int currentTime, CDirtyRegionList &d
   // Single-plane: MarkDirtyRegion every frame so the render pass keeps
   // running and draws the next video frame. D2P video plane updates
   // independently.
-  if (!appPlayer->IsRenderingVideoLayer())
+  // CB1's persistent GUI FBO also leaves movie updates to RenderEx.
+  if (!appPlayer->IsRenderingVideoLayer() &&
+      !CServiceBroker::GetWinSystem()->CanReuseGuiComposite())
     MarkDirtyRegion();
 
   m_controlStats->Reset();
