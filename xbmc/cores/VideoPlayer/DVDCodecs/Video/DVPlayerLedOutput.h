@@ -76,7 +76,7 @@ inline std::optional<StreamSnapshot::Output> PlayerLedOutput(
   output.lldv = Trims{{plan.analysis[1], plan.analysis[2]}, groups,
                       plan.cmv40_status == CB1_CMV40_APPEND, plan.policy.lldv_edid_version,
                       connector.display.primaries,
-                      connector.display.reported};
+                      connector.display.reported, connector.activeForced};
   return output;
 }
 } // namespace DVBRIDGE

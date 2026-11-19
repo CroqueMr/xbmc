@@ -842,7 +842,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 
 #ifdef HAVE_DVBRIDGE
     AnnounceCB1Mode(false);
-    StageNativeHDR10Plus();
+    const int nativeHDR10PlusFallback = StageNativeHDR10Plus();
 #endif
 #ifdef CB1_HAS_HDR10_AI
     if (m_hdr10HandoffPending)
@@ -888,7 +888,10 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         const auto generation=cache.GetVideoProcessingGeneration();
         const auto now=std::chrono::steady_clock::now();
         const auto previous = cache.GetVideoProcessingInfo();
+        const int fallback = !drm->HDR10PlusActive() && GetEotf() == KODI::UTILS::Eotf::PQ
+                                 ? nativeHDR10PlusFallback : 0;
         if (generation!=previousGeneration || now>=next || previous.output.flags ||
+            previous.nativeHDR10PlusFallbackLabel != fallback ||
             (previous.outputType == VideoOutputType::HDR10Plus) != drm->HDR10PlusActive())
         {
           auto info=DVBRIDGE::NativeProcessingInfo(DVBRIDGE::StreamTelemetry::Read());
@@ -896,6 +899,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
           info.outputType = drm->HDR10PlusActive() ? VideoOutputType::HDR10Plus :
               GetEotf() == KODI::UTILS::Eotf::PQ ? VideoOutputType::HDR10 :
               GetEotf() == KODI::UTILS::Eotf::HLG ? VideoOutputType::HLG : VideoOutputType::SDR;
+          info.nativeHDR10PlusFallbackLabel = fallback;
           if (cache.SetVideoProcessingInfo(info.informationGeneration,info))
           {
             previousGeneration=generation;
@@ -1070,10 +1074,10 @@ bool CWinSystemGbmGLESContext::FinishPlayerLedFrame(
   return true;
 }
 
-void CWinSystemGbmGLESContext::StageNativeHDR10Plus()
+int CWinSystemGbmGLESContext::StageNativeHDR10Plus()
 {
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-  if (!drm) return;
+  if (!drm) return 0;
   std::optional<std::array<uint8_t, CB1_HDR10PLUS_VSIF_BYTES>> packet;
   const auto& source = m_videoSourceSideData;
   const uint64_t generation = CServiceBroker::GetDataCacheCore().GetVideoProcessingGeneration();
@@ -1082,17 +1086,27 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus()
   const auto* metadata = passthrough && source && source->Generation() == generation ?
       source->HDR10Plus() : nullptr;
   const char* reason = "no-source-metadata";
+  int fallback = 0;
   if (metadata)
   {
     const auto* display = GetDisplayInfo();
     if (GetEotf() != KODI::UTILS::Eotf::PQ)
       reason = "output-not-pq";
     else if (GetOutputBitDepth() < 10)
+    {
       reason = "output-buffer-below-10-bit";
+      fallback = 41334;
+    }
     else if (!drm->GetConnector() || !drm->GetConnector()->SupportsProperty("HDR10PLUS_METADATA"))
+    {
       reason = "driver-unsupported";
+      fallback = 41335;
+    }
     else if (!display || display->HDR10PlusVersion() < metadata->application_version)
+    {
       reason = "display-unsupported";
+      fallback = 41336;
+    }
     else
     {
       const bool overlay = CServiceBroker::GetGUI()->GetWindowManager().HasVisibleControls() ||
@@ -1101,6 +1115,7 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus()
       const auto status = cb1_hdr10plus_vsif(bytes.data(), metadata, overlay, true);
       reason = status == CB1_HDR10PLUS_OK ? "staged" :
           status == CB1_HDR10PLUS_INVALID ? "invalid-metadata" : "unrepresentable-metadata";
+      fallback = status == CB1_HDR10PLUS_OK ? 41337 : 41338;
       if (status == CB1_HDR10PLUS_OK) packet = bytes;
     }
   }
@@ -1142,6 +1157,7 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus()
       }
     }
   }
+  return fallback;
 }
 #endif
 

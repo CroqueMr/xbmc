@@ -422,11 +422,13 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
       const int id=CDVPlaybackInfo::ReasonLabel(static_cast<DVBRIDGE::OutputReason>(reason));
       return id ? localizer.Get(id) : std::string{};
     };
-    SetProperty("DV.Fallback", active && data.output.fallback ? reasonText(data.output.reason) : "");
+    SetProperty("DV.Fallback", active && data.output.fallback ? reasonText(data.output.reason) :
+        data.nativeHDR10PlusFallbackLabel ? localizer.Get(data.nativeHDR10PlusFallbackLabel) : "");
     SetProperty("DV.MinimumLinkBits", active && data.output.minimumLinkBits ?
         StringUtils::Format("{}-bit",data.output.minimumLinkBits) : "");
     SetProperty("DV.Transport", active ? CDVPlaybackInfo::Transport(data.output.format) : "");
-    SetProperty("DV.HdmiFormat", lldv ? "YCbCr 4:2:2" : "");
+    SetProperty("DV.HdmiFormat", lldv ?
+        (data.output.lldv->forcedTransport ? localizer.Get(41339) : "YCbCr 4:2:2") : "");
     SetProperty("DV.SignalIntent", lldv ? "LLDV" : active & CDVPlaybackInfo::HDMI ?
         (data.output.iptTransport ? "TV-Led / IPT-PQc2 tunnel" : "TV-Led / YCbCr tunnel") :
         active & CDVPlaybackInfo::HDR10PLUS ? "PQ / BT.2020 / HDR10+" :
@@ -446,7 +448,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
           data.transaction.effective!=data.output.effective ||
           data.transaction.reason!=data.output.reason) :
           (data.transaction.requested || data.transaction.reason!=VideoProcessingReason::None)));
-    SetProperty("DV.ProcessingVisible", bool(active) || transaction);
+    SetProperty("DV.ProcessingVisible", bool(active) || transaction || data.nativeHDR10PlusFallbackLabel);
     SetProperty("DV.RequestedPolicy", transaction ? PolicyText(CDVPlaybackInfo::RequestedPolicy(data.transaction.requested,
         data.transaction.hdr10AI)) :
         active ? PolicyText(CDVPlaybackInfo::RequestedPolicy(data.output.requested,data.output.hdr10AI)) : "");

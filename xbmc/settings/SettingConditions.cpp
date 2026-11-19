@@ -551,7 +551,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   // A preference can be deferred while paused; only the renderer admits a frame.
   const bool pendingHDR10Plus=nativeHDR10Plus && !caps.sourceKnown && !data.transaction.identity.Valid();
   const auto& processing=(hdr10Source || hlgSource) && !caps.sourceKnown ? caps.hdr10Processing : caps.processing;
-  constexpr int menuModes[]{1,5,
+  constexpr int menuModes[]{5,1,
       4,0,2,3,6,7,8};
 #ifdef CB1_HAS_HDR10_AI
   constexpr int hdr10MenuModes[]{1,4,0,7};

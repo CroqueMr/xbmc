@@ -25950,7 +25950,7 @@ msgid " - HDR10 conversion method"
 msgstr ""
 
 msgctxt "#40821"
-msgid "HDR10 Rendering uses source metadata. LLDV Reference – HDR10 Output maps to the configured display peak, black level and gamut. HDR10+ sends picture statistics and representable trims to a compatible display."
+msgid "HDR10 Rendering uses source metadata. LLDV Reference : HDR10 Output maps to the configured display peak, black level and gamut. HDR10+ sends picture statistics and representable trims to a compatible display."
 msgstr ""
 
 msgctxt "#40922"
@@ -25982,7 +25982,7 @@ msgid " - TV peak luminance (nits)"
 msgstr ""
 
 msgctxt "#40830"
-msgid "Enter a known TV peak, 1 to 10000 nits. This is a processing reference, not measured TV light. LLDV Reference – HDR10 Output has its own display calibration settings."
+msgid "Enter a known TV peak, 1 to 10000 nits. This is a processing reference, not measured TV light. LLDV Reference : HDR10 Output has its own display calibration settings."
 msgstr ""
 
 msgctxt "#40831"
@@ -26507,7 +26507,7 @@ msgid "LLDV output format"
 msgstr ""
 
 msgctxt "#41201"
-msgid "Choose the format preference for Dolby Vision LLDV Reference. Availability depends on the display, driver and current HDMI timing."
+msgid "Choose the format preference for Dolby Vision : LLDV Reference. Availability depends on the display, driver and current HDMI timing."
 msgstr ""
 
 msgctxt "#41202"
@@ -26764,6 +26764,34 @@ msgstr ""
 
 msgctxt "#41332"
 msgid "Not advertised by TV"
+msgstr ""
+
+msgctxt "#41333"
+msgid "LLDV disabled by AMD driver"
+msgstr ""
+
+msgctxt "#41334"
+msgid "HDR10+ needs 10-bit output"
+msgstr ""
+
+msgctxt "#41335"
+msgid "Driver lacks HDR10+"
+msgstr ""
+
+msgctxt "#41336"
+msgid "TV lacks HDR10+"
+msgstr ""
+
+msgctxt "#41337"
+msgid "HDR10+ packet not sent"
+msgstr ""
+
+msgctxt "#41338"
+msgid "HDR10+ metadata unsupported"
+msgstr ""
+
+msgctxt "#41339"
+msgid "4:2:2 · Forced, experimental"
 msgstr ""
 
 msgctxt "#41300"

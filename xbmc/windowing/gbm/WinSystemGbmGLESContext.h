@@ -221,7 +221,7 @@ private:
   bool FinishPlayerLedFrame(const CDVBridgeGLES::PlayerLedFrame& frame, double pts);
   std::optional<CDVBridgeGLES::PlayerLedFrame> m_playerLedPage;
   double m_playerLedPagePts{};
-  void StageNativeHDR10Plus();
+  int StageNativeHDR10Plus();
   std::string m_hdr10plusReason;
   uint64_t m_dvProfileLoggedRevision{},m_dvProfileLoggedStream{};
 #endif

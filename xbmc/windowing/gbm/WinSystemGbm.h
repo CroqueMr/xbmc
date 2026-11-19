@@ -268,6 +268,7 @@ private:
   mutable std::mutex m_lldvEdidMutex;
   std::vector<uint8_t> m_lldvEdid;
   DVBRIDGE::LldvDisplay m_lldvDisplay;
+  bool m_lldvAmdDriverDisabled{};
   uint32_t m_lldvEdidConnector{};
   uint64_t m_lldvEdidGeneration{};
   DVBRIDGE::LldvTransport m_lldvRejected;

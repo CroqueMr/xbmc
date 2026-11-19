@@ -87,6 +87,15 @@ struct OutputPreferences
     }
   }
 
+  HDR10SourceMode HDR10Mode(bool hdr10Plus) const
+  {
+    if (!hdr10Plus)
+      return hdr10Source;
+    // Passthrough uses Kodi's native renderer. HDMI signalling uses the saved selector.
+    return hdr10PlusSource == HDR10SourceMode::HDR10PlusPassthrough ?
+        HDR10SourceMode::Native : hdr10PlusSource;
+  }
+
   bool SameValues(const OutputPreferences& other) const
   {
     return output == other.output && hdr10Source == other.hdr10Source &&
@@ -167,14 +176,6 @@ struct OutputPreferences
     else if (result.mode == DVBRIDGE_MODE_ENHANCED_DV)
       result.tv = {peak, static_cast<dvbridge_panel>(panel), static_cast<dvbridge_gamut>(gamut)};
     return result;
-  }
-  HDR10SourceMode HDR10Mode(bool hdr10Plus) const
-  {
-    if (!hdr10Plus)
-      return hdr10Source;
-    // Passthrough uses Kodi's native renderer. HDMI signalling uses the saved selector.
-    return hdr10PlusSource == HDR10SourceMode::HDR10PlusPassthrough ?
-        HDR10SourceMode::Native : hdr10PlusSource;
   }
   dvbridge_policy HDR10Policy(bool hdr10Plus = false) const
   {
