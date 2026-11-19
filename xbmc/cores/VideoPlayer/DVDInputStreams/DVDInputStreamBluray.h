@@ -22,6 +22,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -300,6 +301,8 @@ protected:
     int h = 0;
   };
 
+  // BD-J can publish from its Java thread while the demuxer changes play item.
+  std::mutex m_overlayMutex;
   SPlane m_planes[2];
   void MatchGraphicsDynamicRange(SOverlays& overlays) const;
 
