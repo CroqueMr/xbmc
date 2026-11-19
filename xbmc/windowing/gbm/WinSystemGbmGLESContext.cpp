@@ -1967,6 +1967,33 @@ DVBRIDGE::OutputSelection CWinSystemGbmGLESContext::SelectedDVOutput(const Video
 #ifndef CB1_L1L3_BUNDLE_DIR
 #define CB1_L1L3_BUNDLE_DIR "/usr/share/cb1/l1l3"
 #endif
+bool CWinSystemGbmGLESContext::RetainNativeDVOutput(const VideoPicture& picture)
+{
+  if (!picture.doviSourceInfo.profile || !picture.doviSourceBinding.Valid() ||
+      !picture.stereoMode.empty() || !m_dvBridge || !m_previousSourceStream ||
+      !m_dvState.Captured() || m_dvSelection.route != DVBRIDGE::OutputRoute::NativeDV ||
+      !m_dvConfiguredOutput || m_dvOutputRetiring || m_dvStopPending || m_dvEndPending ||
+      m_dvActivating || m_dvRecoveryPending || m_dvRejectedSurface || m_dvRollbackFailed ||
+      m_dvOrdinaryFrame || m_dvShutdownFence || HasPendingDVOutputSurface())
+    return false;
+
+  const auto preferences = DVBRIDGE::FrameOutputSettings();
+  if (preferences.output != DVBRIDGE::OutputMode::MasterReference ||
+      m_dvSelection.policy.mode != DVBRIDGE_MODE_MASTER_REFERENCE ||
+      m_dvSelection.policy.revision != preferences.revision || !SupportsDVOutputMode())
+    return false;
+
+  const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  if (!drm || !drm->IsSelectedModeCommitted())
+    return false;
+
+  // Only retain the accepted scanout. The successor imports and admits its own BL/EL/RPU.
+  m_dvBridge->Reset();
+  m_cb1FramePending = m_dvFrame = m_dvNativeGui = false;
+  m_dvConfiguredOutput.reset();
+  return true;
+}
+
 bool CWinSystemGbmGLESContext::RetainHDR10DVOutput(const VideoPicture& picture)
 {
   // Source format and policy can change independently of the current scanout.

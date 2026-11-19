@@ -113,6 +113,7 @@ public:
   bool PrepareDVOutputFrame(const VideoPicture& picture);
 #ifdef CB1_HAS_HDR10_AI
   bool HDR10AILookaheadActive() const;
+  bool RetainNativeDVOutput(const VideoPicture& picture);
   bool RetainHDR10DVOutput(const VideoPicture& picture);
   bool OwnsHDR10DVOutput() const
   {

@@ -93,6 +93,8 @@ public:
 
 protected:
   bool m_frameRendered{false};
+  bool Configure(const VideoPicture& picture, float fps, unsigned int orientation,
+                 bool retainedNativeDV);
   bool ConfigureVideoOutput(const VideoPicture& picture);
 #ifdef CB1_HAS_HDR10_AI
   bool m_aiOutputPending{false};

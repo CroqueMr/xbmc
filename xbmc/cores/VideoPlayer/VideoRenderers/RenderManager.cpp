@@ -203,8 +203,9 @@ bool CRenderManager::Configure()
 
 #if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
   auto* vaapi = dynamic_cast<CRendererVAAPIGLES*>(m_pRenderer);
-  const bool retained = vaapi &&
-      vaapi->RetainHDR10DVOutput(*m_pConfigPicture, m_fps, m_orientation);
+  using DVHandoff = CRendererVAAPIGLES::DVHandoff;
+  const auto retained = vaapi ? vaapi->RetainDVOutput(*m_pConfigPicture, m_fps, m_orientation)
+                              : DVHandoff::None;
 #endif
   if (m_pRenderer)
     DeleteRenderer();
@@ -212,10 +213,19 @@ bool CRenderManager::Configure()
   CreateRenderer();
   if (m_pRenderer)
     m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
-  const bool result = m_pRenderer &&
-      m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
+  bool result;
 #if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
-  if (retained && !result)
+  if (retained == DVHandoff::Native)
+  {
+    auto* successor = dynamic_cast<CRendererVAAPIGLES*>(m_pRenderer);
+    result = successor && successor->Configure(*m_pConfigPicture, m_fps, m_orientation, true);
+  }
+  else
+#endif
+    result = m_pRenderer && m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
+
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+  if (retained != DVHandoff::None && !result)
     if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
             CServiceBroker::GetWinSystem()))
       window->StopDVBridgePlayback();

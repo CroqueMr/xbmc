@@ -90,6 +90,12 @@ CRendererVAAPIGLES::~CRendererVAAPIGLES()
 
 bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsigned int orientation)
 {
+  return Configure(picture, fps, orientation, false);
+}
+
+bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps,
+                                  unsigned int orientation, bool retainedNativeDV)
+{
   CVaapiRenderPicture *pic = dynamic_cast<CVaapiRenderPicture*>(picture.videoBuffer);
   if (pic->procPic.videoSurface != VA_INVALID_ID)
     m_isVAAPIBuffer = true;
@@ -135,7 +141,7 @@ bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsig
     }
   }
 
-  return CLinuxRendererGLES::Configure(picture, fps, orientation);
+  return CLinuxRendererGLES::Configure(picture, fps, orientation, retainedNativeDV);
 }
 
 #ifdef CB1_HAS_HDR10_AI
@@ -146,25 +152,28 @@ CRenderInfo CRendererVAAPIGLES::GetRenderInfo()
   return info;
 }
 
-bool CRendererVAAPIGLES::RetainHDR10DVOutput(const VideoPicture& picture, float fps,
-                                            unsigned int orientation)
+CRendererVAAPIGLES::DVHandoff CRendererVAAPIGLES::RetainDVOutput(
+    const VideoPicture& picture, float fps, unsigned int orientation)
 {
   const auto* next = dynamic_cast<const CVaapiRenderPicture*>(picture.videoBuffer);
-  if (!m_dvRequested || !m_aiLookahead || !next || !next->valid ||
+  if (!m_dvRequested || !m_isVAAPIBuffer || !next || !next->valid ||
       next->procPic.videoSurface == VA_INVALID_ID || next->procPic.fourcc != m_vaapiFourcc ||
-      next->renderBufferCount <= NUM_BUFFERS || picture.iWidth != m_sourceWidth ||
-      picture.iHeight != m_sourceHeight || !DVBridgeOrientationSupported(orientation) ||
+      picture.iWidth != m_sourceWidth || picture.iHeight != m_sourceHeight ||
+      picture.colorBits != m_srcColorBits || !DVBridgeOrientationSupported(orientation) ||
       (picture.iFlags & DVP_FLAG_INTERLACED) || std::abs(fps - m_fps) > 0.001f)
-    return false;
+    return DVHandoff::None;
 
   auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
       CServiceBroker::GetWinSystem());
-  if (!window || !window->RetainHDR10DVOutput(picture))
-    return false;
+  if (!window)
+    return DVHandoff::None;
 
-  // The successor owns output cleanup. The old renderer only frees its textures.
-  m_dvRequested = m_bConfigured = false;
-  return true;
+  const auto handoff = window->RetainNativeDVOutput(picture) ? DVHandoff::Native :
+      m_aiLookahead && next->renderBufferCount > NUM_BUFFERS && window->RetainHDR10DVOutput(picture)
+          ? DVHandoff::HDR10AI : DVHandoff::None;
+  if (handoff != DVHandoff::None)
+    m_dvRequested = m_bConfigured = false; // The successor owns output cleanup.
+  return handoff;
 }
 
 bool CRendererVAAPIGLES::HDR10AILookahead() const

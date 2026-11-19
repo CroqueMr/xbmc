@@ -182,7 +182,13 @@ bool CLinuxRendererGLES::ValidateRenderTarget()
   return false;
 }
 
-bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsigned int orientation)
+bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps, unsigned int orientation)
+{
+  return Configure(picture, fps, orientation, false);
+}
+
+bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps,
+                                   unsigned int orientation, bool retainedNativeDV)
 {
   auto colorimetry = KODI::UTILS::GetColorimetry(picture);
   bool inferred = (picture.color_space == AVCOL_SPC_UNSPECIFIED);
@@ -239,6 +245,16 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
         CServiceBroker::GetWinSystem());
     m_dvRequested = window && window->OwnsHDR10DVOutput();
     m_passthroughHDR = m_hdrFboActive = false;
+    return true;
+  }
+#endif
+#ifdef HAVE_DVBRIDGE
+  if (retainedNativeDV)
+  {
+    // The renderer owns cleanup now. Source admission happens after import.
+    m_dvRequested = m_hdrFboActive = true;
+    m_passthroughHDR = false;
+    CLog::Log(LOGDEBUG, "DVBridge: retained Master Reference HDMI output across renderer replacement");
     return true;
   }
 #endif
