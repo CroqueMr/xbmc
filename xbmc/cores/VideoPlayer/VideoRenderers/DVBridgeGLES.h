@@ -6,6 +6,7 @@
 #include "utils/DVBridgeDiagnosticState.h"
 #include "utils/Geometry.h"
 #include "cores/VideoSettings.h"
+#include <chrono>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -22,6 +23,7 @@ extern "C"
 #include "dvbridge_gl_frame.h"
 #include "dvbridge_gl_pack.h"
 #include "dvbridge_render.h"
+#include "utils/DVBridgeLldv.h"
 #include "dvbridge_dmabuf.h"
 #include "dvbridge_fel_vpp.h"
 #include "cb1_dv_hdr10plus.h"
@@ -31,6 +33,8 @@ extern "C"
 #endif
 
 class VideoSourceSideData;
+struct gbm_bo;
+struct gbm_device;
 namespace KODI::RENDERING::CAPTURE { struct ReadbackBuffer; }
 
 class CDVBridgeGLES
@@ -203,13 +207,14 @@ public:
       const DVBRIDGE::OutputPreferences& preferences, dvbridge_mode mode) const;
   std::shared_ptr<Context> GetContext() const { return m_context; }
 
-  CDVBridgeGLES() = default;
+  explicit CDVBridgeGLES(bool playerLed = false);
   ~CDVBridgeGLES();
   CDVBridgeGLES(const CDVBridgeGLES&) = delete;
   CDVBridgeGLES& operator=(const CDVBridgeGLES&) = delete;
 
   bool Initialize(bool allowSoftware = false, bool hdr10 = false,
                   std::shared_ptr<Context> context = {}, bool sdr = false);
+  bool PlayerLed() const { return m_playerLed; }
   bool SetHDR10Session(const dvbridge_hdr10_session& session, uint64_t stream = 0,
                       bool limited = false);
   bool RebindOutputSurface(bool hdr10, bool sdr = false);
@@ -230,10 +235,46 @@ public:
     return true;
   }
   bool Pack(unsigned int framebuffer, int width, int height, bool flipY);
+  bool PackPlayerLed(DVBRIDGE::LldvTransport transport);
+  struct PlayerLedFrame
+  {
+    Submission submission;
+    DVBRIDGE::SourceInfo source;
+    DVBRIDGE::SourceBinding decoded;
+    CDVMetadataBuffer metadata;
+    DVBRIDGE::LldvTransport transport;
+    dvbridge_creative_plan plan;
+    uint64_t overlayRevision{};
+    bool fel{}, l2Disabled{}, withoutGui{};
+  };
+  std::optional<PlayerLedFrame> SubmitPlayerLed(bool accepted, const Submission& submission);
+  struct PlayerLedCpuOutput
+  {
+    PlayerLedFrame frame;
+    double pts{};
+    double renderPts{};
+    gbm_bo* buffer{};
+    std::shared_ptr<void> lease;
+    int acquire{-1}; // Transferred to the caller.
+  };
+  void EnablePlayerLedCpu(gbm_device* device) { m_playerLedCpuDevice = device; }
+  bool PlayerLedCpuPrepared() const;
+  bool PlayerLedCpuReserve() const;
+  bool PlayerLedCpuPending() const;
+  bool PlayerLedCpuCurrent(uint64_t generation) const;
+  bool QueuePlayerLedCpu(DVBRIDGE::LldvTransport transport, double pts, double renderPts, int acquire,
+                         std::shared_ptr<const VideoSourceSideData> source,
+                         std::chrono::milliseconds primeWindow);
+  bool PlayerLedCpuHealthy();
+  std::optional<PlayerLedCpuOutput> TakePlayerLedCpu();
+  bool ConfirmPlayerLed(const PlayerLedFrame& frame, const DVBRIDGE::LldvConnectorStatus& connector);
   bool ResolveHDR10(bool limited);
   bool Presented(bool success);
 
 private:
+  bool PreparePlayerLed(const pl_frame& source, const CDVMetadataBuffer& metadata,
+                        dvbridge_geometry geometry, const dvbridge_policy& policy,
+                        double pts, double elPts);
   FrameStatus BeginHDR10Plus();
   FrameStatus PollHDR10Plus();
   void ObserveHDR10PlusSubmission(const Submission& submission) const;
@@ -300,7 +341,7 @@ private:
   bool Failure(const char* stage);
   void PreparedAudit(std::string_view sdr = {});
   void Summary(const char* event);
-  void CountPresentation(bool committed);
+  void CountPresentation(bool committed, uint64_t receiptStream = 0, uint64_t sourcePicture = 0);
   using ResetDiagnosticSnapshot = std::tuple<
       uint64_t,uint64_t,uint64_t,uint64_t,int,bool,
       uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t>;
@@ -315,6 +356,7 @@ private:
   int m_auditSerial{},m_auditRequestedSerial{},m_auditPreparedSerial{},m_auditCommittedSerial{};
   uint64_t m_prepares{0}, m_directFrames{0}, m_presentations{0}, m_failedPresentations{0};
   uint64_t m_lastSummary{0}, m_lastReported{0};
+  uint64_t m_lastPresentedSourcePicture{}, m_nonadvancingSource{}, m_sourceGaps{};
   bool m_firstFrame{true};
   bool m_hdr10{false};
   bool m_hdr10Limited{false};
@@ -329,6 +371,16 @@ private:
   dvbridge_renderer* m_renderer = nullptr;
   dvbridge_gl_packer* m_packer = nullptr;
   pl_tex m_scanout = nullptr;
+  bool m_playerLed{};
+  struct PlayerLedCpu;
+  std::unique_ptr<PlayerLedCpu> m_playerLedCpu;
+  gbm_device* m_playerLedCpuDevice{};
+  bool m_playerLedCpuUnavailable{};
+  pl_tex m_playerLedSource{}, m_playerLedFitted{}, m_playerLedPicture{}, m_playerLedCarrier{};
+  GLuint m_playerLedTexture{};
+  dvbridge_policy m_playerLedPolicy{};
+  dvbridge_creative_plan m_playerLedPlan{};
+  DVBRIDGE::LldvTransport m_playerLedTransport{};
   unsigned m_scanoutFramebuffer{};
   bool m_direct = false;
   bool m_directUsable = true;

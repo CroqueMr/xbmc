@@ -527,6 +527,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   caps.nativeDV=available.nativeDV;
   caps.hdr10=available.hdr10;
   caps.hdr10plus=available.hdr10plus;
+  if (!menu || !caps.sourceKnown) caps.playerLed=available.playerLed;
   if (caps.isDV && preferences.output==DVBRIDGE::OutputMode::Disabled)
   {
     caps.processingKnown=available.processingKnown;
@@ -541,7 +542,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   const bool pendingHDR10Plus=nativeHDR10Plus && !caps.sourceKnown && !data.transaction.identity.Valid();
   const auto& processing=(hdr10Source || hlgSource) && !caps.sourceKnown ? caps.hdr10Processing : caps.processing;
   constexpr int menuModes[]{1,5,
-      4,0,2,3,6,7};
+      4,0,2,3,6,7,8};
 #ifdef CB1_HAS_HDR10_AI
   constexpr int hdr10MenuModes[]{1,4,0,7};
   constexpr int hdr10PlusMenuModes[]{1,0,7};
@@ -556,7 +557,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
         hdr10Source ? (option.value==1 || option.value==3 ? 1 : option.value==2 ? 4 : option.value==4 ? 7 : 0) :
         (menu || playback) ? (option.value>=0 && option.value<int(std::size(menuModes)) ? menuModes[option.value] : 0) :
         method ? (option.value==0 ? 2 : option.value==1 ? 3 : option.value==2 ? 6 : 0) :
-        (option.value==0 ? 1 : option.value==1 ? 2 : option.value==3 || option.value==5 ? 4 : option.value==4 ? 5 : option.value==6 ? 7 : 0);
+        (option.value==0 ? 1 : option.value==1 ? 2 : option.value==3 || option.value==5 ? 4 : option.value==4 ? 5 : option.value==6 ? 7 : option.value==7 ? 8 : 0);
     auto reason=DVBRIDGE::OutputReason::None;
     const bool guided = hdr10PlusSource && (hdr10PlusMenu ? option.value==0 : option.value==3);
     if (mode)
@@ -566,7 +567,8 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
         reason=DVBRIDGE::OutputReason::SourceIneligible;
       else if (hdr10Source && (nativeHDR10Plus || caps.hdr10PlusSource) && !guided && mode!=7)
         reason=DVBRIDGE::OutputReason::SourceIneligible;
-      else if (mode!=7 && !(dv ? caps.nativeDV : caps.hdr10))
+      else if (mode==8 && !caps.playerLed) reason=DVBRIDGE::OutputReason::NoPlayerLedTransport;
+      else if (mode!=7 && mode!=8 && !(dv ? caps.nativeDV : caps.hdr10))
         reason=dv ? DVBRIDGE::OutputReason::NoDVTransport : DVBRIDGE::OutputReason::NoHDR10Transport;
       else if (mode==6 && !caps.hdr10plus) reason=DVBRIDGE::OutputReason::NoHDR10PlusTransport;
       else if (!caps.processingKnown) reason=DVBRIDGE::OutputReason::ProcessingPending;
@@ -575,15 +577,16 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
       else if (!processing[mode].usable)
         reason=processing[mode].reason==DVBRIDGE::OutputReason::None ?
             DVBRIDGE::OutputReason::NoGPUProcessing : processing[mode].reason;
-      else if ((mode==3 || mode==4 || mode==7) && !preferences.ProfileValid(static_cast<dvbridge_mode>(mode)))
+      else if ((mode==3 || mode==4 || mode==7 || mode==8) && !preferences.ProfileValid(static_cast<dvbridge_mode>(mode)))
         reason=mode==7 ? DVBRIDGE::OutputReason::SDRTargetInvalid : DVBRIDGE::OutputReason::TVProfileRequired;
     }
     int reasonId=CDVPlaybackInfo::ReasonLabel(reason);
     if (reason==DVBRIDGE::OutputReason::TVProfileRequired)
     {
-      const double peak=mode==3?preferences.expertPeak:preferences.peak;
-      const int gamut=mode==3?preferences.expertGamut:preferences.gamut;
-      reasonId=!std::isfinite(peak) || peak<(mode==3?50:0.000001) || peak>10000 ? 40911 :
+      const bool expert=mode==3 || mode==8;
+      const double peak=expert?preferences.expertPeak:preferences.peak;
+      const int gamut=expert?preferences.expertGamut:preferences.gamut;
+      reasonId=!std::isfinite(peak) || peak<(expert?50:0.000001) || peak>10000 ? 40911 :
           gamut<1 || gamut>3 ? 40912 : 40845;
     }
     const bool profile=reason==DVBRIDGE::OutputReason::TVProfileRequired || reason==DVBRIDGE::OutputReason::SDRTargetInvalid;

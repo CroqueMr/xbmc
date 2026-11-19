@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "DVBridgeGLES.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/DVPlayerLedOutput.h"
 #include "VideoShaders/VideoFilterShaderGLES.h"
 #include "utils/DVBridgeDiagnosticLog.h"
 #include "DVBridgeShaders.h"
@@ -21,11 +22,13 @@ extern "C"
 #include "dvbridge_placebo.h"
 #include "dvbridge_cache.h"
 #include "cb1_hdr10plus_dovi.h"
+#include "cb1_lldv_cpu.h"
 }
 
 #include <EGL/egl.h>
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <GLES3/gl3.h>
@@ -35,6 +38,15 @@ extern "C"
 #include <thread>
 #include <vector>
 #include <fmt/ranges.h>
+#include <cerrno>
+#include <gbm.h>
+#include <linux/dma-buf.h>
+#include <linux/sync_file.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#include <utility>
 
 #if !defined(DVBRIDGE_L2_TRIMS_API) || DVBRIDGE_L2_TRIMS_API < 1
 #error "Matching CB1 L2 output-trim API required"
@@ -1038,6 +1050,7 @@ void CDVBridgeGLES::BeginDiagnosticStream(uint64_t stream)
   m_diagnosticStream = stream;
   m_failures.Reset();
   m_prepares = m_directFrames = m_presentations = m_failedPresentations = 0;
+  m_lastPresentedSourcePicture = m_nonadvancingSource = m_sourceGaps = 0;
   m_lastSummary = m_lastReported = m_rawELImports = m_rawELHits = 0;
   m_hdr10plusDiagnostics = {};
   m_hdr10plusAnalyzed = m_hdr10plusGenerated = m_hdr10plusAccepted = {};
@@ -1103,8 +1116,9 @@ void CDVBridgeGLES::Summary(const char* event)
   if (m_advanced)
   {
     if (std::string_view(event) == "summary" && m_lastReported == m_presentations) return;
-    const bool emitted = DVBRIDGE::DiagnosticRendererCounterLog(LOGINFO,"DVBridge advanced renderer {}: presented={} presentation_failures={} stage_failures={} counter_stream={}",
-        event,m_presentations,m_failedPresentations,m_failures.Count(),m_diagnosticStream);
+    const bool emitted = DVBRIDGE::DiagnosticRendererCounterLog(LOGINFO,"DVBridge advanced renderer {}: presented={} presentation_failures={} stage_failures={} counter_stream={} source_picture={} nonadvancing_source={} source_gaps={}",
+        event,m_presentations,m_failedPresentations,m_failures.Count(),m_diagnosticStream,
+        m_lastPresentedSourcePicture,m_nonadvancingSource,m_sourceGaps);
     if (reset && emitted) m_lastResetReported = resetSnapshot;
     m_lastReported = m_presentations;
     return;
@@ -1213,8 +1227,255 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::TakeFELPrefetch(const std::shared_ptr<
   return FrameStatus::Ready;
 }
 
+struct CDVBridgeGLES::PlayerLedCpu
+{
+  static constexpr unsigned WIDTH = 3840, HEIGHT = 2160;
+  struct Carrier
+  {
+    ~Carrier()
+    {
+      if (data) munmap(data, size);
+      if (fd >= 0) close(fd);
+      if (buffer) gbm_bo_destroy(buffer);
+    }
+
+    static std::shared_ptr<Carrier> Create(gbm_device* device)
+    {
+      auto carrier = std::make_shared<Carrier>();
+      carrier->buffer = gbm_bo_create(device, WIDTH, HEIGHT, GBM_FORMAT_XRGB8888,
+          GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR);
+      if (!carrier->buffer || gbm_bo_get_plane_count(carrier->buffer) != 1 ||
+          gbm_bo_get_modifier(carrier->buffer) != 0 || gbm_bo_get_offset(carrier->buffer, 0))
+        return {};
+      carrier->stride = gbm_bo_get_stride(carrier->buffer);
+      if (carrier->stride < WIDTH * 4 || carrier->stride % 32) return {};
+      carrier->size = size_t(carrier->stride) * HEIGHT;
+      carrier->fd = gbm_bo_get_fd(carrier->buffer);
+      if (carrier->fd < 0) return {};
+      void* mapped = mmap(nullptr, carrier->size, PROT_WRITE, MAP_SHARED, carrier->fd, 0);
+      if (mapped == MAP_FAILED) return {};
+      carrier->data = static_cast<uint32_t*>(mapped);
+      return carrier;
+    }
+
+    bool Sync(uint64_t flags) const
+    {
+      dma_buf_sync sync{flags | DMA_BUF_SYNC_WRITE};
+      int result;
+      do
+        result = ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+      while (result < 0 && (errno == EINTR || errno == EAGAIN));
+      return result == 0;
+    }
+
+    gbm_bo* buffer{};
+    uint32_t* data{};
+    int fd{-1};
+    size_t size{};
+    unsigned stride{};
+  };
+  struct Slot
+  {
+    pl_buf host{};
+    std::optional<PlayerLedFrame> frame;
+    std::shared_ptr<Carrier> carrier;
+    dvbridge_policy policy{};
+    double pts{};
+    double renderPts{};
+    unsigned activeRows[2]{};
+    int acquire{-1};
+    bool packed{};
+  };
+
+  PlayerLedCpu(pl_gpu gpu, gbm_device* device) : gpu(gpu), device(device)
+  {
+    const auto format = pl_find_fmt(gpu, PL_FMT_UNORM, 4, 8, 8, PL_FMT_CAP_RENDERABLE);
+    if (!format || gpu->limits.max_ssbo_size < size_t(WIDTH) * HEIGHT * 16 ||
+        gpu->limits.max_mapped_size < size_t(WIDTH) * HEIGHT * 16)
+      return;
+    pl_tex_params params{};
+    params.w = WIDTH;
+    params.h = HEIGHT;
+    params.format = format;
+    params.renderable = true;
+    scratch = pl_tex_create(gpu, &params);
+    if (scratch) carriers[0] = Carrier::Create(device);
+    if (carriers[0]) worker = cb1_lldv_cpu_create(4);
+    if (worker)
+    {
+      try
+      {
+        packer = std::jthread([this](std::stop_token stop) { Pack(stop); });
+      }
+      catch (const std::system_error&)
+      {
+        cb1_lldv_cpu_destroy(worker);
+        worker = nullptr;
+      }
+    }
+  }
+
+  ~PlayerLedCpu()
+  {
+    if (packer.joinable())
+    {
+      packer.request_stop();
+      packer.join();
+    }
+    cb1_lldv_cpu_destroy(worker);
+    for (auto& slot : slots)
+    {
+      if (slot.acquire >= 0) close(slot.acquire);
+      pl_buf_destroy(gpu, &slot.host);
+    }
+    pl_tex_destroy(gpu, &scratch);
+  }
+
+  std::optional<unsigned> Reserve()
+  {
+    if (prepared) return {};
+    for (unsigned index = 0; index < slots.size(); ++index)
+    {
+      auto& slot = slots[index];
+      if (slot.frame) continue;
+      if (!slot.host)
+      {
+        pl_buf_params params{};
+        params.size = size_t(WIDTH) * HEIGHT * 16;
+        params.host_mapped = params.storable = true;
+        params.memory_type = PL_BUF_MEM_HOST;
+        slot.host = pl_buf_create(gpu, &params);
+      }
+      if (!slot.host || !slot.host->data) return {};
+      return index;
+    }
+    return {};
+  }
+
+  std::shared_ptr<Carrier> LeaseCarrier()
+  {
+    for (auto& carrier : carriers)
+    {
+      if (!carrier) carrier = Carrier::Create(device);
+      if (carrier && carrier.use_count() == 1) return carrier;
+    }
+    return {};
+  }
+
+  bool Backpressured() const
+  {
+    return queue.size() == slots.size() ||
+        std::none_of(carriers.begin(), carriers.end(),
+                     [](const auto& carrier) { return !carrier || carrier.use_count() == 1; });
+  }
+
+  void Pack(std::stop_token stop)
+  {
+    std::unique_lock lock(mutex);
+    while (changed.wait(lock, stop, [&] {
+      return std::any_of(queue.begin(), queue.end(), [&](unsigned index) {
+        return slots[index].carrier && !slots[index].packed;
+      });
+    }))
+    {
+      if (stop.stop_requested()) break;
+      const auto next = std::find_if(queue.begin(), queue.end(), [&](unsigned index) {
+        return slots[index].carrier && !slots[index].packed;
+      });
+      auto& slot = slots[*next];
+      lock.unlock();
+      const auto gpuReady = std::chrono::steady_clock::now();
+      const bool ready = WaitForSource(slot.acquire, stop);
+      const auto begin = std::chrono::steady_clock::now();
+      const bool packed = ready && !stop.stop_requested() && Write(slot);
+      const auto end = std::chrono::steady_clock::now();
+      lock.lock();
+      if (!packed)
+      {
+        failed = !stop.stop_requested();
+        lock.unlock();
+        changed.notify_all();
+        return;
+      }
+      slot.packed = true;
+      if (primeWindow.count() && !primeUntil)
+        primeUntil = end + primeWindow;
+      lock.unlock();
+      changed.notify_all();
+      waitMs += std::chrono::duration<double,std::milli>(begin - gpuReady).count();
+      packMs += std::chrono::duration<double,std::milli>(end - begin).count();
+      if (++samples == 120)
+      {
+        if (std::getenv("CB1_PRESENTATION_AUDIT"))
+          CLog::Log(LOGINFO, "CB1 LLDV packing: gpu_wait_ms={:.3f} cpu_ms={:.3f}", waitMs / samples, packMs / samples);
+        samples = 0;
+        waitMs = packMs = 0;
+      }
+      lock.lock();
+    }
+  }
+
+  static bool WaitForSource(int fd, std::stop_token stop)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline)
+    {
+      pollfd fence{fd, POLLIN, 0};
+      const int ready = poll(&fence, 1, 5);
+      if (!ready || (ready < 0 && errno == EINTR)) continue;
+      sync_file_info info{};
+      return ready > 0 && (fence.revents & POLLIN) &&
+             ioctl(fd, SYNC_IOC_FILE_INFO, &info) == 0 && info.status > 0;
+    }
+    return false;
+  }
+
+  bool Write(const Slot& slot)
+  {
+    if (!slot.carrier->Sync(DMA_BUF_SYNC_START)) return false;
+    const auto gamut = slot.policy.tv.gamut;
+    const bool identity = gamut == DVBRIDGE_GAMUT_BT2020;
+    const auto primaries = gamut == DVBRIDGE_GAMUT_BT709 ? PL_COLOR_PRIM_BT_709 : PL_COLOR_PRIM_DISPLAY_P3;
+    const auto matrix = identity ? pl_matrix3x3_identity : pl_get_color_mapping_matrix(
+        pl_raw_primaries_get(primaries), pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020),
+        PL_INTENT_RELATIVE_COLORIMETRIC);
+    const cb1_lldv_cpu_frame input{reinterpret_cast<const float*>(slot.host->data),
+        slot.carrier->data, slot.carrier->stride, identity ? nullptr : &matrix.m[0][0],
+        slot.policy.tv.peak_nits,
+        slot.frame->transport.format == DVBRIDGE::LldvFormat::Y422_10 ? 10u : 12u, true, true,
+        slot.activeRows[0], slot.activeRows[1]};
+    const bool packed = cb1_lldv_cpu_submit(worker, &input) && cb1_lldv_cpu_ready(worker, true);
+    return slot.carrier->Sync(DMA_BUF_SYNC_END) && packed;
+  }
+
+  pl_gpu gpu{};
+  gbm_device* device{};
+  cb1_lldv_cpu* worker{};
+  pl_tex scratch{};
+  std::array<Slot, 3> slots;
+  // Host storage is reusable after packing. A carrier remains leased by KMS.
+  std::array<std::shared_ptr<Carrier>, 4> carriers;
+  std::deque<unsigned> queue;
+  std::optional<unsigned> prepared;
+  std::chrono::milliseconds primeWindow{};
+  std::optional<std::chrono::steady_clock::time_point> primeUntil;
+  std::mutex mutex;
+  std::condition_variable_any changed;
+  std::jthread packer;
+  double waitMs{}, packMs{};
+  unsigned samples{};
+  bool announced{}, failed{};
+  DVBRIDGE::SourceBinding source;
+  uint64_t generation{}, revision{};
+};
+
+CDVBridgeGLES::CDVBridgeGLES(bool playerLed) : m_playerLed(playerLed)
+{
+}
+
 CDVBridgeGLES::~CDVBridgeGLES()
 {
+  m_playerLedCpu.reset();
   cb1_hdr10plus_analysis_destroy(&m_hdr10plusAnalysis);
   ClearFELPrefetch();
   Summary("closed");
@@ -1228,6 +1489,10 @@ CDVBridgeGLES::~CDVBridgeGLES()
     pl_tex_destroy(m_gl->gpu, &m_nativeOverlay.degamma);
     pl_tex_destroy(m_gl->gpu, &m_nativeOverlay.pq);
     pl_tex_destroy(m_gl->gpu, &m_scanout);
+    pl_tex_destroy(m_gl->gpu, &m_playerLedSource);
+    pl_tex_destroy(m_gl->gpu, &m_playerLedFitted);
+    pl_tex_destroy(m_gl->gpu, &m_playerLedCarrier);
+    glDeleteTextures(1, &m_playerLedTexture);
   }
 }
 
@@ -1311,6 +1576,7 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<C
 bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr)
 {
   if (!m_gl || m_pending || m_prepared) return false;
+  m_playerLedCpu.reset();
   pl_opengl_wrap_params output{};
   const auto display = eglGetCurrentDisplay();
   const auto surface = eglGetCurrentSurface(EGL_DRAW);
@@ -1562,7 +1828,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   { Failure("source-association"); m_asyncEligible = false; return FrameStatus::Failed; }
   if (!m_renderer || !m_context || m_context->Quarantined())
   { Failure("renderer-unavailable"); m_asyncEligible = false; return FrameStatus::Failed; }
-  const bool asyncSetting = m_context->AsyncPreparation(base.binding.stream);
+  const bool asyncSetting = m_playerLed || m_context->AsyncPreparation(base.binding.stream);
   auto policy = selected ? *selected : preferences.Policy();
   if (policy.mode == DVBRIDGE_MODE_HDR10PLUS && !m_hdr10plusSubmits)
     DVBRIDGE::DiagnosticReserveProgress();
@@ -1648,7 +1914,20 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     m_dvPolicyActive = false;
     m_context->SourceReadComplete();
   }
-  const auto retired = m_context->Poll(eligible);
+  if (m_playerLedCpu &&
+      (!m_playerLedCpuDevice || m_playerLedCpu->source.stream != base.binding.stream ||
+       m_playerLedCpu->source.revision != base.binding.revision ||
+       m_playerLedCpu->revision != revision))
+    m_playerLedCpu.reset();
+  if (m_playerLedCpu)
+  {
+    // Kodi may redraw the same source before its queued carrier reaches KMS.
+    if (allowPacked && m_playerLedCpu->source == base.binding &&
+        m_playerLedCpu->generation == base.sourceInfo.informationGeneration)
+      return FrameStatus::Reused;
+    if (m_playerLedCpu->Backpressured()) return FrameStatus::Busy;
+  }
+  const auto retired = m_context->Poll(eligible || (m_playerLedCpuDevice && m_playerLedCpu));
   if (retired != DVBRIDGE_DV_IDLE)
     return retired == DVBRIDGE_DV_FAILED ? FrameStatus::Failed : FrameStatus::Busy;
   if (m_hasCommitted && allowPacked && m_committedPacked &&
@@ -1664,7 +1943,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_pendingOverlayVisible = m_overlayVisible;
   m_requested = preferences;
   m_spatialMethod = base.scalingMethod;
-  m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
+  m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE ||
+      policy.mode == DVBRIDGE_MODE_PLAYER_LED);
   policy.revision = revision;
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
   dvbridge_renderer_set_fel_filter(m_renderer, preferences.felUpscaling == 2 ? DVBRIDGE_FEL_REFERENCE : preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416) ? DVBRIDGE_FEL_BILINEAR : DVBRIDGE_FEL_DEFAULT);
@@ -1714,7 +1994,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
         CDVPlaybackInfo::RequestedPolicy(admission.requested),CDVPlaybackInfo::RequestedPolicy(admission.effective),
         CDVPlaybackInfo::Reason(admission.reason));
   }
-  m_advanced = policy.mode == DVBRIDGE_MODE_SDR || policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV;
+  m_advanced = policy.mode == DVBRIDGE_MODE_SDR || policy.mode == DVBRIDGE_MODE_HDR10_EXPERT ||
+      policy.mode == DVBRIDGE_MODE_ENHANCED_DV || policy.mode == DVBRIDGE_MODE_PLAYER_LED;
   m_context->Retain(base.lease, enhancement ? enhancement->lease : nullptr);
   if (!m_advanced)
   {
@@ -1750,7 +2031,14 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   FrameStatus result = FrameStatus::Failed;
   std::string sdrAudit;
   m_prepared = m_packed = m_direct = false;
-  if (policy.mode == DVBRIDGE_MODE_ENHANCED_DV)
+  if (policy.mode == DVBRIDGE_MODE_PLAYER_LED)
+  {
+    m_prepared = PreparePlayerLed(bl.frame, metadata, geometry, policy, base.pts, elPts);
+    const bool fenced = m_context->FenceLastUse();
+    m_pending = m_prepared && fenced;
+    result = m_pending ? FrameStatus::Ready : FrameStatus::Failed;
+  }
+  else if (policy.mode == DVBRIDGE_MODE_ENHANCED_DV)
   {
     auto status = DVBRIDGE_DV_UNSUPPORTED;
     if (allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
@@ -1863,6 +2151,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
 
 void CDVBridgeGLES::Cancel()
 {
+  m_playerLedCpu.reset();
   cb1_hdr10plus_analysis_reset(m_hdr10plusAnalysis);
   m_hdr10plusMetadata.reset();
   ClearFELPrefetch();
@@ -2175,7 +2464,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
   };
   std::shared_ptr<Import> imported;
   const auto mode = (selected ? *selected : preferences.Policy()).mode;
-  const bool master = mode == DVBRIDGE_MODE_MASTER_REFERENCE;
+  const bool master = mode == DVBRIDGE_MODE_MASTER_REFERENCE || mode == DVBRIDGE_MODE_PLAYER_LED;
   const bool prefetchEnabled = allowAsync && allowPacked && m_context &&
       m_context->AsyncPreparation(base.binding.stream) &&
       mode == DVBRIDGE_MODE_ENHANCED_DV &&
@@ -2367,6 +2656,284 @@ bool CDVBridgeGLES::Pack(unsigned int framebuffer, int width, int height, bool f
   return m_packed || Failure("composition-pack");
 }
 
+bool CDVBridgeGLES::PreparePlayerLed(const pl_frame& source, const CDVMetadataBuffer& metadata,
+                                     dvbridge_geometry geometry, const dvbridge_policy& policy,
+                                     double pts, double elPts)
+{
+  const auto gpu = m_gl->gpu;
+  m_playerLedPolicy = policy;
+  m_playerLedPicture = nullptr;
+  float crop[4], dest[4];
+  constexpr int width = PlayerLedCpu::WIDTH, height = PlayerLedCpu::HEIGHT;
+  if (m_playerLedCpuDevice && !m_playerLedCpuUnavailable && source.enhancement_layer &&
+      geometry.source_width == width && geometry.source_height == height &&
+      geometry.target_width == width && geometry.target_height == height &&
+      dvbridge_geometry_source(geometry, crop) && dvbridge_geometry_destination(geometry, dest) &&
+      !crop[0] && !crop[1] && crop[2] == width && crop[3] == height &&
+      !dest[0] && !dest[1] && dest[2] == width && dest[3] == height)
+  {
+    if (!m_playerLedCpu)
+    {
+      m_playerLedCpu = std::make_unique<PlayerLedCpu>(gpu, m_playerLedCpuDevice);
+      if (!m_playerLedCpu->worker)
+      {
+        m_playerLedCpu.reset();
+        m_playerLedCpuUnavailable = true;
+      }
+      else
+      {
+        m_playerLedCpu->source = {metadata.Binding().stream, 0, metadata.Binding().revision};
+        m_playerLedCpu->revision = m_pendingIdentity.revision;
+      }
+    }
+    if (m_playerLedCpu)
+    {
+      auto& cpu = *m_playerLedCpu;
+      if (const auto slot = cpu.Reserve())
+      {
+        if (dvbridge_render_player_led_host(m_renderer, &policy, &source, metadata.Data(),
+              metadata.Size(), pts, elPts, cpu.scratch, cpu.slots[*slot].host,
+              &m_playerLedPlan, cpu.slots[*slot].activeRows) == CB1_MASTER_READY)
+        {
+          cpu.prepared = slot;
+          return true;
+        }
+        m_playerLedCpu.reset();
+        m_playerLedCpuUnavailable = true;
+        dvbridge_renderer_reset(m_renderer);
+      }
+    }
+  }
+  const auto format = pl_find_fmt(gpu, PL_FMT_FLOAT, 4, 32, 32,
+                                  static_cast<pl_fmt_caps>(PL_FMT_CAP_SAMPLEABLE | PL_FMT_CAP_RENDERABLE));
+  pl_tex_params params{};
+  params.w = geometry.source_width;
+  params.h = geometry.source_height;
+  params.format = format;
+  params.sampleable = params.renderable = true;
+  if (m_playerLed && format && pl_tex_recreate(gpu, &m_playerLedSource, &params) &&
+      dvbridge_render_player_led(m_renderer, &policy, &source, metadata.Data(), metadata.Size(),
+          pts, elPts, m_playerLedSource, &m_playerLedPlan) == CB1_MASTER_READY)
+    m_playerLedPicture = dvbridge_fit_player_led(m_renderer, m_playerLedSource,
+                                                 &m_playerLedFitted, geometry);
+  return m_playerLedPicture != nullptr;
+}
+
+bool CDVBridgeGLES::PlayerLedCpuPrepared() const
+{
+  return m_playerLedCpu && m_playerLedCpu->prepared.has_value();
+}
+
+bool CDVBridgeGLES::PlayerLedCpuReserve() const
+{
+  return m_playerLedCpu && m_playerLedCpu->primeWindow.count() > 0;
+}
+
+bool CDVBridgeGLES::PlayerLedCpuPending() const
+{
+  return m_playerLedCpu && !m_playerLedCpu->queue.empty();
+}
+
+bool CDVBridgeGLES::PlayerLedCpuCurrent(uint64_t generation) const
+{
+  if (!PlayerLedCpuPending()) return true;
+  const auto& cpu = *m_playerLedCpu;
+  return cpu.slots[cpu.queue.front()].frame->source.informationGeneration == generation;
+}
+
+bool CDVBridgeGLES::QueuePlayerLedCpu(DVBRIDGE::LldvTransport transport, double pts, double renderPts, int acquire,
+                                     std::shared_ptr<const VideoSourceSideData> source,
+                                     std::chrono::milliseconds primeWindow)
+{
+  if (acquire < 0 || !transport.connectorId || !PlayerLedCpuPrepared())
+  {
+    if (acquire >= 0) close(acquire);
+    m_playerLedCpuUnavailable = true;
+    Cancel();
+    return false;
+  }
+  auto& cpu = *m_playerLedCpu;
+  const auto index = *cpu.prepared;
+  auto& slot = cpu.slots[index];
+  cpu.prepared.reset();
+  slot.acquire = acquire;
+  slot.policy = m_playerLedPolicy;
+  slot.pts = pts;
+  slot.renderPts = renderPts;
+  m_playerLedTransport = transport;
+  m_packed = true;
+  m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,m_asyncEligible};
+  auto submission = CaptureSubmission();
+  submission.sourceSideData = std::move(source);
+  slot.frame = SubmitPlayerLed(true, submission);
+  if (!slot.frame)
+  {
+    m_playerLedCpuUnavailable = true;
+    Cancel();
+    return false;
+  }
+  slot.carrier = cpu.LeaseCarrier();
+  if (!slot.carrier)
+  {
+    m_playerLedCpuUnavailable = true;
+    Cancel();
+    return false;
+  }
+  {
+    std::lock_guard lock(cpu.mutex);
+    if (!cpu.announced)
+      cpu.primeWindow = primeWindow;
+    cpu.queue.push_back(index);
+  }
+  cpu.source = slot.frame->decoded;
+  cpu.generation = slot.frame->source.informationGeneration;
+  cpu.changed.notify_one();
+  if (!cpu.announced)
+  {
+    CLog::Log(LOGINFO, "CB1 LLDV: CPU packing to an XRGB8888 scanout buffer");
+    cpu.announced = true;
+  }
+  return true;
+}
+
+bool CDVBridgeGLES::PlayerLedCpuHealthy()
+{
+  if (!m_playerLedCpu) return true;
+  {
+    std::lock_guard lock(m_playerLedCpu->mutex);
+    if (!m_playerLedCpu->failed) return true;
+  }
+  m_playerLedCpuUnavailable = true;
+  Cancel();
+  return false;
+}
+
+std::optional<CDVBridgeGLES::PlayerLedCpuOutput> CDVBridgeGLES::TakePlayerLedCpu()
+{
+  if (!PlayerLedCpuPending()) return {};
+  auto& cpu = *m_playerLedCpu;
+  std::unique_lock lock(cpu.mutex);
+  auto& slot = cpu.slots[cpu.queue.front()];
+  const auto priming = [&] {
+    return cpu.primeUntil && std::chrono::steady_clock::now() < *cpu.primeUntil;
+  };
+  const auto ready = [&] {
+    return slot.packed && (!priming() ||
+        (cpu.queue.size() >= 2 && cpu.slots[cpu.queue[1]].packed));
+  };
+  cpu.changed.wait_for(lock, std::chrono::milliseconds(1), [&] { return ready() || cpu.failed; });
+  if (!ready() || cpu.failed) return {};
+  if (priming()) cpu.primeUntil = std::chrono::steady_clock::now();
+  PlayerLedCpuOutput output{std::move(*slot.frame), slot.pts, slot.renderPts, slot.carrier->buffer,
+      std::move(slot.carrier), std::exchange(slot.acquire, -1)};
+  slot.frame.reset();
+  slot.packed = false;
+  cpu.queue.pop_front();
+  return output;
+}
+
+bool CDVBridgeGLES::PackPlayerLed(DVBRIDGE::LldvTransport transport)
+{
+  m_packed = false;
+  if (!m_playerLed || !m_prepared || !m_playerLedPicture || !m_scanout ||
+      (transport.format != DVBRIDGE::LldvFormat::Y422_10 &&
+       transport.format != DVBRIDGE::LldvFormat::Y422_12))
+    return Failure("player-led-pack-target");
+
+  const auto gpu = m_gl->gpu;
+  const int w = m_scanout->params.w, h = m_scanout->params.h;
+  if (!m_playerLedCarrier || m_playerLedCarrier->params.w != w || m_playerLedCarrier->params.h != h)
+  {
+    pl_tex_destroy(gpu, &m_playerLedCarrier);
+    glDeleteTextures(1, &m_playerLedTexture);
+    glGenTextures(1, &m_playerLedTexture);
+    GLint previous;
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &previous);
+    glBindTexture(GL_TEXTURE_2D, m_playerLedTexture);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, w, h);
+    glBindTexture(GL_TEXTURE_2D, previous);
+    pl_opengl_wrap_params params{};
+    params.texture = m_playerLedTexture;
+    params.width = w;
+    params.height = h;
+    params.iformat = GL_RGBA8;
+    m_playerLedCarrier = pl_opengl_wrap(gpu, &params);
+  }
+
+  if (!m_playerLedCarrier || !dvbridge_pack_player_led_422(m_renderer, &m_playerLedPolicy,
+      m_playerLedPicture, m_playerLedCarrier,
+      transport.format == DVBRIDGE::LldvFormat::Y422_10 ? 10 : 12, true))
+    return Failure("player-led-pack");
+
+  GLuint carrierFramebuffer = 0;
+  pl_opengl_unwrap(gpu, m_playerLedCarrier, nullptr, nullptr, &carrierFramebuffer);
+  GLint read, draw;
+  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+  const bool scissor = glIsEnabled(GL_SCISSOR_TEST);
+  const bool dither = glIsEnabled(GL_DITHER);
+  glDisable(GL_SCISSOR_TEST);
+  glDisable(GL_DITHER);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, carrierFramebuffer);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_scanoutFramebuffer);
+  glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
+  if (scissor) glEnable(GL_SCISSOR_TEST);
+  if (dither) glEnable(GL_DITHER);
+  const bool copied = glGetError() == GL_NO_ERROR;
+  const bool fenced = m_context->FenceLastUse();
+  m_packed = copied && fenced;
+  if (m_packed)
+  {
+    m_playerLedTransport = transport;
+    m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,m_asyncEligible};
+  }
+  return m_packed || Failure("player-led-copy");
+}
+
+std::optional<CDVBridgeGLES::PlayerLedFrame> CDVBridgeGLES::SubmitPlayerLed(
+    bool accepted, const Submission& submission)
+{
+  if (!m_playerLed || !m_packed || !submission.sequence ||
+      submission.sequence != m_submission.sequence || submission.target != m_scanout ||
+      !dvbridge_identity_equal(&submission.identity, &m_pendingIdentity))
+    return {};
+  if (!accepted)
+  {
+    CountPresentation(false);
+    m_failedIdentity = submission.identity;
+    Cancel();
+    return {};
+  }
+
+  m_pending = m_prepared = m_packed = false;
+  return PlayerLedFrame{submission,m_pendingSourceInfo,m_pendingBinding,m_pendingMetadata,
+      m_playerLedTransport,m_playerLedPlan,m_pendingOverlayRevision,
+      (m_pendingInfo & CDVPlaybackInfo::FEL) != 0,
+      m_requested.L2TrimsDisabled(m_effectiveMode),!m_guiComposed};
+}
+
+bool CDVBridgeGLES::ConfirmPlayerLed(const PlayerLedFrame& frame,
+                                     const DVBRIDGE::LldvConnectorStatus& connector)
+{
+  const auto& id = frame.submission.identity;
+  const DVBRIDGE::SourceBinding identity{id.stream,id.picture,id.revision};
+  auto output = DVBRIDGE::PlayerLedOutput(CB1_MASTER_READY, identity, identity,
+      frame.transport, connector, frame.plan, frame.fel, frame.fel);
+  CountPresentation(output.has_value(), id.stream, frame.decoded.picture);
+  if (!output) return Failure("player-led-presentation");
+  m_hasCommitted = true;
+  m_committedBinding = frame.decoded;
+  m_committedMode = DVBRIDGE_MODE_PLAYER_LED;
+  m_committedRevision = id.revision;
+  m_committedOverlayRevision = frame.overlayRevision;
+  m_committedPacked = frame.withoutGui;
+  output->l2TrimsDisabled = frame.l2Disabled;
+  DVBRIDGE::StreamTelemetry::NativePresented(frame.source, frame.metadata, *output, frame.decoded);
+  return true;
+}
+
 bool CDVBridgeGLES::ResolveHDR10(bool limited)
 {
   if (m_hdr10 && m_prepared && m_direct)
@@ -2397,7 +2964,8 @@ bool CDVBridgeGLES::ResolveHDR10(bool limited)
 
 unsigned int CDVBridgeGLES::GetPQFramebuffer()
 {
-  const auto texture = GetPQTexture();
+  const auto texture = m_playerLed && m_prepared && m_playerLedPicture ?
+      pl_opengl_unwrap(m_gl->gpu, m_playerLedPicture, nullptr, nullptr, nullptr) : GetPQTexture();
   if (!texture)
     return 0;
   GLint previous;
@@ -2412,12 +2980,25 @@ unsigned int CDVBridgeGLES::GetPQFramebuffer()
   return valid ? m_framebuffer : 0;
 }
 
-void CDVBridgeGLES::CountPresentation(bool committed)
+void CDVBridgeGLES::CountPresentation(bool committed, uint64_t receiptStream, uint64_t sourcePicture)
 {
-  if (committed) DVBRIDGE::DiagnosticPresented(m_pendingBinding.stream);
-  if (!DVBRIDGE::DiagnosticsEnabled() || !m_prepared) return;
+  if (committed) DVBRIDGE::DiagnosticPresented(receiptStream ? receiptStream : m_pendingBinding.stream);
+  if (!DVBRIDGE::DiagnosticsEnabled() ||
+      (receiptStream ? receiptStream != m_diagnosticStream : !m_prepared))
+    return;
   m_presentations += committed;
   m_failedPresentations += !committed;
+  if (committed && sourcePicture)
+  {
+    if (sourcePicture <= m_lastPresentedSourcePicture)
+      ++m_nonadvancingSource;
+    else
+    {
+      if (m_lastPresentedSourcePicture)
+        m_sourceGaps += sourcePicture - m_lastPresentedSourcePicture - 1;
+      m_lastPresentedSourcePicture = sourcePicture;
+    }
+  }
   if ((m_presentations + m_failedPresentations) % 120 == 0)
   {
     const auto now = DVBRIDGE::DiagnosticNowMs();

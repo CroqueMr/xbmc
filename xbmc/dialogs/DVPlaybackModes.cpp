@@ -40,7 +40,7 @@ namespace
 struct Choice { int output,method,label; };
 constexpr Choice dvChoices[]={{0,0,40812},{4,0,40913},
     {5,0,40914},
-    {2,0,40814},{1,0,40822},{1,1,40823},{1,2,40922},{6,0,41130}};
+    {2,0,40814},{1,0,40822},{1,1,40823},{1,2,40922},{6,0,41130},{7,0,41221}};
 }
 
 CDVPlaybackModes& CDVPlaybackModes::GetInstance()
@@ -100,7 +100,8 @@ bool CDVPlaybackModes::ConfigureProfile()
     std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
     DVBRIDGE::ReadDefaultOutputSelectors().Apply(preferences);
   }
-  const bool expert=preferences.output==DVBRIDGE::OutputMode::HDR10 && preferences.method==1;
+  const bool expert=preferences.output==DVBRIDGE::OutputMode::PlayerLed ||
+      (preferences.output==DVBRIDGE::OutputMode::HDR10 && preferences.method==1);
   const auto& strings=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
   std::string peak=StringUtils::Format("{:g}",expert?preferences.expertPeak:preferences.peak);
   if (expert ? !CGUIKeyboardFactory::ShowAndGetInput(peak,strings.Get(41030),false) :
@@ -290,8 +291,9 @@ void ShowLldvFormatMenu()
   if (!dialog)
     return;
 
+  const bool usableTiming = status.currentTiming || status.availableTiming;
   const auto preferred =
-      ChooseLldvFormat(status.sink, status.driverFormats, status.currentTiming, status.forced42210);
+      ChooseLldvFormat(status.sink, status.driverFormats, usableTiming, status.forced42210);
   const auto requiresForcing = [&status](LldvFormat format) {
     return LldvRequiresForcing(format, status.driverFormats, status.forced42210);
   };
@@ -303,7 +305,7 @@ void ShowLldvFormatMenu()
   {
     const auto format = static_cast<LldvFormat>(i);
     const auto reason = i ? LldvFormatReason(status.sink, format, status.driverFormats,
-                                             status.currentTiming, status.forced42210)
+                                             usableTiming, status.forced42210)
                           : LldvReason::Ready;
     const bool disabled = reason != LldvReason::Ready;
     const auto label = strings.Get(LldvFormatLabel(format, requiresForcing(format)));

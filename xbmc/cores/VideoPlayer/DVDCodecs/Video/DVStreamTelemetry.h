@@ -258,10 +258,13 @@ public:
   }
 
   static void NativePresented(const SourceInfo& source,const CDVMetadataBuffer& metadata,
-                              const StreamSnapshot::Output& output)
+                              const StreamSnapshot::Output& output,
+                              SourceBinding decoded = {})
   {
     const SourceBinding identity{output.stream,output.picture,output.revision};
-    if (output.lldv && (!metadata.Data() || metadata.Binding()!=identity))
+    if (!decoded.Valid()) decoded = identity;
+    if (output.lldv && (!metadata.Data() || metadata.Binding()!=decoded ||
+        decoded.stream!=identity.stream || decoded.picture!=identity.picture))
       return;
     std::lock_guard<std::mutex> lock(m_mutex);
     m_nativeActive = true;

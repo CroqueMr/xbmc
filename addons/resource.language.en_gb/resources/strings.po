@@ -26562,3 +26562,10 @@ msgctxt "#41218"
 msgid "Active · forced · experimental"
 msgstr ""
 
+msgctxt "#41221"
+msgid "Dolby Vision LLDV Reference"
+msgstr ""
+
+msgctxt "#41222"
+msgid "No compatible LLDV output at this timing"
+msgstr ""

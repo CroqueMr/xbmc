@@ -1559,12 +1559,15 @@ bool CWinSystemGbm::IsHDRDisplay()
 
 #ifdef HAVE_DVBRIDGE
 bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
-                                     const DVBRIDGE::LldvTransport& packed)
+                                     const DVBRIDGE::LldvTransport& packed, bool async,
+                                     gbm_bo* carrier, std::shared_ptr<void> lease)
 {
   using namespace DVBRIDGE;
   if (!CompleteDVBridgePage()) return false;
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-  if (!drm || !m_GBM || drm->IsSDRRestorePending()) return false;
+  if (!drm) return false;
+  const auto reject = [&]() { return drm->FlipPageTransactional(nullptr); };
+  if (!m_GBM || drm->IsSDRRestorePending()) return reject();
 
   const auto status = GetLldvConnectorStatus();
   if (!packed.connectorId || packed.connectorId != status.connectorId ||
@@ -1572,32 +1575,34 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
       (packed.forced && (packed.format != LldvFormat::Y422_10 || !status.forced42210)) ||
       LldvFormatReason(status.sink, packed.format, status.driverFormats,
                        status.currentTiming, packed.forced) != LldvReason::Ready)
-    return false;
+    return reject();
 
   const char* name = packed.forced ? "YCbCr 4:2:2 10 bits forced" :
       packed.format == LldvFormat::Y422_10 ? "YCbCr 4:2:2 10 useful bits" : "YCbCr 4:2:2 12 bits";
   auto* connector = drm->GetConnector();
   const auto value = connector ? connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", name) :
                                  std::nullopt;
-  if (!value || (!state.Captured() && !state.CapturePlayerLed(*drm))) return false;
+  if (!value || (!state.Captured() && !state.CapturePlayerLed(*drm))) return reject();
 
   // The caller has swapped the packed carrier into the existing GBM surface.
   auto& surface = m_GBM->GetDevice().GetSurface();
-  auto* bo = surface.LockTransactionalBuffer();
-  if (!bo) return false;
+  auto* bo = carrier ? surface.AdoptTransactionalBuffer(carrier, std::move(lease)) :
+                       surface.LockTransactionalBuffer();
+  if (!bo) return reject();
   const auto format = gbm_bo_get_format(bo);
   const bool ready = (format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888) &&
       gbm_bo_get_width(bo) == 3840 && gbm_bo_get_height(bo) == 2160 &&
       state.StagePlayerLed(*drm, *value) && StageTransportPreferences();
+  const bool stable = status.timingCommitted && status.active == packed.format &&
+                      status.activeForced == packed.forced;
   if (ready)
   {
     drm->StageHDR10Plus(std::nullopt, 0);
-    if (!status.timingCommitted || status.active != packed.format ||
-        status.activeForced != packed.forced)
+    if (!stable)
       drm->AllowModeset();
   }
-  const bool accepted = drm->FlipPageTransactional(ready ? bo : nullptr);
-  surface.CompleteTransactionalBuffer(accepted);
+  const bool accepted = drm->FlipPageTransactional(ready ? bo : nullptr, false, async && stable);
+  if (!drm->HasPendingCB1Page()) surface.CompleteTransactionalBuffer(accepted);
   return accepted;
 }
 
@@ -1620,15 +1625,22 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
     if (native12)
       status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_12);
     status.forced42210 = forced10.has_value();
-    const auto* mode = m_DRM->GetSelectedMode();
-    status.currentTiming = mode && mode->hdisplay == 3840 && mode->vdisplay == 2160 &&
-                           mode->htotal == 5500 && mode->vtotal == 2250 &&
-                           mode->hsync_start == 5116 && mode->hsync_end == 5204 &&
+    const auto usable = [](const drmModeModeInfo* mode) {
+      return mode && mode->hdisplay == 3840 && mode->vdisplay == 2160 &&
+                           mode->vtotal == 2250 &&
+                           ((mode->htotal == 5500 && mode->hsync_start == 5116 && mode->hsync_end == 5204) ||
+                            (mode->htotal == 5280 && mode->hsync_start == 4896 && mode->hsync_end == 4984 &&
+                             mode->clock == 297000) ||
+                            (mode->htotal == 4400 && mode->hsync_start == 4016 && mode->hsync_end == 4104)) &&
                            mode->vsync_start == 2168 && mode->vsync_end == 2178 &&
                            mode->hskew == 0 && mode->vscan == 0 &&
                            (mode->clock == 297000 || mode->clock == 296703) &&
                            (mode->flags & ~DRM_MODE_FLAG_PIC_AR_16_9) ==
                                (DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC);
+    };
+    status.currentTiming = usable(m_DRM->GetSelectedMode());
+    for (int i = 0; i < connector->GetModesCount() && !status.availableTiming; ++i)
+      status.availableTiming = usable(connector->GetModeForIndex(i));
     status.connectorId = *connector->GetConnectorId();
     const auto* atomic = dynamic_cast<const CDRMAtomic*>(m_DRM.get());
     status.timingCommitted = status.currentTiming && atomic && atomic->IsActive() &&

@@ -111,7 +111,9 @@ public:
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
 #ifdef HAVE_DVBRIDGE
   DVBRIDGE::LldvConnectorStatus GetLldvConnectorStatus() const;
-  bool FlipPlayerLedPage(CDVBridgeState& state, const DVBRIDGE::LldvTransport& packed);
+  bool FlipPlayerLedPage(CDVBridgeState& state, const DVBRIDGE::LldvTransport& packed,
+                         bool async = false, gbm_bo* carrier = nullptr,
+                         std::shared_ptr<void> lease = {});
 #endif
 
   // holding the returned reference defers video plane teardown until it is released

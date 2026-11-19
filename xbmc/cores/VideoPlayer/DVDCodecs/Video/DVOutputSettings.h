@@ -18,7 +18,7 @@
 
 namespace DVBRIDGE
 {
-enum class OutputMode : int { Standard = 0, HDR10 = 1, Disabled = 2, EnhancedDV = 3, MasterReference = 4, AdaptiveB = 5, SDR = 6 };
+enum class OutputMode : int { Standard = 0, HDR10 = 1, Disabled = 2, EnhancedDV = 3, MasterReference = 4, AdaptiveB = 5, SDR = 6, PlayerLed = 7 };
 enum class HDR10SourceMode : int { Native = 0, ReferenceDV = 1, EnhancedDV = 2, HDR10PlusDV = 3, SDR = 4 };
 enum class HLGSourceMode : int { Native = 0, ReferenceDV = 1 };
 
@@ -31,6 +31,7 @@ inline std::atomic<HDR10SourceMode> hlgPlaybackMode{HDR10SourceMode::Native};
 #ifdef HAVE_DVBRIDGE
 inline int PolicyCode(const dvbridge_policy& policy)
 {
+  if (policy.mode==DVBRIDGE_MODE_PLAYER_LED) return 9;
   if (policy.mode==DVBRIDGE_MODE_SDR) return 8;
   if (policy.mode==DVBRIDGE_MODE_HDR10PLUS) return 7;
   return policy.mode==DVBRIDGE_MODE_ENHANCED_DV && policy.adaptive!=DVBRIDGE_ADAPTIVE_A ? 6 : int(policy.mode);
@@ -49,6 +50,7 @@ struct OutputPreferences
   double peak{0};
   double expertPeak{}, expertBlack{};
   int expertGamut{};
+  int lldvFormat{};
   bool optimizedDV{true};
   bool masterIPT{false};
   bool disableL2Trims{false};
@@ -85,8 +87,9 @@ struct OutputPreferences
         cmv40Headroom == other.cmv40Headroom &&
         felUpscaling == other.felUpscaling &&
         processingOptimizations == other.processingOptimizations &&
-        (output!=OutputMode::HDR10 || method!=1 ||
+        ((output!=OutputMode::PlayerLed && (output!=OutputMode::HDR10 || method!=1)) ||
          (expertPeak == other.expertPeak && expertBlack == other.expertBlack && expertGamut == other.expertGamut)) &&
+        (output!=OutputMode::PlayerLed || lldvFormat==other.lldvFormat) &&
         std::bit_cast<uint64_t>(peak) == std::bit_cast<uint64_t>(other.peak);
   }
 
@@ -100,18 +103,21 @@ struct OutputPreferences
           std::isfinite(sdrGamma) && sdrGamma>=1.8 && sdrGamma<=2.8 &&
           std::isfinite(sdrBlack) && sdrBlack>=0 && sdrBlack<=5 && sdrBlack<sdrPeak;
     }
-    return mode==DVBRIDGE_MODE_HDR10_EXPERT ? ExpertProfileValid() : ProfileValid();
+    return mode==DVBRIDGE_MODE_HDR10_EXPERT || mode==DVBRIDGE_MODE_PLAYER_LED ?
+        ExpertProfileValid() : ProfileValid();
   }
   bool L2TrimsDisabled(dvbridge_mode mode, bool hdr10AI = false) const
   {
     return disableL2Trims && !hdr10AI &&
-        (mode == DVBRIDGE_MODE_STANDARD || mode == DVBRIDGE_MODE_MASTER_REFERENCE);
+        (mode == DVBRIDGE_MODE_STANDARD || mode == DVBRIDGE_MODE_MASTER_REFERENCE ||
+         mode == DVBRIDGE_MODE_PLAYER_LED);
   }
   cb1_cmv40_options CMv40Options(dvbridge_mode mode, bool hdr10AI = false) const
   {
-    if (hdr10AI || (mode != DVBRIDGE_MODE_STANDARD && mode != DVBRIDGE_MODE_MASTER_REFERENCE)) return {};
+    if (hdr10AI || (mode != DVBRIDGE_MODE_STANDARD && mode != DVBRIDGE_MODE_MASTER_REFERENCE &&
+                    mode != DVBRIDGE_MODE_PLAYER_LED)) return {};
     return {static_cast<cb1_cmv40_mode>(cmv40Mode), static_cast<unsigned>(cmv40Trigger),
-        static_cast<unsigned>(cmv40Headroom), peak};
+        static_cast<unsigned>(cmv40Headroom), mode==DVBRIDGE_MODE_PLAYER_LED ? expertPeak : peak};
   }
   dvbridge_policy Policy() const
   {
@@ -120,6 +126,7 @@ struct OutputPreferences
     result.sdr={static_cast<dvbridge_sdr_preset>(sdrPreset),sdrPeak,sdrGamma,sdrBlack};
     switch (output)
     {
+      case OutputMode::PlayerLed: result.mode = DVBRIDGE_MODE_PLAYER_LED; break;
       case OutputMode::SDR: result.mode = DVBRIDGE_MODE_SDR; break;
       case OutputMode::Disabled: result.mode = DVBRIDGE_MODE_DISABLED; break;
       case OutputMode::Standard: result.mode = DVBRIDGE_MODE_STANDARD; break;
@@ -137,7 +144,7 @@ struct OutputPreferences
     }
     // Basic/native paths never consume calibration. Keep invalid user values
     // in this snapshot, rather than silently completing the stored profile.
-    if (result.mode == DVBRIDGE_MODE_HDR10_EXPERT)
+    if (result.mode == DVBRIDGE_MODE_HDR10_EXPERT || result.mode == DVBRIDGE_MODE_PLAYER_LED)
     {
       result.tv={expertPeak,DVBRIDGE_PANEL_OLED,static_cast<dvbridge_gamut>(expertGamut)};
       result.expert_black_nits=expertBlack;
@@ -203,7 +210,7 @@ inline OutputSelectors ReadDefaultOutputSelectors()
   if (!settings) return result;
   const int output=settings->GetInt("dvbridge.outputmode");
   result.output=output==3 ? OutputMode::AdaptiveB :
-      output>=0 && output<=6 ? static_cast<OutputMode>(output) : OutputMode::Standard;
+      output>=0 && output<=static_cast<int>(OutputMode::PlayerLed) ? static_cast<OutputMode>(output) : OutputMode::Standard;
   const int method=settings->GetInt("dvbridge.hdr10method");
   result.method=method>=0 && method<=2 ? method : 0;
   const int hdr10=settings->GetInt("dvbridge.hdr10source");
@@ -237,6 +244,7 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = 
     next.sdrPeak=settings->GetNumber("dvbridge.sdrpeak");
     next.sdrGamma=settings->GetNumber("dvbridge.sdrgamma");
     next.sdrBlack=settings->GetNumber("dvbridge.sdrblack");
+    next.lldvFormat=settings->GetInt("dvbridge.lldvformatvalue");
     {
       next.expertPeak=settings->GetNumber("dvbridge.expertpeak");
       next.expertGamut=settings->GetInt("dvbridge.expertgamut");

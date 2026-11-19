@@ -85,5 +85,21 @@ struct LldvConnectorStatus
   bool activeForced{false};
   uint32_t connectorId{0};
   bool timingCommitted{false};
+  bool availableTiming{false};
 };
+
+inline LldvTransport SelectLldvTransport(const LldvConnectorStatus& status, int preference,
+                                        bool allowModeSwitch = false)
+{
+  const bool timing = status.currentTiming || (allowModeSwitch && status.availableTiming);
+  auto format = LldvFormatPreference(preference);
+  if (format == LldvFormat::Auto)
+    format = ChooseLldvFormat(status.sink, status.driverFormats, timing, status.forced42210);
+  if (!status.connectorId || (format != LldvFormat::Y422_10 && format != LldvFormat::Y422_12) ||
+      LldvFormatReason(status.sink, format, status.driverFormats, timing, status.forced42210) !=
+          LldvReason::Ready)
+    return {};
+  return {status.connectorId, format,
+          LldvRequiresForcing(format, status.driverFormats, status.forced42210)};
+}
 } // namespace DVBRIDGE
