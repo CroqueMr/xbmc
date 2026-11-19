@@ -297,6 +297,8 @@ bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay)
       gbm && gbm->IsDVBridgeScreenshotSDR())
     return true; // The SDR compositor expects sRGB overlays, including PQ bitmap palettes.
 #endif
+  if (winSystem->UsesNativeSDRBT2020())
+    return true; // The SDR BT.2020 compositor takes an sRGB GUI layer.
   const bool destinationIsPQ =
       winSystem->IsHdrComposite() || winSystem->GetEotf() != KODI::UTILS::Eotf::TRADITIONAL_SDR;
   return !destinationIsPQ;
@@ -311,6 +313,8 @@ unsigned BitmapPaletteOutputState()
     cb1PQ = window->HasDVBridgeScreenshot();
 #endif
   auto* window = CServiceBroker::GetWinSystem();
+  if (window->UsesNativeSDRBT2020())
+    return 1u; // The compositor applies the output range after gamut conversion.
   return (ShouldConvertPQPaletteToSRGB(true) ? 1u : 0u) |
          (window->IsHdrComposite() && window->UseLimitedColor() && !cb1PQ ? 2u : 0u);
 }

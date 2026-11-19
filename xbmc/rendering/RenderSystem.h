@@ -56,6 +56,7 @@ public:
   virtual bool ResetRenderSystem(int width, int height) = 0;
 
   virtual bool BeginRender() = 0;
+  virtual void UpdateGUIShaderColorState() {}
   virtual bool EndRender() = 0;
   virtual void PresentRender(bool rendered, bool videoLayer) = 0;
   virtual void InvalidateColorBuffer() {}

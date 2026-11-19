@@ -1214,6 +1214,8 @@ bool CWinSystemGbmGLESContext::ConfigureGuiCompositing(int colorTransfer, float 
       m_guiCompositing = false;
       return false;
     }
+    const bool nativeSDR = colorTransfer == AVCOL_TRC_BT2020_10;
+    m_compositeShader->SetSDRBT2020(nativeSDR, nativeSDR);
     m_guiSDRGamma = gamma;
   }
   else
@@ -1622,7 +1624,10 @@ void CWinSystemGbmGLESContext::CompositeGui()
   m_compositeShader->SetInputPQ(false);
   m_compositeShader->SetOutputRange(1.0f, 0.0f);
   m_compositeShader->SetPlayerLed();
-  m_compositeShader->SetSDRBT2020(false);
+#ifdef HAVE_DVBRIDGE
+  if (m_sdrConversion)
+    m_compositeShader->SetSDRBT2020(false);
+#endif
 
   glDisableVertexAttribArray(posLoc);
   glDisableVertexAttribArray(texLoc);

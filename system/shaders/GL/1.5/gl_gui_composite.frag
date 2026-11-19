@@ -11,6 +11,7 @@
 in vec2 v_tex;
 out vec4 fragColor;
 uniform sampler2D u_samp;
+uniform bool u_sdrBT2020;
 uniform float u_sdrPeak; // SDR peak in normalized PQ (e.g. 100/10000 = 0.01)
 
 // ST2084 (PQ) constants
@@ -43,26 +44,25 @@ void main()
   if (gui.a == 0.0)
     discard;
 
-  // sRGB -> linear (IEC 61966-2-1 piecewise EOTF)
-  vec3 linear = mix(gui.rgb / 12.92,
-                    pow((gui.rgb + 0.055) / 1.055, vec3(2.4)),
-                    step(0.04045, gui.rgb));
+  // Native SDR stores true coverage and premultiplied sRGB in its GUI FBO.
+  // Convert straight colors and pass coverage to the final SRC_ALPHA blend.
+  vec3 rgb = u_sdrBT2020 ? clamp(gui.rgb / gui.a, 0.0, 1.0) : gui.rgb;
+  vec3 linear = mix(rgb / 12.92,
+                    pow((rgb + 0.055) / 1.055, vec3(2.4)),
+                    step(0.04045, rgb));
 
   // BT.709 -> BT.2020 gamut mapping
   linear = bt709_to_bt2020 * linear;
 
-  // scale to PQ luminance range: SDR content at u_sdrPeak of 10000 nits
-  linear *= u_sdrPeak;
-
-  // linear -> PQ
-  vec3 pq = forwardPQ(linear);
+  vec3 result = u_sdrBT2020 ? pow(max(linear, vec3(0.0)), vec3(1.0 / 2.4)) :
+                             forwardPQ(linear * u_sdrPeak);
 
   // Limited-range encoding at the BO write boundary. Canonical normalized
   // ratios (bit-depth-agnostic in float space; BO write quantizes to the
   // active surface bit depth).
 #ifdef KODI_LIMITED_RANGE
-  pq = pq * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
+  result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
 #endif
 
-  fragColor = vec4(pq, gui.a);
+  fragColor = vec4(result, gui.a);
 }

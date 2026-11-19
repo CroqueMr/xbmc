@@ -1304,6 +1304,8 @@ void CLinuxRendererGLES::LoadShaders(int field)
           }
 
           EShaderFormat shaderFormat = GetShaderFormat();
+          const auto dstPrimaries =
+              m_passthroughHDR || m_shaderSDRBT2020 ? m_srcPrimaries : AVCOL_PRI_BT709;
           m_toneMapMethod = m_videoSettings.m_ToneMapMethod;
 
           // Try single-pass filter shader for FAST scalers on GLES 3.1+
@@ -1312,7 +1314,7 @@ void CLinuxRendererGLES::LoadShaders(int field)
                m_scalingMethod == VS_SCALINGMETHOD_SPLINE36_FAST))
           {
             m_pYUVProgShader = new YUV2RGBFilterShader(
-                shaderFormat, m_passthroughHDR ? m_srcPrimaries : AVColorPrimaries::AVCOL_PRI_BT709,
+                shaderFormat, dstPrimaries,
                 m_srcPrimaries, m_toneMap, m_toneMapMethod, m_scalingMethod, m_useDithering);
             // TODO: GL gates this on !m_cmsOn. Add when CMS is ported to GLES.
             m_pYUVProgShader->SetConvertFullColorRange(m_fullRange);
@@ -1339,14 +1341,14 @@ void CLinuxRendererGLES::LoadShaders(int field)
 
           // Fall back to regular progressive shader
           m_pYUVProgShader = new YUV2RGBProgressiveShader(
-              shaderFormat, m_passthroughHDR ? m_srcPrimaries : AVColorPrimaries::AVCOL_PRI_BT709,
+              shaderFormat, dstPrimaries,
               m_srcPrimaries, m_toneMap, m_toneMapMethod, m_useDithering);
           m_pYUVProgShader->SetConvertFullColorRange(m_fullRange);
 
           CLog::Log(LOGINFO, "GLES: Selecting YUV 2 RGB shader");
 
           m_pYUVBobShader = new YUV2RGBBobShader(
-              shaderFormat, m_passthroughHDR ? m_srcPrimaries : AVColorPrimaries::AVCOL_PRI_BT709,
+              shaderFormat, dstPrimaries,
               m_srcPrimaries, m_toneMap, m_toneMapMethod, m_useDithering);
           m_pYUVBobShader->SetConvertFullColorRange(m_fullRange);
 
@@ -3115,13 +3117,19 @@ CRenderInfo CLinuxRendererGLES::GetRenderInfo()
 
 bool CLinuxRendererGLES::IsGuiLayer()
 {
-  return !m_hdrFboActive;
+  return !m_hdrFboActive && !CServiceBroker::GetWinSystem()->UsesNativeSDRBT2020();
 }
 
 void CLinuxRendererGLES::CheckVideoParameters(int index)
 {
   const CPictureBuffer& buf = m_buffers[index];
   const ETONEMAPMETHOD& toneMapMethod = m_videoSettings.m_ToneMapMethod;
+  const bool wide = CServiceBroker::GetWinSystem()->UsesNativeSDRBT2020();
+  if (wide != m_shaderSDRBT2020)
+  {
+    m_shaderSDRBT2020 = wide;
+    m_reloadShaders = true;
+  }
 
   if (buf.m_srcPrimaries != m_srcPrimaries)
   {
@@ -3148,6 +3156,7 @@ void CLinuxRendererGLES::CheckVideoParameters(int index)
       VideoPicture tmp{};
       tmp.color_space = toneMap ? AVCOL_SPC_UNSPECIFIED : buf.m_srcColSpace;
       tmp.color_transfer = buf.m_srcColTransfer;
+      tmp.color_primaries = buf.m_srcPrimaries;
       tmp.iWidth = m_sourceWidth;
       tmp.iHeight = m_sourceHeight;
       // Keep Adaptive on the format already selected for this source depth.

@@ -294,6 +294,7 @@ protected:
   // HDR FBO compositing: when active, IsGuiLayer() returns false so
   // video renders separately from GUI via RenderUpdateVideo()
   bool m_hdrFboActive{false};
+  bool m_shaderSDRBT2020{false};
 
 private:
   void ClearBackBuffer();

@@ -65,6 +65,7 @@ void CGuiCompositeShaderGLES::OnCompiledAndLinked()
   m_hOotfGamma = glGetUniformLocation(ProgramHandle(), "u_ootfGamma");
   m_hInputPQ = glGetUniformLocation(ProgramHandle(), "u_inputPQ");
   m_hSDRBT2020 = glGetUniformLocation(ProgramHandle(), "u_sdrBT2020");
+  m_hUnpremultiplyGui = glGetUniformLocation(ProgramHandle(), "u_unpremultiplyGui");
   m_hOutputRange = glGetUniformLocation(ProgramHandle(), "u_outputRange");
   m_hPlayerLedScale = glGetUniformLocation(ProgramHandle(), "u_playerLedScale");
   m_hPlayerLedGui = glGetUniformLocation(ProgramHandle(), "u_playerLedGui");
@@ -84,6 +85,7 @@ bool CGuiCompositeShaderGLES::OnEnabled()
   glUniform1f(m_hOotfGamma, m_ootfGamma);
   glUniform1i(m_hInputPQ, m_inputPQ);
   glUniform1i(m_hSDRBT2020, m_sdrBT2020);
+  glUniform1i(m_hUnpremultiplyGui, m_unpremultiplyGui);
   glUniform2f(m_hOutputRange, m_outputScale, m_outputOffset);
   glUniform1f(m_hPlayerLedScale, m_playerLedScale);
   if (m_playerLedScale > 0)
@@ -195,10 +197,10 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer, float sdrGamma)
     return false;
   }
 
-  if (colorTransfer == AVCOL_TRC_GAMMA22)
+  if (colorTransfer == AVCOL_TRC_GAMMA22 || colorTransfer == AVCOL_TRC_BT2020_10)
   {
     if (!std::isfinite(sdrGamma) || sdrGamma < 1.8f || sdrGamma > 2.8f) return false;
-    // Negative selects BT.709 SDR in the shared compositor; no PQ/HLG LUT.
+    // Negative selects SDR in the shared compositor; no PQ/HLG LUT.
     m_ootfGamma = -sdrGamma;
   }
   else if (colorTransfer == AVCOL_TRC_SMPTE2084)
