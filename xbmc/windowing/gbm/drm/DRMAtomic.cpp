@@ -555,6 +555,7 @@ bool CDRMAtomic::CompleteCB1Page(int timeoutMs)
     {
       m_cb1CompletedNs = detail.timestamp_ns;
       m_cb1PreviousCompletedNs = previous;
+      m_cb1CompletedPts = m_cb1PendingPts;
     }
   }
   m_cb1Headroom.reset();
@@ -631,6 +632,7 @@ bool CDRMAtomic::FlipPageTransactional(struct gbm_bo* bo, bool restore, bool asy
     if (asynchronous)
     {
       m_cb1Pending = true;
+      m_cb1PendingPts = m_cb1NextPts;
       m_cb1OutFence = TakeOutFenceFd();
       m_cb1Uncertain = m_cb1OutFence < 0;
       if (m_cb1Uncertain) ResetCB1PresentationTime();

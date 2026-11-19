@@ -65,6 +65,9 @@ public:
   bool HasPendingRequest() const { return m_need_modeset || (m_req && !m_req->Empty()); }
   bool CompleteCB1Page(int timeoutMs = 0);
   uint64_t CB1PresentationTime() const { return m_cb1CompletedNs; }
+  // Kodi presentation timestamp of the picture carried by the next asynchronous commit.
+  void SetCB1PresentationPts(double pts) { m_cb1NextPts = pts; }
+  double CB1PresentationPts() const { return m_cb1CompletedPts; }
   uint64_t CB1PreviousPresentationTime() const { return m_cb1PreviousCompletedNs; }
   void SetCB1TimingPeriod(uint64_t periodNs);
   std::optional<int64_t> TakeCB1Headroom();
@@ -123,6 +126,7 @@ private:
   bool m_cb1Pending{}, m_cb1Uncertain{};
   int m_cb1OutFence{-1};
   uint64_t m_cb1CompletedNs{};
+  double m_cb1NextPts{}, m_cb1PendingPts{}, m_cb1CompletedPts{};
   uint64_t m_cb1PreviousCompletedNs{};
   int m_cb1TimingInput{-1};
   uint64_t m_cb1TimingPeriodNs{}, m_cb1SubmittedNs{};
