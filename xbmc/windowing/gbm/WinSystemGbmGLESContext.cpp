@@ -1840,6 +1840,9 @@ bool CWinSystemGbmGLESContext::CanRetainDVSource() const
   const auto preferences = DVBRIDGE::FrameOutputSettings();
   if (preferences.output == DVBRIDGE::OutputMode::Disabled) return false;
   const auto caps = GetDVOutputCapabilities(nullptr, true);
+  if (preferences.hdr10TransportFallback)
+    return caps.hdr10 && !caps.HDR10DepthLimited() &&
+        (!caps.processingKnown || caps.processing[DVBRIDGE_MODE_HDR10_BASIC].usable);
   if (preferences.output == DVBRIDGE::OutputMode::SDR)
     return SupportsSDRConversion() && (!caps.processingKnown || caps.processing[DVBRIDGE_MODE_SDR].usable);
   if (preferences.output == DVBRIDGE::OutputMode::PlayerLed)
@@ -1855,7 +1858,7 @@ std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedResolution(double f
 {
   const auto preferences = DVBRIDGE::FrameOutputSettings();
   if (preferences.output != DVBRIDGE::OutputMode::PlayerLed ||
-      !std::isfinite(fps) ||
+      preferences.hdr10TransportFallback || !std::isfinite(fps) ||
       !GetDVOutputCapabilities(nullptr, preferences, true).playerLed)
     return {};
   constexpr std::array rates{24000.0 / 1001, 24.0, 25.0, 30000.0 / 1001, 30.0};
@@ -2592,6 +2595,10 @@ bool CWinSystemGbmGLESContext::ConfigureHDR10Conversion(const VideoPicture& pict
   m_hdr10Signal = {metadata.max_luminance, metadata.min_luminance,
       metadata.max_cll, metadata.max_fall, ~0u};
   m_failedHDR10SetupRestore = false;
+  if (m_dvSelection.reason == DVBRIDGE::OutputReason::NoDVTransport ||
+      m_dvSelection.reason == DVBRIDGE::OutputReason::NoPlayerLedTransport)
+    CLog::Log(LOGINFO, "CB1 fallback: selected HDR10 Rendering ({})",
+              CDVPlaybackInfo::Reason(m_dvSelection.reason));
   if (DVBRIDGE::DiagnosticsEnabled())
   {
     if (m_dvSelection.policy.mode == DVBRIDGE_MODE_HDR10PLUS)
@@ -2983,12 +2990,18 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
        preferences.hdr10Source==DVBRIDGE::HDR10SourceMode::SDR) &&
       m_dvContext && !m_dvContext->StopHDR10AI()) return deferred("output-await-ai-retirement");
 #endif
-  if (capabilities.isDV && preferences.output != DVBRIDGE::OutputMode::Disabled)
+  auto selectionCapabilities = capabilities;
+  auto selection = SelectedDVOutput(&picture, preferences, selectionCapabilities);
+  const bool awaitingFEL = picture.strDVELType == "FEL" && !picture.doviEnhancement;
+  const bool prepareDV = capabilities.isDV && preferences.output != DVBRIDGE::OutputMode::Disabled &&
+      (!preferences.hdr10TransportFallback || selection.route == DVBRIDGE::OutputRoute::HDR10 ||
+       selection.reason == DVBRIDGE::OutputReason::ProcessingPending ||
+       (awaitingFEL && selection.reason == DVBRIDGE::OutputReason::SourceIneligible));
+  if (prepareDV)
   {
     if (!capabilities.processingKnown) return deferred("output-await-source-import");
-    if (picture.strDVELType == "FEL" && !picture.doviEnhancement) return deferred("output-await-fel");
+    if (awaitingFEL) return deferred("output-await-fel");
   }
-  auto selectionCapabilities = capabilities;
   {
     const auto masterBinding=picture.doviSourceBinding.Valid() ?
         picture.doviSourceBinding : picture.doviMetadata.Binding();
@@ -2996,7 +3009,6 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
     m_masterSafety.Begin(masterBinding.stream,preferences.revision,masterBinding.revision,picture.pts,
         capabilities.isDV && preferences.output==DVBRIDGE::OutputMode::MasterReference);
   }
-  auto selection = SelectedDVOutput(&picture, preferences, selectionCapabilities);
   if (selection.route == DVBRIDGE::OutputRoute::SDR &&
       selection.policy.sdr.gamut == DVBRIDGE_GAMUT_BT2020 &&
       (m_sdrBT2020Rejected || GetSDRBT2020Support() != SDRBT2020Support::Available))
@@ -3043,7 +3055,7 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
       m_dvSelection.route==DVBRIDGE::OutputRoute::Vanilla &&
       m_dvSelection.reason!=DVBRIDGE::OutputReason::None &&
       m_dvSelection.reason!=DVBRIDGE::OutputReason::ProcessingPending &&
-      !(source.el && !picture.doviEnhancement))
+      (preferences.hdr10TransportFallback || !(source.el && !picture.doviEnhancement)))
   {
     std::lock_guard lock(m_dvCapabilityMutex);
     if (!m_dvFatalConsumed) m_dvFatalReason=m_dvSelection.reason;

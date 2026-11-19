@@ -189,6 +189,13 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
     }
     std::vector<IntegerSettingOption> options;
     int current=-1;
+    const auto video = CServiceBroker::GetDataCacheCore().GetVideoProcessingInfo();
+    const bool activeFallback = !settingsMenu &&
+        nativeSource == StreamHdrType::HDR_TYPE_DOLBYVISION &&
+        preferences.hdr10TransportFallback && video.output.flags &&
+        video.outputType == VideoOutputType::HDR10;
+    const auto currentOutput = activeFallback ? DVBRIDGE::OutputMode::HDR10 : preferences.output;
+    const int currentMethod = activeFallback ? 0 : preferences.method;
     for(int i=0;i<count;++i)
     {
       options.emplace_back(strings.Get(choices[i].label),i);
@@ -196,8 +203,8 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
       if (hlgSource ? (int(preferences.hlgSource)==choice.output) :
           hdr10PlusSource ? (int(preferences.hdr10PlusSource)==choice.output) :
           hdr10Source ? (int(preferences.hdr10Source)==choice.output) :
-          (int(preferences.output)==choice.output &&
-          (choice.output!=1 || preferences.method==choice.method))) current=i;
+          (int(currentOutput)==choice.output &&
+          (choice.output!=1 || currentMethod==choice.method))) current=i;
     }
     CSettingConditions::DVOutputOptions(choiceSetting,options);
     DVBRIDGE::DiagnosticLog(LOGINFO,
@@ -209,7 +216,6 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
     bool cb1Active = false;
     if (!settingsMenu)
     {
-      const auto video = CServiceBroker::GetDataCacheCore().GetVideoProcessingInfo();
       cb1Active = video.output.flags != 0;
       dialog->SetProperty("CB1.SwitchInput", hlgSource ? "HLG" : hdr10PlusSource ? "HDR10+" : hdr10Source ? "HDR10" : "Dolby Vision");
       const char* output = nullptr;
@@ -318,7 +324,12 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
         }
         else if (hdr10PlusSource) active.hdr10PlusSource=static_cast<DVBRIDGE::HDR10SourceMode>(choice.output);
         else if (hdr10Source) active.hdr10Source=static_cast<DVBRIDGE::HDR10SourceMode>(choice.output);
-        else {active.output=static_cast<DVBRIDGE::OutputMode>(choice.output);active.method=choice.method;}
+        else
+        {
+          active.output = static_cast<DVBRIDGE::OutputMode>(choice.output);
+          active.method = choice.method;
+          active.hdr10TransportFallback = false;
+        }
       }
 #ifdef CB1_HAS_HDR10_AI
       if (!settingsMenu && (hdr10Source || hlgSource) && choice.output != 0) ++DVBRIDGE::hdr10Reselection;

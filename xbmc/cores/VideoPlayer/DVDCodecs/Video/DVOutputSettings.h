@@ -56,6 +56,7 @@ struct OutputPreferences
   double expertPeak{}, expertBlack{};
   int expertGamut{};
   int lldvFormat{};
+  bool hdr10TransportFallback{};
   bool optimizedDV{true};
   bool masterIPT{false};
   bool disableL2Trims{false};
@@ -98,7 +99,8 @@ struct OutputPreferences
 
   bool SameValues(const OutputPreferences& other) const
   {
-    return output == other.output && hdr10Source == other.hdr10Source &&
+    return output == other.output && hdr10TransportFallback == other.hdr10TransportFallback &&
+        hdr10Source == other.hdr10Source &&
         hdr10PlusSource == other.hdr10PlusSource && hlgSource == other.hlgSource &&
         sdrPreset == other.sdrPreset && sdrBT2020 == other.sdrBT2020 &&
         std::bit_cast<uint64_t>(sdrPeak) == std::bit_cast<uint64_t>(other.sdrPeak) &&
@@ -213,9 +215,11 @@ struct OutputSelectors
   HDR10SourceMode hdr10Source{HDR10SourceMode::Native}, hdr10PlusSource{HDR10SourceMode::Native};
   HLGSourceMode hlgSource{HLGSourceMode::Native};
   int method{};
+  bool hdr10TransportFallback{};
   void Apply(OutputPreferences& preferences) const
   {
     preferences.output=output;
+    preferences.hdr10TransportFallback=hdr10TransportFallback;
     preferences.method=method;
     preferences.hdr10Source=hdr10Source;
     preferences.hdr10PlusSource=hdr10PlusSource;
@@ -313,11 +317,27 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = 
   return next;
 }
 
-inline void SelectOutputSettings()
+inline void SelectOutputSettings(bool nativeDV = true, bool playerLed = true)
 {
   {
     std::lock_guard lock(OutputSettingsMutex());
-    activeOutputSelectors=ReadDefaultOutputSelectors();
+    auto defaults = ReadDefaultOutputSelectors();
+    // Snapshot transport availability for the file before opening the decoder.
+    switch (defaults.output)
+    {
+      case OutputMode::PlayerLed:
+        defaults.hdr10TransportFallback = !playerLed;
+        break;
+      case OutputMode::Standard:
+      case OutputMode::EnhancedDV:
+      case OutputMode::MasterReference:
+      case OutputMode::AdaptiveB:
+        defaults.hdr10TransportFallback = !nativeDV;
+        break;
+      default:
+        break;
+    }
+    activeOutputSelectors = defaults;
   }
   FrameOutputSettings();
 }

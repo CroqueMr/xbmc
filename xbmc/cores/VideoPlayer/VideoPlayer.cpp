@@ -1495,7 +1495,12 @@ void CVideoPlayer::Prepare()
 {
   m_errorDetail = 0;
 #ifdef HAVE_DVBRIDGE
-  DVBRIDGE::SelectOutputSettings();
+  const auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      CServiceBroker::GetWinSystem());
+  const auto caps = window ? window->GetDVOutputCapabilities(nullptr, true) :
+                             DVBRIDGE::OutputCapabilities{};
+  const bool canFallback = caps.hdr10 && !caps.HDR10DepthLimited();
+  DVBRIDGE::SelectOutputSettings(!canFallback || caps.nativeDV, !canFallback || caps.playerLed);
 #endif
   CFFmpegLog::SetLogLevel(1);
   SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
