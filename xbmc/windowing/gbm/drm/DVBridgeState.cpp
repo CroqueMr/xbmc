@@ -51,6 +51,17 @@ bool CDVBridgeState::Read(CDRMAtomic& drm, std::vector<Change>& changes,
 
 bool CDVBridgeState::Capture(CDRMAtomic& drm, uint64_t ownVsif, bool legacyVsif)
 {
+  return CaptureTransport(drm, ownVsif, legacyVsif, false);
+}
+
+bool CDVBridgeState::CapturePlayerLed(CDRMAtomic& drm)
+{
+  return CaptureTransport(drm, 0, false, true);
+}
+
+bool CDVBridgeState::CaptureTransport(CDRMAtomic& drm, uint64_t ownVsif, bool legacyVsif,
+                                      bool playerLed)
+{
   m_failure = "none";
   if (Captured())
     return Reject("already-captured");
@@ -59,9 +70,14 @@ bool CDVBridgeState::Capture(CDRMAtomic& drm, uint64_t ownVsif, bool legacyVsif)
   auto* plane = drm.GetGuiPlane() ? drm.GetGuiPlane() : drm.GetVideoPlane();
   if (!connector || !crtc || !plane || (drm.GetGuiPlane() && drm.GetVideoPlane()))
     return Reject("output-objects");
-  const Backend backend = GetBackend(*connector);
+  const bool hasLldv = connector->SupportsProperty("CB1_LLDV_FORMAT");
+  if ((playerLed && !hasLldv) ||
+      (hasLldv && connector->ReadPropertyValue("CB1_LLDV_FORMAT") != 0))
+    return Reject("CB1_LLDV_FORMAT");
+  const Backend backend = playerLed ? Backend::KERNEL : GetBackend(*connector);
+  const auto standard = connector->GetPropertyValue("DVBRIDGE_DV_STANDARD_LAB");
   if (backend == Backend::NONE ||
-      (backend == Backend::KERNEL && connector->GetPropertyValue("DVBRIDGE_DV_STANDARD_LAB") != 0))
+      (backend == Backend::KERNEL && (standard.value_or(0) != 0 || (!playerLed && !standard))))
     return Reject("DVBRIDGE_DV_STANDARD_LAB");
   const auto vsif = connector->GetPropertyValue("NV_HDMI_VSIF_METADATA");
   const bool owned = ownVsif != 0 && vsif == ownVsif;
@@ -80,7 +96,8 @@ bool CDVBridgeState::Capture(CDRMAtomic& drm, uint64_t ownVsif, bool legacyVsif)
   if (backend == Backend::KERNEL)
   {
     const Setting native[] = {
-      {connector,"DVBRIDGE_DV_STANDARD_LAB",1,true,false},
+      {connector,"CB1_LLDV_FORMAT",0,playerLed,false},
+      {connector,"DVBRIDGE_DV_STANDARD_LAB",1,!playerLed,false},
       {connector,"DVBRIDGE_HDR10_DEEP_COLOR",0,false,false},
       {connector,"HDR_OUTPUT_METADATA",0,false,true},
       {connector,"max bpc",8,true,false},
@@ -199,11 +216,29 @@ std::optional<uint64_t> CDVBridgeState::Before(const char* name) const
 
 bool CDVBridgeState::Stage(CDRMAtomic& drm, bool restore)
 {
+  return StageTransport(drm, restore, 0);
+}
+
+bool CDVBridgeState::StagePlayerLed(CDRMAtomic& drm, uint64_t format)
+{
+  return format && m_backend == Backend::KERNEL && Before("CB1_LLDV_FORMAT") &&
+         StageTransport(drm, false, format);
+}
+
+bool CDVBridgeState::StageTransport(CDRMAtomic& drm, bool restore, uint64_t playerLedFormat)
+{
   if (!Captured() || m_owner != &drm || m_changes.front().object != drm.GetConnector())
     return false;
   bool valid = true;
   for (const auto& change : m_changes)
-    if (!drm.AddProperty(change.object,change.name.c_str(),restore ? change.before : change.during))
+  {
+    uint64_t value = restore ? change.before : change.during;
+    if (playerLedFormat && change.name == "CB1_LLDV_FORMAT")
+      value = playerLedFormat;
+    else if (playerLedFormat && change.name == "DVBRIDGE_DV_STANDARD_LAB")
+      value = 0;
+    if (!drm.AddProperty(change.object, change.name.c_str(), value))
       valid = false;
+  }
   return valid;
 }

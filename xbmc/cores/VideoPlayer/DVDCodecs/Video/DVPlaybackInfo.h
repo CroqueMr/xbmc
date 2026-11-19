@@ -43,6 +43,7 @@ struct CDVPlaybackInfo
     return false;
   }
   enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4, HDR10 = 8, HDR10PLUS = 16, SDR = 32 };
+  static constexpr int PlayerLedMode = 9; // Output identity, not a selectable mode yet.
   inline static std::atomic<unsigned> presented{0};
   static int ReasonLabel(DVBRIDGE::OutputReason reason)
   { return reason == DVBRIDGE::OutputReason::ProcessingPending ? 41142 :
@@ -107,6 +108,7 @@ struct CDVPlaybackInfo
       case 6:return "Dolby Vision Adaptive HDR Mapping";
       case 7:return "HDR10+ Rendering";
       case 8:return "SDR Rendering";
+      case PlayerLedMode:return "Dolby Vision LLDV Reference";
       default:return "";
     }
   }
@@ -115,6 +117,8 @@ struct CDVPlaybackInfo
   {
     if (output.effective==8 && (output.flags & SDR)) return "SDR Rendering";
     if (!output.flags) return "Kodi default";
+    if constexpr (requires { output.lldv; })
+      if (output.lldv) return RequestedPolicy(PlayerLedMode);
     if (IsHDR10PlusDV(output)) return Policy(output);
     std::string mode = output.flags & HDR10 ? Policy(output) :
         output.effective == 6 ? "Dolby Vision Adaptive HDR Mapping" :

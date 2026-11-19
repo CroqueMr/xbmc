@@ -1557,6 +1557,97 @@ bool CWinSystemGbm::IsHDRDisplay()
          m_info->SupportsHDRStaticMetadataType1();
 }
 
+#ifdef HAVE_DVBRIDGE
+bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
+                                     const DVBRIDGE::LldvTransport& packed)
+{
+  using namespace DVBRIDGE;
+  if (!CompleteDVBridgePage()) return false;
+  auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  if (!drm || !m_GBM || drm->IsSDRRestorePending()) return false;
+
+  const auto status = GetLldvConnectorStatus();
+  if (!packed.connectorId || packed.connectorId != status.connectorId ||
+      (packed.format != LldvFormat::Y422_10 && packed.format != LldvFormat::Y422_12) ||
+      (packed.forced && (packed.format != LldvFormat::Y422_10 || !status.forced42210)) ||
+      LldvFormatReason(status.sink, packed.format, status.driverFormats,
+                       status.currentTiming, packed.forced) != LldvReason::Ready)
+    return false;
+
+  const char* name = packed.forced ? "YCbCr 4:2:2 10 bits forced" :
+      packed.format == LldvFormat::Y422_10 ? "YCbCr 4:2:2 10 useful bits" : "YCbCr 4:2:2 12 bits";
+  auto* connector = drm->GetConnector();
+  const auto value = connector ? connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", name) :
+                                 std::nullopt;
+  if (!value || (!state.Captured() && !state.CapturePlayerLed(*drm))) return false;
+
+  // The caller has swapped the packed carrier into the existing GBM surface.
+  auto& surface = m_GBM->GetDevice().GetSurface();
+  auto* bo = surface.LockTransactionalBuffer();
+  if (!bo) return false;
+  const auto format = gbm_bo_get_format(bo);
+  const bool ready = (format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888) &&
+      gbm_bo_get_width(bo) == 3840 && gbm_bo_get_height(bo) == 2160 &&
+      state.StagePlayerLed(*drm, *value) && StageTransportPreferences();
+  if (ready)
+  {
+    drm->StageHDR10Plus(std::nullopt, 0);
+    if (!status.timingCommitted || status.active != packed.format ||
+        status.activeForced != packed.forced)
+      drm->AllowModeset();
+  }
+  const bool accepted = drm->FlipPageTransactional(ready ? bo : nullptr);
+  surface.CompleteTransactionalBuffer(accepted);
+  return accepted;
+}
+
+DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
+{
+  DVBRIDGE::LldvConnectorStatus status;
+  if (const auto* display = GetDisplayInfo())
+    status.sink = display->GetDolbyVisionCaps();
+  auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (connector && connector->IsConnected() && connector->SupportsProperty("CB1_LLDV_FORMAT"))
+  {
+    const auto native10 =
+        connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 useful bits");
+    const auto native12 =
+        connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 12 bits");
+    const auto forced10 =
+        connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 bits forced");
+    if (native10)
+      status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_10);
+    if (native12)
+      status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_12);
+    status.forced42210 = forced10.has_value();
+    const auto* mode = m_DRM->GetSelectedMode();
+    status.currentTiming = mode && mode->hdisplay == 3840 && mode->vdisplay == 2160 &&
+                           mode->htotal == 5500 && mode->vtotal == 2250 &&
+                           mode->hsync_start == 5116 && mode->hsync_end == 5204 &&
+                           mode->vsync_start == 2168 && mode->vsync_end == 2178 &&
+                           mode->hskew == 0 && mode->vscan == 0 &&
+                           (mode->clock == 297000 || mode->clock == 296703) &&
+                           (mode->flags & ~DRM_MODE_FLAG_PIC_AR_16_9) ==
+                               (DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC);
+    status.connectorId = *connector->GetConnectorId();
+    const auto* atomic = dynamic_cast<const CDRMAtomic*>(m_DRM.get());
+    status.timingCommitted = status.currentTiming && atomic && atomic->IsActive() &&
+                             !atomic->HasPendingCB1Page() && atomic->IsSelectedModeCommitted();
+    const auto active = connector->ReadPropertyValue("CB1_LLDV_FORMAT");
+    if (active && active == native10)
+      status.active = DVBRIDGE::LldvFormat::Y422_10;
+    else if (active && active == native12)
+      status.active = DVBRIDGE::LldvFormat::Y422_12;
+    else if (active && active == forced10)
+    {
+      status.active = DVBRIDGE::LldvFormat::Y422_10;
+      status.activeForced = true;
+    }
+  }
+  return status;
+}
+#endif
+
 CHDRCapabilities CWinSystemGbm::GetDisplayHDRCapabilities() const
 {
   if (!m_info)

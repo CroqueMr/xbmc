@@ -50,6 +50,15 @@
           <requirement>HAVE_DVBRIDGE</requirement><level>0</level>
           <control type="button" format="action" />
         </setting>
+        <setting id="dvbridge.lldvformat" type="action" label="41200" help="41201">
+          <requirement>HAVE_DVBRIDGE</requirement><level>0</level>
+          <control type="button" format="action" />
+        </setting>
+        <setting id="dvbridge.lldvformatvalue" type="integer" label="41200">
+          <requirement>HAVE_DVBRIDGE</requirement><level>3</level><visible>false</visible>
+          <default>0</default><constraints><minimum>0</minimum><maximum>6</maximum></constraints>
+          <control type="list" format="integer" />
+        </setting>
         <setting id="dvbridge.outputmode" type="integer" label="40811" help="40815">
           <requirement>HAVE_DVBRIDGE</requirement>
           <level>0</level><visible>false</visible>

@@ -677,7 +677,7 @@ void CSettings::InitializeISettingCallbacks()
 #ifdef HAVE_DVBRIDGE
   GetSettingsManager()->RegisterCallback(&CDVPlaybackModes::GetInstance(),
       {"dvbridge.configureprofile","dvbridge.expertblack","dvbridge.expertblackcustom",
-       "dvbridge.playback"});
+       "dvbridge.playback", "dvbridge.lldvformat"});
 #endif
   // register any ISettingCallback implementations
   GetSettingsManager()->RegisterCallback(

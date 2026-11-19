@@ -71,6 +71,7 @@ struct StreamSnapshot
     bool ignoreL5{}; // Actual accepted frame geometry, independent of later preferences.
     bool cmv40Appended{};
     int felUpscaling{-1};
+    std::optional<VideoProcessingInfo::PlayerLed> lldv{};
 #ifdef CB1_HAS_HDR10_AI
     bool hdr10AI{};
     bool hlgAI{}, sdrHDRSource{};
@@ -84,6 +85,7 @@ struct StreamSnapshot
     const char* Circuit() const
     {
       if (!flags) return "";
+      if (lldv) return cb1_circuit_version(CB1_DV_DV_LLDV);
       if (effective==8) return cb1_circuit_version(sdrHDRSource ? CB1_HDR10_SDR : CB1_DV_SDR);
       if (hdr10AI)
       {
@@ -146,7 +148,7 @@ struct StreamSnapshot
   std::bitset<256> TransmittedBlocks() const
   {
     std::bitset<256> result;
-    if (!(output.flags & CDVPlaybackInfo::HDMI) || !metadata) return result;
+    if (!(output.flags & CDVPlaybackInfo::HDMI) || output.lldv || !metadata) return result;
     if (output.authoredLegacy) { result[1]=result[5]=true; return result; }
     result=blocks;
     if (output.l2TrimsDisabled) result[2]=false;
@@ -258,11 +260,15 @@ public:
   static void NativePresented(const SourceInfo& source,const CDVMetadataBuffer& metadata,
                               const StreamSnapshot::Output& output)
   {
+    const SourceBinding identity{output.stream,output.picture,output.revision};
+    if (output.lldv && (!metadata.Data() || metadata.Binding()!=identity))
+      return;
     std::lock_guard<std::mutex> lock(m_mutex);
     m_nativeActive = true;
     m_nativeSource = source;
     const auto now=std::chrono::steady_clock::now();
-    if (metadata.Data() && (!m_snapshot.metadata || output.stream!=m_snapshot.output.stream ||
+    // A player-led plan and its source facts describe the same accepted picture.
+    if (metadata.Data() && (output.lldv || !m_snapshot.metadata || output.stream!=m_snapshot.output.stream ||
         output.revision!=m_snapshot.output.revision || now>=m_next))
     {
       StoreMetadata(m_snapshot,reinterpret_cast<const AVDOVIMetadata*>(metadata.Data()),
@@ -271,16 +277,17 @@ public:
     }
     if (!metadata.Data()) { m_snapshot.metadata=false; m_snapshot.blocks.reset(); }
     m_snapshot.output = output;
-    if (m_snapshot.transaction.identity==SourceBinding{output.stream,output.picture,output.revision})
+    if (m_snapshot.transaction.identity==identity)
     {
       if (output.effective!=7 || output.reason==OutputReason::None)
         m_snapshot.output.reason=m_snapshot.transaction.reason;
       m_snapshot.output.fallback |= m_snapshot.output.reason!=OutputReason::None;
       m_snapshot.output.requested=m_snapshot.transaction.requested;
-      m_snapshot.output.minimumLinkBits=(output.flags & CDVPlaybackInfo::HDR10) ? 10 : 0;
+      if (!output.lldv)
+        m_snapshot.output.minimumLinkBits=(output.flags & CDVPlaybackInfo::HDR10) ? 10 : 0;
     }
     m_snapshot.referenceWarning=false;
-    if (m_snapshot.transaction.identity==SourceBinding{output.stream,output.picture,output.revision})
+    if (m_snapshot.transaction.identity==identity)
       m_snapshot.transaction.stage="Committed";
     CDVPlaybackInfo::presented.store(output.flags);
   }
@@ -457,13 +464,13 @@ private:
 inline void DVBRIDGE::StreamTelemetry::PublishNativeInfo(uint64_t generation)
 {
   // Bounded summaries refresh at 2 Hz; accepted mode/format changes publish immediately.
-  using Key=std::tuple<uint64_t,uint64_t,uint64_t,unsigned,int,uint32_t,bool,int>;
+  using Key=std::tuple<uint64_t,uint64_t,uint64_t,unsigned,int,uint32_t,unsigned,bool,int>;
   static Key previous{};
   static std::chrono::steady_clock::time_point next;
   const auto source=Read();
   const auto& output=source.output;
   const Key key{generation,output.stream,output.revision,output.flags,output.effective,
-      output.format,output.fallback,int(output.reason)};
+      output.format,output.bits,output.fallback,int(output.reason)};
   const auto now=std::chrono::steady_clock::now();
   if (now<next && key==previous) return;
   if (CServiceBroker::GetDataCacheCore().SetVideoProcessingInfo(generation,NativeProcessingInfo(source)))

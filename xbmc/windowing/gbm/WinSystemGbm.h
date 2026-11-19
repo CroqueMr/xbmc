@@ -8,6 +8,10 @@
 
 #pragma once
 
+#ifdef HAVE_DVBRIDGE
+#include "utils/DVBridgeLldv.h"
+#endif
+
 #include "VideoLayerBridge.h"
 #include "messaging/ApplicationMessenger.h"
 #include "settings/lib/ISettingCallback.h"
@@ -105,6 +109,10 @@ public:
   bool SetHDR(const VideoPicture* videoPicture) override;
   bool IsHDRDisplay() override;
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
+#ifdef HAVE_DVBRIDGE
+  DVBRIDGE::LldvConnectorStatus GetLldvConnectorStatus() const;
+  bool FlipPlayerLedPage(CDVBridgeState& state, const DVBRIDGE::LldvTransport& packed);
+#endif
 
   // holding the returned reference defers video plane teardown until it is released
   std::shared_ptr<CVideoLayerBridge> GetVideoLayerBridge() const { return m_videoLayerBridge; }
