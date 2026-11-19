@@ -1268,7 +1268,6 @@ constexpr std::array<InfoMap, 38> player_process = {{
     {"videodvlevel", PLAYER_PROCESS_VIDEODVLEVEL},
     {"videodvversion", PLAYER_PROCESS_VIDEODVVERSION},
     {"videodvlayers", PLAYER_PROCESS_VIDEODVLAYERS},
-    {"videoprocessingfast", PLAYER_PROCESS_VIDEOPROCESSINGFAST},
     {"videooutputformat", PLAYER_PROCESS_VIDEOOUTPUTFORMAT},
     {"videooutputbits", PLAYER_PROCESS_VIDEOOUTPUTBITS},
     {"video.sidedata", PLAYER_PROCESS_VIDEOSIDEDATA},

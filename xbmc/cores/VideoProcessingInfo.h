@@ -48,9 +48,7 @@ struct VideoProcessingInfo
     bool creativeKnown{};
     uint32_t creativeApplied{}, creativeEdited{};
     int creativeStatus{}, creativeReason{};
-    bool fastChroma{};
     bool iptTransport{};
-    int fastRenderingMode{};
     int felUpscaling{-1};
     bool hdr10AI{}, emittedL1Known{};
     std::array<unsigned,6> aiL1L3{};

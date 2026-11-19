@@ -23,6 +23,7 @@
 #include "drm/DVBridgeState.h"
 #include "ModeChangeHold.h"
 #include "DVPresentStall.h"
+#include "utils/DVBridgePresentation.h"
 #endif
 
 class CGuiCompositeShaderGLES;
@@ -199,11 +200,11 @@ private:
   bool CreateCB1GPUFence(const CDVBridgeGLES::Submission& submission);
   DVBRIDGE::MasterSafety m_masterSafety;
   uint64_t m_masterFramePeriodNs{};
-  bool m_fastRenderEligible{};
-  uint64_t m_fastSourceStream{};
-  double m_fastSourcePts{};
-  uint64_t m_fastPreparedStream{};
-  double m_fastPreparedPts{};
+  bool m_continuousFrameEligible{};
+  uint64_t m_previousSourceStream{};
+  double m_previousSourcePts{};
+  uint64_t m_preparedSourceStream{};
+  double m_preparedSourcePts{};
   bool m_dvShutdownFence{};
   bool m_dvRejectedSurface{}, m_dvRollbackFailed{};
   bool PollRejectedDVSurface();

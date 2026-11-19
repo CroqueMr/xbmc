@@ -25987,18 +25987,6 @@ msgctxt "#40901"
 msgid "Prepare at most one next CB1 frame while the current frame is presented. Native and fallback playback stay unchanged. Applies to the next video."
 msgstr ""
 
-msgctxt "#40904"
-msgid "Dolby Vision fast rendering"
-msgstr ""
-
-msgctxt "#40905"
-msgid "Standard always uses Fast. Master Reference never uses Fast; Auto switches it to Standard if rendering headroom is low. Other modes follow this setting. Small colour-detail differences may occur."
-msgstr ""
-
-msgctxt "#40906"
-msgid "Fast rendering"
-msgstr ""
-
 msgctxt "#40858"
 msgid "Show the accepted playback mode once when a video starts."
 msgstr ""

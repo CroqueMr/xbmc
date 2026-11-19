@@ -97,7 +97,7 @@
           <control type="list" format="string" />
         </setting>
         <setting id="dvbridge.masterfallback" type="boolean" label="40920" help="40921">
-          <requirement>HAVE_DVBRIDGE</requirement><level>2</level><default>true</default>
+          <requirement>HAVE_DVBRIDGE</requirement><level>2</level><default>false</default>
           <dependencies><dependency type="visible" setting="dvbridge.outputmode" operator="is">4</dependency></dependencies>
           <control type="toggle" />
         </setting>
