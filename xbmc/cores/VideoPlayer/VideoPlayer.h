@@ -599,6 +599,7 @@ protected:
   };
   std::deque<BdjPresentationEvent> m_bdjPresentationEvents;
   bool m_bdjDraining{false};
+  bool m_bdjAudioHandoff{false};
   CCurrentStream m_CurrentSubtitle;
   CCurrentStream m_CurrentTeletext;
   CCurrentStream m_CurrentRadioRDS;

@@ -1811,10 +1811,41 @@ void CVideoPlayer::Process()
       if (m_pInputStream->IsEOF())
         break;
 
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+      auto* bluray = IsBlurayInput() ? static_cast<CDVDInputStreamBluray*>(m_pInputStream.get())
+                                    : nullptr;
+      if (bluray)
+        bluray->TakeBdjPlaylistJump();
+#endif
       if (OpenDemuxStream() == false)
       {
         m_bAbortRequest = true;
         break;
+      }
+
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+      if (bluray)
+      {
+        bluray->PollBdjEvents();
+        // Java can replace the playlist while FFmpeg probes it, even with the same ID.
+        if (bluray->TakeBdjPlaylistJump() || bluray->HasPendingBdjSelection())
+        {
+          CLog::Log(LOGDEBUG, "BD-J presentation: discard demuxer superseded during probing");
+          CloseDemuxer();
+          continue;
+        }
+      }
+#endif
+
+      if (m_bdjAudioHandoff)
+      {
+        const auto streams = m_pDemuxer->GetStreams();
+        const bool hasAudio = std::ranges::any_of(streams, [this](const CDemuxStream* stream) {
+          return stream->type == StreamType::AUDIO && !stream->disabled &&
+                 (m_dvd.iSelectedAudioStream < 0 || stream->dvdNavId == m_dvd.iSelectedAudioStream);
+        });
+        if (!hasAudio)
+          CloseStream(m_CurrentAudio, false);
       }
 
       if (m_processInfo)
@@ -1954,7 +1985,17 @@ void CVideoPlayer::Process()
 #endif
         CLog::Log(LOGINFO, "VideoPlayer: next stream, {}",
                   drain ? "wait for old streams to be finished" : "discard abandoned BD-J playlist");
-        CloseStream(m_CurrentAudio, drain);
+        if (drain && m_bdjDraining && m_playSpeed == DVD_PLAYSPEED_NORMAL &&
+            m_CurrentAudio.id >= 0 && m_CurrentAudio.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+            !m_VideoPlayerAudio->IsPassthrough())
+        {
+          // Finish the outgoing audio on its worker. The next decoder can reuse its PCM sink.
+          m_VideoPlayerAudio->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_EOF));
+          m_bdjAudioHandoff = true;
+          m_HasAudio = false;
+        }
+        else
+          CloseStream(m_CurrentAudio, drain);
         CloseStream(m_CurrentVideo, drain);
         CloseStream(m_CurrentSubtitle, false);
         m_bdjPresentationEvents.clear();
@@ -4626,7 +4667,12 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
      m_CurrentAudio.hint != hint)
   {
     if (!player->OpenStream(hint))
+    {
+      if (m_bdjAudioHandoff)
+        CloseStream(m_CurrentAudio, false);
       return false;
+    }
+    m_bdjAudioHandoff = false;
 
     player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, m_displayLost), 1);
 
@@ -4951,8 +4997,12 @@ bool CVideoPlayer::OpenAudioID3Stream(CDVDStreamInfo& hint)
 
 bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 {
-  if (current.id < 0)
+  const bool retainedAudio = current.type == StreamType::AUDIO && m_bdjAudioHandoff;
+  if (current.id < 0 && !retainedAudio)
     return false;
+
+  if (retainedAudio)
+    m_bdjAudioHandoff = false;
 
   CLog::Log(LOGINFO, "Closing stream player {}", current.player);
 
@@ -4981,6 +5031,8 @@ bool CVideoPlayer::CloseStream(CCurrentStream& current, bool bWaitForBuffers)
 
 void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
 {
+  if (m_bdjAudioHandoff)
+    CloseStream(m_CurrentAudio, false);
   ResetBdjPresentation();
   m_syncStartPtsWait.reset();
   CLog::Log(LOGDEBUG, "CVideoPlayer::FlushBuffers - flushing buffers");

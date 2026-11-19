@@ -155,6 +155,7 @@ public:
   uint32_t BdjEndSequence() const { return m_bdjEndSequence; }
   bool WaitingForBdjPlaylist() const { return m_bdjWaitingForPlaylist; }
   bool TakeBdjPlaylistJump();
+  bool HasPendingBdjSelection() const;
 #endif
 
   /*!

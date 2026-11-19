@@ -910,6 +910,14 @@ void CDVDInputStreamBluray::ResetBdjPresentation()
   m_bdjEndSequence = 0;
 }
 
+bool CDVDInputStreamBluray::HasPendingBdjSelection() const
+{
+  // A held play item can be a natural boundary; its probed packets still need to play.
+  return IsBdjTitle() && m_hold == HOLD_HELD &&
+         (m_event.event == BD_EVENT_TITLE || m_event.event == BD_EVENT_PLAYLIST ||
+          m_event.event == BD_EVENT_SEEK);
+}
+
 bool CDVDInputStreamBluray::TakeBdjPlaylistJump()
 {
   const bool jump = m_bdjPlaylistJump;
