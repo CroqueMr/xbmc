@@ -9,6 +9,7 @@
 #pragma once
 
 #include "DVDDemuxers/DVDDemux.h"
+#include "cores/AudioEngine/Utils/AEAudioSourceInfo.h"
 
 extern "C"
 {
@@ -32,6 +33,7 @@ public:
   ~CDVDStreamInfo();
 
   void Clear(); // clears current information
+  AE::AudioSourceInfo GetAudioSourceInfo() const;
   bool Equal(const CDVDStreamInfo& right, int compare);
   bool Equal(const CDemuxStream &right, bool withextradata);
 
@@ -79,7 +81,11 @@ public:
   std::shared_ptr<AVMasteringDisplayMetadata> masteringMetadata;
   std::shared_ptr<AVContentLightMetadata> contentLightMetadata;
   std::string stereo_mode; // stereoscopic 3d mode
+  bool multiview{};
   AVDOVIDecoderConfigurationRecord dovi{};
+#ifdef HAVE_DVBRIDGE
+  FFmpegExtraData doviELConfig;
+#endif
 
   // AUDIO
   int channels;

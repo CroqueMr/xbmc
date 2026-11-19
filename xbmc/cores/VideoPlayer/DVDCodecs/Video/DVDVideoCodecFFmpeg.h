@@ -10,12 +10,18 @@
 
 #include "DVDVideoCodec.h"
 #include "DVDVideoPP.h"
+#include "MultiviewFramePairer.h"
 #include "cores/VideoPlayer/DVDCodecs/DVDCodecs.h"
 #include "cores/VideoPlayer/DVDStreamInfo.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
+#ifdef HAVE_DVBRIDGE
+#include <deque>
+struct dvbridge_fel;
+#endif
 
 extern "C"
 {
@@ -46,8 +52,41 @@ public:
 
   IHardwareDecoder* GetHWAccel() override;
   bool GetPictureCommon(VideoPicture* pVideoPicture) override;
+#ifdef CB1_HAS_HDR10_AI
+  unsigned GetHDR10AIBufferCount() const override;
+  void PrepareHDR10AIReopen() override;
+  void BindHDR10AISource(VideoPicture& picture);
+#endif
+#ifdef HAVE_DVBRIDGE
+  static constexpr unsigned DVEnhancementPendingPictures = 16;
+  bool NeedsDVEnhancement() const
+  {
+    return m_dvNativeOutput && m_hints.dovi.dv_profile == 7 && m_hints.dovi.el_present_flag;
+  }
+#endif
 
 protected:
+  void CaptureSourceSideData(VideoPicture* picture);
+  std::optional<AVMasteringDisplayMetadata> m_sourceMasteringMetadata;
+  std::optional<AVContentLightMetadata> m_sourceLightMetadata;
+  CDVDVideoCodec::VCReturn GetBasePicture(VideoPicture* picture);
+#ifdef HAVE_DVBRIDGE
+  std::shared_ptr<dvbridge_fel> m_dvFel;
+  std::deque<std::shared_ptr<VideoPicture>> m_dvPending;
+  bool m_dvFailed{false};
+  uint64_t m_dvLayerEpoch{0};
+  bool m_dvVideoWindow{false};
+  unsigned m_dvStartupReported{};
+  uint64_t m_dvDiagnosticGeneration{};
+  void ReportDVStartup(unsigned fact, const char* stage) noexcept;
+  bool m_dvNativeOutput{false};
+  DVBRIDGE::SourceOwner m_dvSourceOwner;
+  // Last in-band HDR10 static metadata of this stream (see GetPictureCommon).
+  bool m_dvHasStreamDisplayMetadata{false};
+  AVMasteringDisplayMetadata m_dvStreamDisplayMetadata{};
+  bool m_dvHasStreamLightMetadata{false};
+  AVContentLightMetadata m_dvStreamLightMetadata{};
+#endif
   void Dispose();
   CDVDVideoCodec::VCReturn HandleHwFatal();
   static enum AVPixelFormat GetFormat(struct AVCodecContext * avctx, const AVPixelFormat * fmt);
@@ -58,6 +97,7 @@ protected:
   void SetFilters();
   void UpdateName();
   bool SetPictureParams(VideoPicture* pVideoPicture);
+  void UpdateDropControl(int64_t pts);
 
   bool HasHardware() { return m_pHardware != nullptr; }
   void SetHardware(IHardwareDecoder *hardware);
@@ -71,10 +111,16 @@ protected:
   std::string m_filters_next;
   AVFilterGraph* m_pFilterGraph = nullptr;
   AVFilterContext* m_pFilterIn = nullptr;
+  AVFilterContext* m_pFilterIn2 = nullptr; //!< second view of a multiview stream
   AVFilterContext* m_pFilterOut = nullptr;;
   AVFrame* m_pFilterFrame = nullptr;;
   bool m_filterEof = false;
   bool m_eof = false;
+
+  //! Eyes are coded as separate views and are packed side by side by the filter graph.
+  bool m_multiview = false;
+  CMultiviewFramePairer m_multiviewPairer; //!< routes the views to the graph's two inputs
+  std::string m_stereoMode; //!< mode the packed frame is in, empty when not stereoscopic
 
   std::unique_ptr<IDVDVideoPP> m_postProc;
 

@@ -116,6 +116,14 @@ void CVideoPlayerAudio::OpenStream(CDVDStreamInfo& hints, std::unique_ptr<CDVDAu
 
   /* store our stream hints */
   m_streaminfo = hints;
+  m_audioStats = BitstreamStats{};
+  m_audioStats.Start();
+  m_audioSource.Reset(hints.GetAudioSourceInfo());
+  m_audioSourceLogged = false;
+  m_processInfo.SetAudioSourceInfo(m_audioSource.Get());
+  CLog::Log(LOGINFO, "Audio source: codec={} profile={} rate={} bits={} channels={} layout={:#x}",
+            hints.codec, hints.profile, hints.samplerate, hints.bitspersample,
+            hints.channels, hints.channellayout);
 
   /* update codec information from what codec gave out, if any */
   int channelsFromCodec   = m_pAudioCodec->GetFormat().m_channelLayout.Count();
@@ -167,6 +175,8 @@ void CVideoPlayerAudio::CloseStream(bool bWaitForBuffers)
 
   // shut down the adio_decode thread and wait for it
   StopThread(); // will set this->m_bStop to true
+  m_audioSource.Reset({});
+  m_processInfo.SetAudioSourceInfo({});
 
   // destroy audio device
   CLog::Log(LOGINFO, "Closing audio device");
@@ -236,7 +246,6 @@ void CVideoPlayerAudio::Process()
   DVDAudioFrame audioframe;
   audioframe.nb_frames = 0;
   audioframe.framesOut = 0;
-  m_audioStats.Start();
   m_disconAdjustCounter = 0;
 
   bool onlyPrioMsgs = false;
@@ -262,10 +271,12 @@ void CVideoPlayerAudio::Process()
     if (m_paused)
       priority = 1;
 
-    if (onlyPrioMsgs)
+    const bool pendingSink = audioframe.nb_frames > audioframe.framesOut &&
+                             !m_audioSink.IsValidFormat(audioframe);
+    if (onlyPrioMsgs || pendingSink)
     {
       priority = 1;
-      timeout = 0ms;
+      timeout = pendingSink ? 10ms : 0ms;
     }
 
     MsgQueueReturnCode ret = m_messageQueue.Get(pMsg, timeout, priority);
@@ -388,6 +399,7 @@ void CVideoPlayerAudio::Process()
     else if (pMsg->IsType(CDVDMsg::GENERAL_STREAMCHANGE))
     {
       auto msg = std::static_pointer_cast<CDVDMsgAudioCodecChange>(pMsg);
+      audioframe.nb_frames = audioframe.framesOut = 0;
       OpenStream(msg->m_hints, std::move(msg->m_codec));
       msg->m_codec = NULL;
     }
@@ -435,6 +447,23 @@ void CVideoPlayerAudio::Process()
       }
 
       m_audioStats.AddSampleBytes(pPacket->iSize);
+      bool sourceChanged = false;
+      if (pPacket->pData && pPacket->iSize > 0)
+        sourceChanged = m_audioSource.Observe({pPacket->pData, size_t(pPacket->iSize)});
+      if (!m_pAudioCodec->NeedPassthrough())
+        sourceChanged = m_audioSource.UpdateProfile(m_pAudioCodec->GetProfile()) || sourceChanged;
+      if (sourceChanged)
+      {
+        const auto& source = m_audioSource.Get();
+        m_processInfo.SetAudioSourceInfo(source);
+        if (!m_audioSourceLogged && (source.presentation > 0 || source.dialnorm))
+        {
+          CLog::Log(LOGINFO, "Audio metadata: source={} presentation={} bed={} objects={} dialnorm={}",
+                    AE::SourceTitle(source), source.presentation, source.bedChannels, source.objects,
+                    AE::Dialnorm(source));
+          m_audioSourceLogged = true;
+        }
+      }
       UpdatePlayerInfo();
 
       if (ProcessDecoderOutput(audioframe))
@@ -451,7 +480,8 @@ void CVideoPlayerAudio::Process()
 
 bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
 {
-  if (audioframe.nb_frames <= audioframe.framesOut)
+  const bool newFrame = audioframe.nb_frames <= audioframe.framesOut;
+  if (newFrame)
   {
     audioframe.hasDownmix = false;
 
@@ -513,34 +543,45 @@ bool CVideoPlayerAudio::ProcessDecoderOutput(DVDAudioFrame &audioframe)
     if (m_streaminfo.codec == AV_CODEC_ID_FLAC && m_streaminfo.channellayout)
       audioframe.format.m_channelLayout = CAEUtil::GetAEChannelLayout(m_streaminfo.channellayout);
 
-    // we have successfully decoded an audio frame, setup renderer to match
-    if (!m_audioSink.IsValidFormat(audioframe))
-    {
-      if (m_speed)
-        m_audioSink.Drain();
-
-      m_audioSink.Destroy(false);
-
-      if (!m_audioSink.Create(audioframe, m_streaminfo.codec, m_synctype == SYNC_RESAMPLE))
-        CLog::Log(LOGERROR, "{} - failed to create audio renderer", __FUNCTION__);
-
-      m_prevsynctype = -1;
-
-      if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
-        m_audioSink.Resume();
-    }
-
-    m_audioSink.SetDynamicRangeCompression(
-        static_cast<long>(m_processInfo.GetVideoSettings().m_VolumeAmplification * 100));
-
-    SetSyncType(audioframe.passthrough);
-
     // downmix
     double clev = audioframe.hasDownmix ? audioframe.centerMixLevel : M_SQRT1_2;
     double curDB = 20 * log10(clev);
     audioframe.centerMixLevel = pow(10, (curDB + m_processInfo.GetVideoSettings().m_CenterMixLevel) / 20);
     audioframe.hasDownmix = true;
   }
+
+  // A display reset can temporarily reject a stream. Retain this frame for retry.
+  if (!m_audioSink.IsValidFormat(audioframe))
+  {
+    if (!newFrame && CServiceBroker::GetActiveAE()->IsSuspended())
+      return true;
+
+    if (m_speed)
+      m_audioSink.Drain();
+
+    m_audioSink.Destroy(false);
+
+    if (!m_audioSink.Create(audioframe, m_streaminfo.codec, m_synctype == SYNC_RESAMPLE))
+    {
+      if (newFrame)
+        CLog::Log(LOGERROR, "{} - failed to create audio renderer; decoded frame retained for retry",
+                  __FUNCTION__);
+      return true;
+    }
+
+    if (!newFrame)
+      CLog::Log(LOGINFO, "{} - audio renderer recovered with pending decoded frame", __FUNCTION__);
+
+    m_prevsynctype = -1;
+
+    if (m_syncState == IDVDStreamPlayer::SYNC_INSYNC)
+      m_audioSink.Resume();
+  }
+
+  m_audioSink.SetDynamicRangeCompression(
+      static_cast<long>(m_processInfo.GetVideoSettings().m_VolumeAmplification * 100));
+
+  SetSyncType(audioframe.passthrough);
 
   if (m_synctype == SYNC_DISCON)
   {

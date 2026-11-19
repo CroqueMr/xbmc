@@ -9,6 +9,7 @@
 #pragma once
 
 #include "DVDResource.h"
+#include "DVMetadataBuffer.h"
 #include "cores/VideoPlayer/Buffers/VideoBuffer.h"
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "cores/VideoPlayer/Process/ProcessInfo.h"
@@ -23,6 +24,7 @@ extern "C" {
 #include <map>
 
 class CSetting;
+class VideoSourceSideData;
 
 // when modifying these structures, make sure you update all codecs accordingly
 #define FRAME_TYPE_UNDEF 0
@@ -68,6 +70,15 @@ public:
   StreamHdrType hdrType;
   StreamHdrType hdrTypeAlt;
   std::string strDVELType;
+  std::shared_ptr<const VideoSourceSideData> sourceSideData;
+  CDVMetadataBuffer doviMetadata;
+  DVBRIDGE::SourceInfo doviSourceInfo{};
+  DVBRIDGE::SourceBinding doviSourceBinding{};
+  int64_t doviSourcePts = AV_NOPTS_VALUE;
+#ifdef HAVE_DVBRIDGE
+  std::shared_ptr<AVFrame> doviEnhancement;
+  DVBRIDGE::SourceBinding doviEnhancementBinding{};
+#endif
 
   bool hasDisplayMetadata = false;
   AVMasteringDisplayMetadata displayMetadata;
@@ -99,6 +110,7 @@ private:
 #define DVD_CODEC_CTRL_DROP         0x08000000  //< drop in decoder or set DVP_FLAG_DROPPED, no render of frame
 #define DVD_CODEC_CTRL_DROP_ANY     0x10000000  //< drop some non-reference frame
 #define DVD_CODEC_CTRL_DRAIN        0x20000000  //< squeeze out pictured without feeding new packets
+#define DVD_CODEC_CTRL_POLL         0x00800000  //< temporary/retiring drain, not source EOF
 #define DVD_CODEC_CTRL_ROTATE       0x40000000  //< rotate if renderer does not support it
 
 // DVP_FLAG 0x00000100 - 0x00000f00 is in use by libmpeg2!
@@ -115,6 +127,11 @@ class CDVDCodecOptions;
 class CDVDVideoCodec
 {
 public:
+  void SetVideoProcessingGeneration(uint64_t generation)
+  {
+    m_videoProcessingGeneration = generation;
+    m_videoSourceSerial = 0;
+  }
 
   enum VCReturn
   {
@@ -247,6 +264,8 @@ public:
 
 protected:
   CProcessInfo &m_processInfo;
+  uint64_t m_videoProcessingGeneration{};
+  uint64_t m_videoSourceSerial{};
 };
 
 // callback interface for ffmpeg hw accelerators
@@ -272,4 +291,8 @@ public:
   virtual ~ICallbackHWAccel() = default;
   virtual IHardwareDecoder* GetHWAccel() = 0;
   virtual bool GetPictureCommon(VideoPicture* pVideoPicture) = 0;
+#ifdef CB1_HAS_HDR10_AI
+  virtual unsigned GetHDR10AIBufferCount() const { return 6; }
+  virtual void PrepareHDR10AIReopen() {}
+#endif
 };

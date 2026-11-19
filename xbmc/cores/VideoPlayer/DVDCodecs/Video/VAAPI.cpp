@@ -26,6 +26,13 @@
 #include <array>
 #include <mutex>
 #include <optional>
+#ifdef HAVE_DVBRIDGE
+#include "DVDVideoCodecFFmpeg.h"
+#include "utils/DVBridgeDiagnosticLog.h"
+#endif
+#ifdef CB1_HAS_HDR10_AI
+#include "HDR10AIBuffers.h"
+#endif
 
 #include <drm_fourcc.h>
 #include <va/va_drm.h>
@@ -576,6 +583,12 @@ bool CDecoder::Open(AVCodecContext* avctx, AVCodecContext* mainctx, const enum A
   m_vaapiConfig.surfaceHeight = avctx->coded_height;
   m_vaapiConfig.aspect = avctx->sample_aspect_ratio;
   m_vaapiConfig.bitDepth = avctx->bits_per_raw_sample;
+  // get_format's software format describes the decoded samples. Add-on hints
+  // can still say 8 bits for a 10-bit stream; retain the old fallback if absent.
+  const auto* decodedFormat = av_pix_fmt_desc_get(avctx->sw_pix_fmt);
+  if (decodedFormat && !(decodedFormat->flags & AV_PIX_FMT_FLAG_HWACCEL) &&
+      decodedFormat->comp[0].depth > 0)
+    m_vaapiConfig.bitDepth = decodedFormat->comp[0].depth;
   // ffmpeg's HEVC, VP9, and AV1 decoders do not set bits_per_raw_sample,
   // but they do set pix_fmt correctly (e.g. yuv420p10le for 10-bit).
   // Derive bit depth from the pixel format when bits_per_raw_sample is 0,
@@ -749,6 +762,23 @@ bool CDecoder::Open(AVCodecContext* avctx, AVCodecContext* mainctx, const enum A
   // add an extra surface for safety, some faulty material
   // make ffmpeg require more buffers
   m_vaapiConfig.maxReferences += 6;
+#ifdef CB1_HAS_HDR10_AI
+  m_hdr10AIBuffers = static_cast<ICallbackHWAccel*>(avctx->opaque)->GetHDR10AIBufferCount();
+  m_vaapiConfig.maxReferences =
+      DVBRIDGE::HDR10AIBuffers::DecodeSurfaces(m_vaapiConfig.maxReferences, m_hdr10AIBuffers);
+  m_vaapiConfig.renderPictures = DVBRIDGE::HDR10AIBuffers::RenderPictures(m_hdr10AIBuffers);
+#endif
+#ifdef HAVE_DVBRIDGE
+  const auto* felDecoder = dynamic_cast<CDVDVideoCodecFFmpeg*>(
+      static_cast<ICallbackHWAccel*>(avctx->opaque));
+  if (felDecoder && felDecoder->NeedsDVEnhancement())
+  {
+    // Pairing retains BL output pictures while waiting for independently reordered EL.
+    // Reserve those slots in addition to the unchanged native decode/render headroom.
+    m_vaapiConfig.maxReferences += CDVDVideoCodecFFmpeg::DVEnhancementPendingPictures;
+    m_vaapiConfig.renderPictures += CDVDVideoCodecFFmpeg::DVEnhancementPendingPictures;
+  }
+#endif
 
   if (!ConfigVAAPI())
   {
@@ -766,6 +796,20 @@ bool CDecoder::Open(AVCodecContext* avctx, AVCodecContext* mainctx, const enum A
 
   vaapiDeviceCtx->display = m_vaapiConfig.dpy;
   vaapiDeviceCtx->driver_quirks = AV_VAAPI_DRIVER_QUIRK_RENDER_PARAM_BUFFERS;
+#ifdef HAVE_DVBRIDGE
+  const auto* dvDecoder = dynamic_cast<CDVDVideoCodecFFmpeg*>(
+      static_cast<ICallbackHWAccel*>(avctx->opaque));
+  if (dvDecoder && dvDecoder->NeedsDVEnhancement())
+  {
+    // A second FFmpeg-managed decoder needs the device's format table initialized.
+    vaapiDeviceCtx->driver_quirks |= AV_VAAPI_DRIVER_QUIRK_USER_SET;
+    if (av_hwdevice_ctx_init(m_deviceRef.get()) < 0)
+    {
+      av_buffer_unref(&framesRef);
+      return false;
+    }
+  }
+#endif
   vaapiFramesCtx->nb_attributes = 0;
   vaapiFramesCtx->nb_surfaces = m_videoSurfaces.Size();
   VASurfaceID *surfaceIds = (VASurfaceID*)av_malloc(vaapiFramesCtx->nb_surfaces *  sizeof(VASurfaceID));
@@ -1027,6 +1071,23 @@ CDVDVideoCodec::VCReturn CDecoder::Decode(AVCodecContext* avctx, AVFrame* pFrame
             "VAAPI::{} - timed out waiting for output message - decoded: {}, proc: {}, has free "
             "surface: {}",
             __FUNCTION__, decoded, processed, m_videoSurfaces.HasFree() ? "yes" : "no");
+#ifdef HAVE_DVBRIDGE
+  if (DVBRIDGE::DiagnosticsEnabled())
+  {
+    uint16_t stalledDecoded{}, stalledProcessed{}, stalledRender{};
+    bool stalledVpp{};
+    m_bufferStats.Get(stalledDecoded, stalledProcessed, stalledRender, stalledVpp);
+    unsigned aiBuffers{};
+#ifdef CB1_HAS_HDR10_AI
+    aiBuffers = m_hdr10AIBuffers;
+#endif
+    DVBRIDGE::DiagnosticFailureLog("vaapi-output-timeout", true, LOGERROR,
+        "CB1 VAAPI output timeout: decoded={} processed={} render={} decode_free={} vpp={} decode_limit={} render_limit={} ai_buffers={} present={} drain={} control={}",
+        stalledDecoded, stalledProcessed, stalledRender, m_videoSurfaces.HasFree(), stalledVpp,
+        m_vaapiConfig.maxReferences, m_vaapiConfig.renderPictures, aiBuffers,
+        m_presentPicture != nullptr, drain, m_codecControl);
+  }
+#endif
   m_DisplayState = VAAPI_ERROR;
 
   return CDVDVideoCodec::VC_ERROR;
@@ -1041,6 +1102,23 @@ CDVDVideoCodec::VCReturn CDecoder::Check(AVCodecContext* avctx)
     state = m_DisplayState;
   }
 
+#ifdef CB1_HAS_HDR10_AI
+  if (state == VAAPI_OPEN &&
+      m_hdr10AIBuffers < static_cast<ICallbackHWAccel*>(avctx->opaque)->GetHDR10AIBufferCount())
+  {
+    // Finish output reads before Reopen destroys the codec-owned VA context.
+    Reset();
+    {
+      std::unique_lock lock(m_DecoderSection);
+      state = m_DisplayState;
+    }
+    if (state == VAAPI_OPEN)
+    {
+      static_cast<ICallbackHWAccel*>(avctx->opaque)->PrepareHDR10AIReopen();
+      return CDVDVideoCodec::VC_REOPEN;
+    }
+  }
+#endif
   if (state == VAAPI_LOST)
   {
     CLog::Log(LOGDEBUG, LOGVIDEO, "VAAPI::Check waiting for display reset event");
@@ -1255,11 +1333,13 @@ bool CDecoder::ConfigVAAPI()
   // can dispatch sampling per-fourcc without re-inspecting each surface.
   m_vaapiConfig.pixelFormat = pixelFormat;
 
-  VASurfaceID surfaces[32];
   int nb_surfaces = m_vaapiConfig.maxReferences;
+  if (nb_surfaces < 1 || nb_surfaces > 128)
+    return false;
+  std::vector<VASurfaceID> surfaces(nb_surfaces);
   if (!CheckSuccess(
       vaCreateSurfaces(m_vaapiConfig.dpy, format, m_vaapiConfig.surfaceWidth,
-          m_vaapiConfig.surfaceHeight, surfaces,
+          m_vaapiConfig.surfaceHeight, surfaces.data(),
           nb_surfaces, attribs, 1), "vaCreateSurfaces"))
   {
     return false;
@@ -1405,7 +1485,7 @@ public:
   bool HasFree();
   void QueueReturnPicture(CVaapiRenderPicture *pic);
   CVaapiRenderPicture* ProcessSyncPicture();
-  void Init();
+  void Init(unsigned count = NUM_RENDER_PICS);
   void DeleteTextures(bool precleanup);
 
   std::deque<CVaapiProcessedPicture> processedPics;
@@ -1436,10 +1516,9 @@ CVaapiBufferPool::CVaapiBufferPool(CDecoder &decoder)
 
 CVaapiBufferPool::~CVaapiBufferPool()
 {
-  CVaapiRenderPicture *pic;
-  for (unsigned int i = 0; i < NUM_RENDER_PICS; i++)
+  for (auto* pic : allRenderPics)
   {
-    pic = allRenderPics[i];
+    av_frame_free(&pic->avFrame);
     delete pic;
   }
   allRenderPics.clear();
@@ -1537,11 +1616,19 @@ CVaapiRenderPicture* CVaapiBufferPool::ProcessSyncPicture()
   return retPic;
 }
 
-void CVaapiBufferPool::Init()
+void CVaapiBufferPool::Init(unsigned count)
 {
+  count = std::clamp(count, unsigned(NUM_RENDER_PICS), 64u);
+  while (allRenderPics.size() < count)
+  {
+    const auto id = allRenderPics.size();
+    allRenderPics.push_back(new CVaapiRenderPicture(id));
+    freeRenderPics.push_back(id);
+  }
   for (auto &pic : allRenderPics)
   {
-    pic->avFrame = av_frame_alloc();
+    if (!pic->avFrame) pic->avFrame = av_frame_alloc();
+    pic->renderBufferCount = count == NUM_RENDER_PICS ? 6 : count - 1;
     pic->valid = false;
   }
   procPicId = 0;
@@ -2014,6 +2101,14 @@ bool COutput::Init()
 
 bool COutput::Uninit()
 {
+#ifdef HAVE_DVBRIDGE
+  if (DVBRIDGE::DiagnosticsEnabled() && m_bufferPool)
+    DVBRIDGE::DiagnosticLog(LOGINFO,
+        "CB1 VAAPI output teardown: decoded={} processed={} held={} render_free={} postproc={} discarded={}",
+        m_bufferPool->decodedPics.size(), m_bufferPool->processedPics.size(),
+        m_bufferPool->processedPicsAway.size(), m_bufferPool->HasFree(),
+        m_pp != nullptr, m_discardedPostprocs.size());
+#endif
   ProcessSyncPicture();
   ReleaseBufferPool();
   if (m_pp)
@@ -2232,6 +2327,7 @@ CVaapiRenderPicture* COutput::ProcessPicture(CVaapiProcessedPicture &pic)
 {
   CVaapiRenderPicture *retPic;
   retPic = m_bufferPool->GetVaapi();
+  retPic->decodeCompleted = false;
   retPic->DVDPic.SetParams(pic.DVDPic);
 
   // Stamp the surface fourcc so renderers can dispatch sampling per-fourcc
@@ -2247,11 +2343,12 @@ CVaapiRenderPicture* COutput::ProcessPicture(CVaapiProcessedPicture &pic)
 
   if (pic.source->UseVideoSurface())
   {
-    vaSyncSurface(m_config.dpy, pic.videoSurface);
+    retPic->decodeCompleted = vaSyncSurface(m_config.dpy, pic.videoSurface) == VA_STATUS_SUCCESS;
     pic.id = m_bufferPool->procPicId++;
     m_bufferPool->processedPicsAway.push_back(pic);
     retPic->procPic = pic;
     retPic->vadsp = m_config.dpy;
+    retPic->decodeSurfaceCount = m_config.maxReferences;
   }
   else
   {
@@ -2321,7 +2418,7 @@ void COutput::ProcessReturnProcPicture(int id)
 
 void COutput::EnsureBufferPool()
 {
-  m_bufferPool->Init();
+  m_bufferPool->Init(m_config.renderPictures);
 }
 
 void COutput::ReleaseBufferPool(bool precleanup)

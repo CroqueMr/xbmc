@@ -7,6 +7,11 @@
  */
 
 #include "DVDVideoCodecFFmpeg.h"
+#include "cores/VideoSourceSideData.h"
+#ifdef CB1_HAS_HDR10_AI
+#include "HDR10AIBuffers.h"
+#include "HDR10SourceType.h"
+#endif
 
 #include "DVDCodecs/DVDCodecs.h"
 #include "DVDCodecs/DVDFactoryCodec.h"
@@ -15,6 +20,7 @@
 #include "DVDVideoPPFFmpeg.h"
 #endif
 #include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "cores/FFmpeg.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
@@ -23,12 +29,28 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/CPUInfo.h"
+#include "utils/DVBridgeDiagnosticLog.h"
 #include "utils/StringUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
 #include <memory>
 #include <mutex>
+#include "dvbridge_metadata_bounds.h"
+#ifdef HAVE_DVBRIDGE
+#include "DVPlaybackPolicy.h"
+#include "DVOutputSettings.h"
+#include <cstdlib>
+#include <cmath>
+extern "C"
+{
+#include "dvbridge_fel.h"
+#include <libavutil/hwcontext.h>
+#ifdef HAVE_LIBVA
+#include <libavutil/hwcontext_vaapi.h>
+#endif
+}
+#endif
 
 extern "C" {
 #include <libavcodec/defs.h>
@@ -46,6 +68,14 @@ extern "C" {
 #else
 #include <math.h>
 #define RINT lrint
+#endif
+
+#ifdef HAVE_DVBRIDGE
+namespace
+{
+char presentableDVPacket;
+char decodeOnlyDVPacket;
+}
 #endif
 
 enum DecoderState
@@ -261,7 +291,10 @@ enum AVPixelFormat CDVDVideoCodecFFmpeg::GetFormat(struct AVCodecContext * avctx
   // 2nd condition:
   // fix an ffmpeg issue here, it calls us with an invalid profile
   // then a 2nd call with a valid one
-  if (ctx->m_decoderState != STATE_HW_SINGLE ||
+  // 3rd condition:
+  // no hw accel decodes the dependent layer of a multiview stream, and the
+  // filter graph that packs the views is skipped entirely when one is attached
+  if (ctx->m_decoderState != STATE_HW_SINGLE || ctx->m_multiview ||
       (avctx->codec_id == AV_CODEC_ID_VC1 && avctx->profile == AV_PROFILE_UNKNOWN))
   {
     AVPixelFormat defaultFmt = avcodec_default_get_format(avctx, fmt);
@@ -334,7 +367,17 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
   }
 
   m_hints = hints;
+  m_sourceMasteringMetadata.reset();
+  m_sourceLightMetadata.reset();
   m_options = options;
+#ifdef HAVE_DVBRIDGE
+  m_dvNativeOutput = DVBRIDGE::RetainsDVSource(hints);
+  m_dvSourceOwner.BeginStream();
+  m_dvStartupReported = 0;
+  m_dvDiagnosticGeneration = DVBRIDGE::DiagnosticGeneration();
+  m_dvHasStreamDisplayMetadata = false;
+  m_dvHasStreamLightMetadata = false;
+#endif
 
   const AVCodec* pCodec = nullptr;
 
@@ -434,6 +477,44 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
     av_opt_set(m_pCodecContext, it->m_name.c_str(), it->m_value.c_str(), 0);
   }
 
+  m_multiview = false;
+  m_multiviewPairer.Reset();
+  m_stereoMode.clear();
+  if (hints.multiview)
+  {
+    // Ask for every coded view rather than just the base layer. The views come
+    // out as separate frames sharing one pts; the filter graph packs them side
+    // by side into the layout the demuxer already advertised.
+    if (av_opt_set(m_pCodecContext, "view_ids", "-1", AV_OPT_SEARCH_CHILDREN) < 0)
+    {
+      CLog::Log(LOGWARNING,
+                "CDVDVideoCodecFFmpeg::{} - decoder has no multiview support, playing the base "
+                "view only",
+                __FUNCTION__);
+      // The demuxer advertised the packed layout this decoder was expected to
+      // produce. It is not going to, so say so rather than let the renderer
+      // crop half of a single view.
+      m_stereoMode = "mono";
+    }
+    else
+    {
+      m_multiview = true;
+      m_stereoMode = hints.stereo_mode;
+
+      // A multiview stream never reaches a hardware accelerator, so it would
+      // otherwise decode on the single thread the hardware path leaves it with.
+      // Thread it, but by slice only: frame threading overlaps consecutive
+      // frames, which multiview coding does not allow, because the dependent
+      // view of an access unit predicts from the base view of that same access
+      // unit. Measured on an H.264 MVC stream frame threading is about a
+      // quarter slower than slice threading alone. A stream this decoder plays
+      // as 2D keeps the threading it has today.
+      m_pCodecContext->thread_count =
+          std::max(1, std::min(CServiceBroker::GetCPUInfo()->GetCPUCount(), 16));
+      m_pCodecContext->thread_type = FF_THREAD_SLICE;
+    }
+  }
+
   if (avcodec_open2(m_pCodecContext, pCodec, nullptr) < 0)
   {
     CLog::Log(LOGDEBUG,"CDVDVideoCodecFFmpeg::Open() Unable to open codec");
@@ -472,11 +553,42 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
 
   m_dropCtrl.Reset(true);
   m_eof = false;
+#ifdef HAVE_DVBRIDGE
+  if (NeedsDVEnhancement())
+  {
+    AVCodecParameters* parameters = avcodec_parameters_alloc();
+    if (!parameters)
+      return false;
+    int result = avcodec_parameters_from_context(parameters, m_pCodecContext);
+    if (result >= 0 && hints.doviELConfig)
+    {
+      AVPacketSideData* side = av_packet_side_data_new(&parameters->coded_side_data,
+          &parameters->nb_coded_side_data, AV_PKT_DATA_HEVC_CONF, hints.doviELConfig.GetSize(), 0);
+      if (side)
+        std::memcpy(side->data, hints.doviELConfig.GetData(), hints.doviELConfig.GetSize());
+      else
+        result = AVERROR(ENOMEM);
+    }
+    if (result >= 0)
+      m_dvFel = {dvbridge_fel_create(parameters, AVRational{1, AV_TIME_BASE}), dvbridge_fel_destroy};
+    avcodec_parameters_free(&parameters);
+    if (!m_dvFel)
+      return false;
+  }
+#endif
   return true;
 }
 
 void CDVDVideoCodecFFmpeg::Dispose()
 {
+#ifdef HAVE_DVBRIDGE
+  m_dvPending.clear();
+  m_dvFel.reset();
+  m_dvLayerEpoch = 0;
+  m_dvVideoWindow = false;
+  m_dvFailed = false;
+  m_dvNativeOutput = false;
+#endif
   av_frame_free(&m_pFrame);
   av_frame_free(&m_pDecodedFrame);
   av_frame_free(&m_pFilterFrame);
@@ -585,6 +697,18 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   if (!packet.pData)
     return true;
 
+#ifdef HAVE_DVBRIDGE
+  const auto& layer = packet.doviLayerTimes;
+  if (m_dvFel && layer.valid && m_dvLayerEpoch && layer.epoch != m_dvLayerEpoch)
+  {
+    if (layer.epoch < m_dvLayerEpoch)
+    {
+      m_dvFailed = true;
+      return true;
+    }
+    Reset(); // Both native decoders and pending pictures share this boundary.
+  }
+#endif
   if (m_eof)
   {
     Reset();
@@ -609,6 +733,16 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
 
   avpkt->data = packet.pData;
   avpkt->size = packet.iSize;
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel)
+  {
+    if (packet.videoWindowed)
+      avpkt->opaque = packet.videoDecodeOnly ? &decodeOnlyDVPacket : &presentableDVPacket;
+  }
+  else
+#endif
+  if (packet.videoDecodeOnly)
+    avpkt->flags |= AV_PKT_FLAG_DISCARD;
   avpkt->dts = (packet.dts == DVD_NOPTS_VALUE)
                    ? AV_NOPTS_VALUE
                    : static_cast<int64_t>(packet.dts / DVD_TIME_BASE * AV_TIME_BASE);
@@ -618,7 +752,33 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   avpkt->side_data = static_cast<AVPacketSideData*>(packet.pSideData);
   avpkt->side_data_elems = packet.iSideDataElems;
 
-  int ret = avcodec_send_packet(m_pCodecContext, avpkt);
+  int ret;
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel && layer.valid && layer.basePts == AV_NOPTS_VALUE)
+    ret = 0; // An explicit terminal EL unit is not a BL access unit.
+  else
+#endif
+    ret = avcodec_send_packet(m_pCodecContext, avpkt);
+#ifdef HAVE_DVBRIDGE
+  // Submit once, only after BL accepted the packet (Kodi retries EAGAIN).
+  if (ret == 0 && m_dvFel)
+  {
+    if (packet.doviLayerTimes.valid)
+    {
+      m_dvLayerEpoch = packet.doviLayerTimes.epoch;
+      m_dvVideoWindow = packet.videoWindowed;
+    }
+    const auto& timing = packet.doviLayerTimes;
+    const dvbridge_fel_source source{timing.basePts, timing.enhancementPts,
+        {timing.clockNum, timing.clockDen}, timing.epoch, timing.presentable};
+    const bool submitted = timing.valid ? dvbridge_fel_submit_source(m_dvFel.get(), avpkt, &source) :
+                                         dvbridge_fel_submit(m_dvFel.get(), avpkt);
+    if (!submitted)
+      m_dvFailed = true;
+    else
+      ReportDVStartup(2, "fel-input-accepted");
+  }
+#endif
 
   //! @todo: properly handle avpkt side_data. this works around our improper use of the side_data
   // as we pass pointers to ffmpeg allocated memory for the side_data. we should really be allocating
@@ -626,6 +786,10 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   av_buffer_unref(&avpkt->buf);
   av_free(avpkt);
 
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel && layer.valid && layer.basePts == AV_NOPTS_VALUE)
+    return true;
+#endif
   // try again
   if (ret == AVERROR(EAGAIN))
   {
@@ -655,7 +819,128 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   return true;
 }
 
+#ifdef HAVE_DVBRIDGE
+void CDVDVideoCodecFFmpeg::ReportDVStartup(unsigned fact, const char* stage) noexcept
+{
+  if (!DVBRIDGE::DiagnosticsEnabled() || (m_dvStartupReported & fact)) return;
+  m_dvStartupReported |= fact;
+  DVBRIDGE::DiagnosticStartup(m_dvDiagnosticGeneration, m_dvSourceOwner.Stream(), stage, bool(m_dvFel),
+                             m_dvPending.size());
+}
+#endif
+
 CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPicture)
+{
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel)
+  {
+    for (;;)
+    {
+      auto emit = [&]() -> VCReturn
+      {
+        while (!m_dvPending.empty())
+        {
+          auto& base = m_dvPending.front();
+          if (base->doviSourcePts == AV_NOPTS_VALUE)
+            return VC_FATAL;
+          AVFrame* enhancement = nullptr;
+          int result = dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts,
+                                         &enhancement);
+          if (result == 2)
+          {
+            m_dvPending.pop_front();
+            continue;
+          }
+          if (result < 0)
+          {
+            CLog::Log(LOGERROR, "DV FEL: cannot pair {} pending base pictures; stopping without substitution",
+                      m_dvPending.size());
+            return VC_FATAL;
+          }
+          if (!result)
+            return VC_NONE;
+          if (m_dvLayerEpoch && (!base->doviMetadata.Data() ||
+              !(base->doviMetadata.Binding() == base->doviSourceBinding)))
+          {
+            av_frame_free(&enhancement);
+            return VC_FATAL;
+          }
+          ReportDVStartup(4, "el-decoded");
+#ifdef HAVE_LIBVA
+          if (base->iFlags & DVP_FLAG_DROPPED)
+          {
+            // Preroll bypasses the renderer's normal EL completion check. Consume
+            // its decode report before retiring the image, as Kodi does for BL.
+            const auto* frames = enhancement->hw_frames_ctx ?
+                reinterpret_cast<const AVHWFramesContext*>(enhancement->hw_frames_ctx->data) : nullptr;
+            const auto* device = frames ?
+                reinterpret_cast<const AVVAAPIDeviceContext*>(frames->device_ctx->hwctx) : nullptr;
+            if (!device || vaSyncSurface(device->display,
+                static_cast<VASurfaceID>(reinterpret_cast<uintptr_t>(enhancement->data[3]))) != VA_STATUS_SUCCESS)
+            {
+              CLog::Log(LOGERROR, "DV FEL: discarded picture decode did not complete at {}",
+                        base->doviSourcePts);
+              av_frame_free(&enhancement);
+              return VC_FATAL;
+            }
+          }
+#endif
+          base->doviEnhancement = {enhancement, [](AVFrame* f) { av_frame_free(&f); }};
+          // The pairing owner consumed the exact EL from this stream/reset epoch.
+          base->doviEnhancementBinding = base->doviMetadata.Binding();
+          pVideoPicture->CopyRef(*base);
+          m_dvPending.pop_front();
+          ReportDVStartup(8, "fel-paired");
+          return VC_PICTURE;
+        }
+        return VC_NONE;
+      };
+      VCReturn paired = emit();
+      if (paired != VC_NONE)
+        return paired;
+      if (m_dvFailed || dvbridge_fel_failed(m_dvFel.get()))
+        return VC_FATAL;
+      if (m_codecControlFlags & DVD_CODEC_CTRL_POLL)
+        return VC_BUFFER;
+      if (m_dvPending.size() >= DVEnhancementPendingPictures)
+        return VC_FATAL;
+      auto base = std::make_shared<VideoPicture>();
+      base->Reset();
+      VCReturn result = GetBasePicture(base.get());
+      if (m_pCodecContext->hw_frames_ctx)
+      {
+        auto* frames = reinterpret_cast<AVHWFramesContext*>(m_pCodecContext->hw_frames_ctx->data);
+        if (!dvbridge_fel_device(m_dvFel.get(), frames->device_ref))
+          return VC_FATAL;
+      }
+      if (result == VC_PICTURE)
+      {
+        ReportDVStartup(1, "base-decoded");
+        m_dvPending.push_back(std::move(base));
+      }
+      if (result == VC_EOF || (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
+        if (!dvbridge_fel_drain(m_dvFel.get()))
+          return VC_FATAL;
+      paired = emit();
+      if (paired != VC_NONE)
+        return paired;
+      if (result == VC_EOF && !m_dvPending.empty())
+        return VC_FATAL;
+      if (result == VC_PICTURE && (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
+        continue; // Retire internal preroll until a real picture or native EOF.
+      return result == VC_PICTURE ? VC_BUFFER : result;
+    }
+  }
+#endif
+  const auto result = GetBasePicture(pVideoPicture);
+#ifdef HAVE_DVBRIDGE
+  if (result == VC_PICTURE && m_dvNativeOutput)
+    ReportDVStartup(1, "base-decoded");
+#endif
+  return result;
+}
+
+CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVideoPicture)
 {
   if (!m_startedInput)
   {
@@ -671,6 +956,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
   {
     int flags = m_codecControlFlags;
     flags &= ~DVD_CODEC_CTRL_DRAIN;
+#ifdef HAVE_DVBRIDGE
+    if (m_dvFel) flags &= ~DVD_CODEC_CTRL_DROP_ANY;
+#endif
     m_pHardware->SetCodecControl(flags);
     CDVDVideoCodec::VCReturn ret = m_pHardware->Decode(m_pCodecContext, nullptr);
     if (ret == VC_PICTURE)
@@ -739,6 +1027,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
     {
       int flags = m_codecControlFlags;
       flags |= DVD_CODEC_CTRL_DRAIN;
+#ifdef HAVE_DVBRIDGE
+      if (m_dvFel) flags &= ~DVD_CODEC_CTRL_DROP_ANY;
+#endif
       m_pHardware->SetCodecControl(flags);
       int ret = m_pHardware->Decode(m_pCodecContext, nullptr);
       if (ret == VC_PICTURE)
@@ -793,21 +1084,8 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
   }
 
   // here we got a frame
-  int64_t framePTS = m_pDecodedFrame->best_effort_timestamp;
-
-  if (m_pCodecContext->skip_frame > AVDISCARD_DEFAULT)
-  {
-    if (m_dropCtrl.m_state == CDropControl::VALID &&
-        m_dropCtrl.m_lastPTS != AV_NOPTS_VALUE &&
-        framePTS != AV_NOPTS_VALUE &&
-        framePTS > (m_dropCtrl.m_lastPTS + m_dropCtrl.m_diffPTS * 1.5))
-    {
-      m_droppedFrames++;
-      if (m_interlaced)
-        m_droppedFrames++;
-    }
-  }
-  m_dropCtrl.Process(framePTS, m_pCodecContext->skip_frame > AVDISCARD_DEFAULT);
+  if (!m_multiview)
+    UpdateDropControl(m_pDecodedFrame->best_effort_timestamp);
 
   if (m_pDecodedFrame->flags & AV_FRAME_FLAG_KEY)
   {
@@ -835,6 +1113,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
     int frames = 300;
     if (m_dropCtrl.m_state == CDropControl::VALID)
       frames = static_cast<int>(6000000 / m_dropCtrl.m_diffPTS);
+    else if (m_multiview && m_hints.fpsrate > 0 && m_hints.fpsscale > 0)
+      frames = static_cast<int>(
+          std::clamp<int64_t>(6LL * m_hints.fpsrate / m_hints.fpsscale, 1, 300));
     if (m_iLastKeyframe >= frames && m_pDecodedFrame->pict_type == AV_PICTURE_TYPE_I)
     {
       m_started = true;
@@ -896,8 +1177,13 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
         need_reopen = true;
     }
 
+    // the multiview graph packs the two views together, so it has to stay up
+    // for the whole stream even when no other filtering is wanted
+    if (m_multiview && m_filterEof)
+      need_reopen = true;
+
     // try to setup new filters
-    if (need_reopen || (need_scale && m_pFilterGraph == nullptr))
+    if (need_reopen || ((need_scale || m_multiview) && m_pFilterGraph == nullptr))
     {
       m_filters = m_filters_next;
 
@@ -924,6 +1210,22 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
   }
 
   return VC_NONE;
+}
+
+void CDVDVideoCodecFFmpeg::UpdateDropControl(int64_t pts)
+{
+  if (m_pCodecContext->skip_frame > AVDISCARD_DEFAULT)
+  {
+    if (m_dropCtrl.m_state == CDropControl::VALID &&
+        m_dropCtrl.m_lastPTS != AV_NOPTS_VALUE && pts != AV_NOPTS_VALUE &&
+        pts > (m_dropCtrl.m_lastPTS + m_dropCtrl.m_diffPTS * 1.5))
+    {
+      m_droppedFrames++;
+      if (m_interlaced)
+        m_droppedFrames++;
+    }
+  }
+  m_dropCtrl.Process(pts, m_pCodecContext->skip_frame > AVDISCARD_DEFAULT);
 }
 
 bool CDVDVideoCodecFFmpeg::SetPictureParams(VideoPicture* pVideoPicture)
@@ -954,6 +1256,16 @@ bool CDVDVideoCodecFFmpeg::SetPictureParams(VideoPicture* pVideoPicture)
 
 void CDVDVideoCodecFFmpeg::Reset()
 {
+  m_sourceMasteringMetadata.reset();
+  m_sourceLightMetadata.reset();
+#ifdef HAVE_DVBRIDGE
+  m_dvSourceOwner.Seek();
+  m_dvPending.clear();
+  dvbridge_fel_reset(m_dvFel.get());
+  m_dvFailed = false;
+  m_dvLayerEpoch = 0;
+  m_dvVideoWindow = false;
+#endif
   m_started = false;
   m_startedInput = false;
   m_interlaced = false;
@@ -969,6 +1281,7 @@ void CDVDVideoCodecFFmpeg::Reset()
     m_pHardware->Reset();
 
   m_filters = "";
+  m_multiviewPairer.Reset();
   FilterClose();
   m_dropCtrl.Reset(false);
 }
@@ -992,8 +1305,48 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::HandleHwFatal()
   return VC_REOPEN;
 }
 
+void CDVDVideoCodecFFmpeg::CaptureSourceSideData(VideoPicture* pVideoPicture)
+{
+  // Capture original native source facts before any bridge/AI/output mutation.
+  // This is deliberately independent of HAVE_DVBRIDGE and output eligibility.
+  if (const auto* sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA))
+  {
+    if (sd->data && sd->size == sizeof(AVMasteringDisplayMetadata))
+      m_sourceMasteringMetadata = *reinterpret_cast<const AVMasteringDisplayMetadata*>(sd->data);
+    else
+      m_sourceMasteringMetadata.reset();
+  }
+  if (const auto* sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL))
+  {
+    if (sd->data && sd->size == sizeof(AVContentLightMetadata))
+      m_sourceLightMetadata = *reinterpret_cast<const AVContentLightMetadata*>(sd->data);
+    else
+      m_sourceLightMetadata.reset();
+  }
+  pVideoPicture->sourceSideData = VideoSourceSideData::Capture(
+      m_videoProcessingGeneration, ++m_videoSourceSerial, m_pCodecContext->codec_id,
+      m_pFrame, m_hints.dovi.dv_profile ? &m_hints.dovi : nullptr,
+      m_sourceMasteringMetadata ? &*m_sourceMasteringMetadata : m_hints.masteringMetadata.get(),
+      m_sourceLightMetadata ? &*m_sourceLightMetadata : m_hints.contentLightMetadata.get());
+}
+
 bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
 {
+  CaptureSourceSideData(pVideoPicture);
+  if (pVideoPicture->sourceSideData && pVideoPicture->sourceSideData->RejectedSections())
+  {
+    static thread_local uint64_t rejectedGeneration{};
+    static thread_local unsigned rejectedSections{};
+    if (rejectedGeneration != m_videoProcessingGeneration)
+    {
+      rejectedGeneration = m_videoProcessingGeneration;
+      rejectedSections = 0;
+    }
+    const auto sections = pVideoPicture->sourceSideData->RejectedSections();
+    if (sections & ~rejectedSections)
+      DVBRIDGE::DiagnosticLog(LOGDEBUG, "Native source side-data omitted: sections={}", sections);
+    rejectedSections |= sections;
+  }
   if (!m_pFrame)
     return false;
 
@@ -1045,6 +1398,10 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   {
     pVideoPicture->stereoMode = (const char*)entry->value;
   }
+  // a stream whose views the decoder packs itself carries no such tag - the
+  // mode is the one the packing produced
+  else if (!m_stereoMode.empty())
+    pVideoPicture->stereoMode = m_stereoMode;
   else
     pVideoPicture->stereoMode.clear();
 
@@ -1098,6 +1455,9 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   pVideoPicture->qscale_type = 0;
 
   pVideoPicture->hdrType = m_hints.hdrType;
+#ifdef HAVE_DVBRIDGE
+  bool retainStaticDV = m_dvNativeOutput;
+#endif
 
   AVFrameSideData* sd;
 
@@ -1134,7 +1494,23 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   {
     pVideoPicture->displayMetadata = *(AVMasteringDisplayMetadata *)sd->data;
     pVideoPicture->hasDisplayMetadata = true;
+#ifdef HAVE_DVBRIDGE
+    m_dvStreamDisplayMetadata = pVideoPicture->displayMetadata;
+    m_dvHasStreamDisplayMetadata = true;
+#endif
   }
+#ifdef HAVE_DVBRIDGE
+  // HDR10 static metadata describes the whole stream, but encoders may carry
+  // its SEI only on the first IRAP. Without it a later frame compares as a
+  // format change, the renderer is rebuilt and native DV output is restarted
+  // (two full HDMI modesets mid-playback). Keep the last in-band values for
+  // the rest of this DV stream; a new SEI still replaces them.
+  else if (retainStaticDV && m_dvHasStreamDisplayMetadata)
+  {
+    pVideoPicture->displayMetadata = m_dvStreamDisplayMetadata;
+    pVideoPicture->hasDisplayMetadata = true;
+  }
+#endif
   else if (m_hints.masteringMetadata)
   {
     pVideoPicture->displayMetadata = *m_hints.masteringMetadata.get();
@@ -1145,40 +1521,114 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   {
     pVideoPicture->lightMetadata = *(AVContentLightMetadata *)sd->data;
     pVideoPicture->hasLightMetadata = true;
+#ifdef HAVE_DVBRIDGE
+    m_dvStreamLightMetadata = pVideoPicture->lightMetadata;
+    m_dvHasStreamLightMetadata = true;
+#endif
   }
+#ifdef HAVE_DVBRIDGE
+  else if (retainStaticDV && m_dvHasStreamLightMetadata)
+  {
+    pVideoPicture->lightMetadata = m_dvStreamLightMetadata;
+    pVideoPicture->hasLightMetadata = true;
+  }
+#endif
   else if (m_hints.contentLightMetadata)
   {
     pVideoPicture->lightMetadata = *m_hints.contentLightMetadata.get();
     pVideoPicture->hasLightMetadata = true;
   }
 
+  pVideoPicture->doviMetadata.Reset();
+  pVideoPicture->doviSourceBinding = {};
+#ifdef HAVE_DVBRIDGE
+  if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
+    pVideoPicture->doviSourceBinding = m_dvSourceOwner.NextPicture();
+#endif
+  pVideoPicture->doviSourceInfo = {m_hints.dovi.dv_profile,m_hints.dovi.dv_level,
+      m_hints.dovi.dv_version_major,m_hints.dovi.dv_version_minor,
+      static_cast<unsigned>(pVideoPicture->colorBits),m_pFrame->format,
+      bool(m_hints.dovi.bl_present_flag),bool(m_hints.dovi.el_present_flag),
+      bool(m_hints.dovi.rpu_present_flag),false,
+      pVideoPicture->hasLightMetadata,
+      0.0,0.0,
+      pVideoPicture->hasLightMetadata ? pVideoPicture->lightMetadata.MaxCLL : 0u,
+      pVideoPicture->hasLightMetadata ? pVideoPicture->lightMetadata.MaxFALL : 0u};
+  const auto& sourceMastering = pVideoPicture->displayMetadata;
+  auto& sourceInfo = pVideoPicture->doviSourceInfo;
+  sourceInfo.informationGeneration = m_videoProcessingGeneration;
+  sourceInfo.compatibility = m_hints.dovi.dv_bl_signal_compatibility_id;
+  sourceInfo.mastering = pVideoPicture->hasDisplayMetadata && sourceMastering.has_luminance &&
+      sourceMastering.max_luminance.den > 0 && sourceMastering.min_luminance.den > 0;
+  if (sourceInfo.mastering)
+  {
+    sourceInfo.maxLuma = av_q2d(sourceMastering.max_luminance);
+    sourceInfo.minLuma = av_q2d(sourceMastering.min_luminance);
+  }
+  pVideoPicture->doviSourcePts = m_pFrame->best_effort_timestamp;
+#ifdef HAVE_DVBRIDGE
+  if (m_dvLayerEpoch) pVideoPicture->doviSourcePts = m_pFrame->pts;
+#endif
   if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
     sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DOVI_METADATA);
     if (sd)
     {
-      AVDOVIMetadata* dovi = (AVDOVIMetadata*)sd->data;
-      const AVDOVIRpuDataHeader* hdr = av_dovi_get_header(dovi);
-      const AVDOVIDataMapping* mapping = av_dovi_get_mapping(dovi);
-
-      if (hdr != nullptr && hdr->el_spatial_resampling_filter_flag == 1 &&
-          hdr->disable_residual_flag == 0)
+      const auto binding = pVideoPicture->doviSourceBinding;
+      if (!pVideoPicture->doviMetadata.Assign(sd->data, sd->size,binding) ||
+          !dvbridge_metadata_bounds(pVideoPicture->doviMetadata.Data(),
+                                    pVideoPicture->doviMetadata.Size()))
       {
-        pVideoPicture->strDVELType = "MEL";
-        for (int i = 0; i < 3; i++)
+        pVideoPicture->doviMetadata.Reset();
+        // Keep repeated failures bounded across codecs on this decoder thread.
+        static thread_local DVBRIDGE::DiagnosticFailures failures;
+        if (DVBRIDGE::DiagnosticsEnabled() &&
+            failures.Record(DVBRIDGE::DiagnosticNowMs(), "picture-metadata"))
+          CLog::Log(LOGWARNING, "Unable to retain valid Dolby Vision picture metadata: failures={}",
+                    failures.Count());
+      }
+      else
+      {
+        const auto* dovi = reinterpret_cast<const AVDOVIMetadata*>(pVideoPicture->doviMetadata.Data());
+        const AVDOVIRpuDataHeader* hdr = av_dovi_get_header(dovi);
+        const AVDOVIDataMapping* mapping = av_dovi_get_mapping(dovi);
+
+        if (hdr != nullptr && hdr->el_spatial_resampling_filter_flag == 1 &&
+            hdr->disable_residual_flag == 0)
         {
-          if (mapping != nullptr &&
-              (mapping->nlq[i].nlq_offset != 0 || mapping->nlq[i].vdr_in_max != 8388608 ||
-               mapping->nlq[i].linear_deadzone_slope != 0 ||
-               mapping->nlq[i].linear_deadzone_threshold != 0))
+          pVideoPicture->strDVELType = "MEL";
+          for (int i = 0; i < 3; i++)
           {
-            pVideoPicture->strDVELType = "FEL";
-            break;
+            if (mapping != nullptr &&
+                (mapping->nlq[i].nlq_offset != 0 || mapping->nlq[i].vdr_in_max != 8388608 ||
+                 mapping->nlq[i].linear_deadzone_slope != 0 ||
+                 mapping->nlq[i].linear_deadzone_threshold != 0))
+            {
+              pVideoPicture->strDVELType = "FEL";
+              break;
+            }
           }
         }
       }
     }
   }
+
+#ifdef HAVE_DVBRIDGE
+  if (m_dvLayerEpoch)
+  {
+    // COPY_OPAQUE follows the AU through native reordering and VAAPI references.
+    // The ordinary paired path still validates/synchronizes EL before Kodi drops it.
+    if (m_dvVideoWindow && m_pFrame->opaque == &decodeOnlyDVPacket)
+      pVideoPicture->iFlags |= DVP_FLAG_DROPPED;
+    const auto* raw = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DOVI_RPU_BUFFER);
+    if ((m_dvVideoWindow && m_pFrame->opaque != &presentableDVPacket &&
+         m_pFrame->opaque != &decodeOnlyDVPacket) ||
+        m_pFrame->pts == AV_NOPTS_VALUE || m_pFrame->decode_error_flags ||
+        (m_pFrame->flags & AV_FRAME_FLAG_CORRUPT) || !raw || !raw->data || raw->size < 5 ||
+        raw->data[0] != 25 || (raw->data[1] >> 2) != 2)
+      pVideoPicture->doviMetadata.Reset();
+  }
+#endif
 
   if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
       pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
@@ -1187,12 +1637,19 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
     if (sd)
     {
       if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_HDR10)
+      {
         pVideoPicture->hdrType = StreamHdrType::HDR_TYPE_HDR10PLUS;
+        // Retain decoded source identity across pool reopen and missing SEI frames.
+        m_hints.hdrType = StreamHdrType::HDR_TYPE_HDR10PLUS;
+      }
       else
         pVideoPicture->hdrTypeAlt = StreamHdrType::HDR_TYPE_HDR10PLUS;
     }
   }
 
+#ifdef CB1_HAS_HDR10_AI
+  BindHDR10AISource(*pVideoPicture);
+#endif
   if (pVideoPicture->iRepeatPicture)
     pVideoPicture->dts = DVD_NOPTS_VALUE;
   else
@@ -1244,7 +1701,7 @@ int CDVDVideoCodecFFmpeg::FilterOpen(const std::string& filters, bool scale)
   if (m_pFilterGraph)
     FilterClose();
 
-  if (filters.empty() && !scale)
+  if (filters.empty() && !scale && !m_multiview)
     return 0;
 
   if (m_pHardware)
@@ -1302,7 +1759,20 @@ int CDVDVideoCodecFFmpeg::FilterOpen(const std::string& filters, bool scale)
     return result;
   }
 
-  if (!filters.empty())
+  // The second view arrives on its own source with the same parameters. hstack
+  // pairs the two by pts, which is what the decoder gives both views of an
+  // access unit, so the eyes cannot drift apart.
+  if (m_multiview)
+  {
+    if ((result = avfilter_graph_create_filter(&m_pFilterIn2, srcFilter, "src2", args.c_str(), NULL,
+                                               m_pFilterGraph)) < 0)
+    {
+      CLog::Log(LOGERROR, "CDVDVideoCodecFFmpeg::FilterOpen - avfilter_graph_create_filter: src2");
+      return result;
+    }
+  }
+
+  if (!filters.empty() || m_multiview)
   {
     AVFilterInOut* outputs = avfilter_inout_alloc();
     AVFilterInOut* inputs  = avfilter_inout_alloc();
@@ -1317,7 +1787,22 @@ int CDVDVideoCodecFFmpeg::FilterOpen(const std::string& filters, bool scale)
     inputs->pad_idx = 0;
     inputs->next = nullptr;
 
-    result = avfilter_graph_parse_ptr(m_pFilterGraph, m_filters.c_str(), &inputs, &outputs, NULL);
+    std::string graphDesc = filters;
+    if (m_multiview)
+    {
+      AVFilterInOut* outputs2 = avfilter_inout_alloc();
+      outputs2->name = av_strdup("in2");
+      outputs2->filter_ctx = m_pFilterIn2;
+      outputs2->pad_idx = 0;
+      outputs2->next = nullptr;
+      outputs->next = outputs2;
+
+      graphDesc = "[in][in2]hstack=inputs=2";
+      if (!filters.empty())
+        graphDesc += "," + filters;
+    }
+
+    result = avfilter_graph_parse_ptr(m_pFilterGraph, graphDesc.c_str(), &inputs, &outputs, NULL);
     avfilter_inout_free(&outputs);
     avfilter_inout_free(&inputs);
 
@@ -1353,6 +1838,8 @@ int CDVDVideoCodecFFmpeg::FilterOpen(const std::string& filters, bool scale)
     return result;
   }
 
+  m_multiviewPairer.SetInputs(m_pFilterIn, m_pFilterIn2);
+
   if (CServiceBroker::GetLogging().CanLogComponent(LOGVIDEO))
   {
     char* graphDump = avfilter_graph_dump(m_pFilterGraph, nullptr);
@@ -1369,6 +1856,8 @@ int CDVDVideoCodecFFmpeg::FilterOpen(const std::string& filters, bool scale)
 
 void CDVDVideoCodecFFmpeg::FilterClose()
 {
+  m_multiviewPairer.SetInputs(nullptr, nullptr);
+
   if (m_pFilterGraph)
   {
     CLog::Log(LOGDEBUG, LOGVIDEO, "CDVDVideoCodecFFmpeg::FilterClose - Freeing filter graph");
@@ -1376,6 +1865,7 @@ void CDVDVideoCodecFFmpeg::FilterClose()
 
     // Disposed by above code
     m_pFilterIn = nullptr;
+    m_pFilterIn2 = nullptr;
     m_pFilterOut = nullptr;
   }
 }
@@ -1386,7 +1876,14 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::FilterProcess(AVFrame* frame)
 
   if (frame || (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
   {
-    result = av_buffersrc_add_frame(m_pFilterIn, frame);
+    // A multiview graph is fed through the pairer, which holds a base view frame back
+    // until it knows whether a dependent view is coming, and drains both of its inputs.
+    if (m_pFilterIn2)
+      result =
+          frame ? m_multiviewPairer.AddFrame(frame, m_stereoMode) : m_multiviewPairer.Drain();
+    else
+      result = av_buffersrc_add_frame(m_pFilterIn, frame);
+
     if (result < 0)
     {
       CLog::Log(LOGERROR, "CDVDVideoCodecFFmpeg::FilterProcess - av_buffersrc_add_frame");
@@ -1411,6 +1908,18 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::FilterProcess(AVFrame* frame)
     return VC_ERROR;
   }
 
+  // hstack can rescale an unknown timestamp to AV_NOPTS_VALUE + 1.
+  if (m_multiview && m_pFilterFrame->pts > AV_NOPTS_VALUE + 1)
+  {
+    // Count temporal pictures, not the two decoded views of each MVC picture.
+    const int64_t pts = av_rescale_q(m_pFilterFrame->pts,
+                                    av_buffersink_get_time_base(m_pFilterOut),
+                                    m_pFilterIn->outputs[0]->time_base);
+    if (m_dropCtrl.m_lastPTS == AV_NOPTS_VALUE)
+      m_dropCtrl.Reset(true);
+    UpdateDropControl(pts);
+  }
+
   av_frame_unref(m_pFrame);
   av_frame_move_ref(m_pFrame, m_pFilterFrame);
 
@@ -1421,6 +1930,35 @@ unsigned CDVDVideoCodecFFmpeg::GetConvergeCount()
 {
   return m_iLastKeyframe;
 }
+
+#ifdef CB1_HAS_HDR10_AI
+void CDVDVideoCodecFFmpeg::BindHDR10AISource(VideoPicture& picture)
+{
+  if (DVBRIDGE::IsHDR10Family(picture.hdrType) && !picture.doviSourceInfo.profile &&
+      picture.doviSourcePts != AV_NOPTS_VALUE)
+    picture.doviSourceBinding = m_dvSourceOwner.NextPicture();
+}
+#endif
+
+#ifdef CB1_HAS_HDR10_AI
+void CDVDVideoCodecFFmpeg::PrepareHDR10AIReopen()
+{
+  // Pool resizing is not a hardware decode failure.
+  m_decoderState = STATE_NONE;
+}
+
+unsigned CDVDVideoCodecFFmpeg::GetHDR10AIBufferCount() const
+{
+  const auto mode = m_hints.hdrType == StreamHdrType::HDR_TYPE_HLG ? DVBRIDGE::hlgPlaybackMode.load() :
+      m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS ?
+      DVBRIDGE::hdr10PlusPlaybackMode.load() : DVBRIDGE::hdr10PlaybackMode.load();
+  const bool hdr10 = DVBRIDGE::IsHDR10AIInput(
+      m_hints.hdrType, mode == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
+      !m_hints.dovi.rpu_present_flag;
+  const double fps = m_hints.fpsscale > 0 ? double(m_hints.fpsrate) / m_hints.fpsscale : 0;
+  return DVBRIDGE::HDR10AIBuffers::Count(hdr10,mode,fps,m_interlaced);
+}
+#endif
 
 unsigned CDVDVideoCodecFFmpeg::GetAllowedReferences()
 {
@@ -1454,7 +1992,17 @@ bool CDVDVideoCodecFFmpeg::GetCodecStats(double &pts, int &droppedFrames, int &s
 
 void CDVDVideoCodecFFmpeg::SetCodecControl(int flags)
 {
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel && (flags & DVD_CODEC_CTRL_POLL))
+    flags &= ~DVD_CODEC_CTRL_DRAIN;
+#endif
   m_codecControlFlags = flags;
+  flags &= ~DVD_CODEC_CTRL_POLL;
+#ifdef HAVE_DVBRIDGE
+  // Keep the native drop request on the picture, not either layer's decoder.
+  if (m_dvFel)
+    flags &= ~DVD_CODEC_CTRL_DROP_ANY;
+#endif
 
   if (m_pCodecContext)
   {
@@ -1497,4 +2045,3 @@ IHardwareDecoder* CDVDVideoCodecFFmpeg::GetHWAccel()
 {
   return m_pHardware;
 }
-

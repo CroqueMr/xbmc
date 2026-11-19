@@ -1,4 +1,5 @@
-set(SOURCES DemuxMultiSource.cpp
+set(SOURCES BlurayOffsetMetadata.cpp
+            DemuxMultiSource.cpp
             DVDDemux.cpp
             DVDDemuxBXA.cpp
             DVDDemuxCC.cpp
@@ -14,7 +15,12 @@ set(SOURCES DemuxMultiSource.cpp
             DVDDemuxVobsub.cpp
             DVDFactoryDemuxer.cpp)
 
-set(HEADERS DemuxMultiSource.h
+if(TARGET ${APP_NAME_LC}::Bluray)
+  list(APPEND SOURCES DVDDemuxBluray3D.cpp)
+endif()
+
+set(HEADERS BlurayOffsetMetadata.h
+            DemuxMultiSource.h
             DVDDemux.h
             DVDDemuxBXA.h
             DVDDemuxCC.h
@@ -33,4 +39,11 @@ set(HEADERS DemuxMultiSource.h
             DVDDemuxVobsub.h
             DVDFactoryDemuxer.h)
 
+if(TARGET ${APP_NAME_LC}::Bluray)
+  list(APPEND HEADERS DVDDemuxBluray3D.h)
+endif()
+
 core_add_library(dvddemuxers)
+if(ENABLE_DVBRIDGE)
+  target_include_directories(dvddemuxers PRIVATE "${DVBRIDGE_SOURCE_DIR}")
+endif()

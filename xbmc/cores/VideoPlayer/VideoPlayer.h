@@ -10,6 +10,7 @@
 
 #include "DVDClock.h"
 #include "DVDMessageQueue.h"
+#include "DVDCodecs/Video/DVPlaybackPolicy.h"
 #include "Edl.h"
 #include "FileItem.h"
 #include "IVideoPlayer.h"
@@ -19,6 +20,7 @@
 #include "VideoPlayerTeletext.h"
 #include "cores/IPlayer.h"
 #include "cores/MenuType.h"
+#include "cores/VideoPlayer/DVDDemuxers/BlurayOffsetMetadata.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "cores/VideoPlayer/VideoRenderers/RenderManager.h"
 #include "guilib/DispResource.h"
@@ -206,6 +208,7 @@ struct SelectionStream
   std::string codec;
   std::string codecDesc;
   AVCodecID codecId = AV_CODEC_ID_NONE;
+  AE::AudioSourceInfo audioSource;
   int profile = AV_PROFILE_UNKNOWN;
   int channels = 0;
   int bitrate = 0;
@@ -400,7 +403,11 @@ public:
 
   void SetUpdateStreamDetails();
 
+  //! \brief Note which offset sequence the subtitle stream just opened follows, if any.
+  void UpdateSubtitleOffsetSequence(const CDemuxStream* stream);
+
 protected:
+  bool IsBlurayInput() const;
   friend class CSelectionStreams;
 
   void OnStartup() override;
@@ -413,6 +420,7 @@ protected:
   void UpdateRenderBuffers(int queued, int discard, int free) override;
   void UpdateGuiRender(bool gui) override;
   void UpdateVideoRender(bool video) override;
+  std::optional<int> GetSubtitlePlaneOffset(double pts) override;
 
   virtual void CreatePlayers();
   void DestroyPlayers();
@@ -422,6 +430,14 @@ protected:
   bool OpenStream(CCurrentStream& current, int64_t demuxerId, int iStream, int source, bool reset = true);
   bool OpenAudioStream(CDVDStreamInfo& hint, bool reset = true);
   bool OpenVideoStream(CDVDStreamInfo& hint, bool reset = true);
+  static bool WantsNativePresentation(const CDVDStreamInfo& hint)
+  {
+#ifdef HAVE_DVBRIDGE
+    return DVBRIDGE::WantsNativeOutput(hint);
+#else
+    return false;
+#endif
+  }
   bool OpenSubtitleStream(const CDVDStreamInfo& hint);
   bool OpenTeletextStream(CDVDStreamInfo& hint);
   bool OpenRadioRDSStream(CDVDStreamInfo& hint);
@@ -610,7 +626,9 @@ protected:
     }
   } m_SpeedState;
 
-  double m_offset_pts;
+  /*! What CheckContinuity() has taken off the demuxer's timestamps to keep the player
+      clock monotonic. Read by the render thread (see GetSubtitlePlaneOffset), so atomic. */
+  std::atomic<double> m_offset_pts{0.0};
 
   CDVDMessageQueue m_messenger;
   std::unique_ptr<CJobQueue> m_outboundEvents;
@@ -674,4 +692,13 @@ protected:
   std::atomic<bool> m_displayLost;
 
   double m_messageQueueTimeSize{0.0};
+
+  /*! Blu-ray 3D: the offset sequence the subtitle stream being shown follows, which is
+      what places its plane in depth, or -1 when the title gives it none. */
+  std::atomic<int> m_subtitleOffsetSequence{-1};
+
+  /*! Blu-ray 3D: the plane offsets of the title being played, filled in by the demuxer as
+      the dependent view is read. Asked for by the render thread, so guarded. */
+  std::shared_ptr<KODI::VIDEO::BLURAY::COffsetMetadataStore> m_offsetMetadata;
+  mutable CCriticalSection m_offsetMetadataSection;
 };

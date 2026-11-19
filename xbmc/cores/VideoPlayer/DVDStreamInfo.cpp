@@ -13,6 +13,21 @@
 
 #include <cstring>
 
+AE::AudioSourceInfo CDVDStreamInfo::GetAudioSourceInfo() const
+{
+  AE::AudioSourceInfo source;
+  source.valid = type == StreamType::AUDIO && codec != AV_CODEC_ID_NONE;
+  source.uniqueId = uniqueId;
+  source.demuxerId = demuxerId;
+  source.codec = codec;
+  source.profile = profile;
+  source.channels = channels;
+  source.sampleRate = samplerate;
+  source.bitsPerSample = bitspersample;
+  source.channelMask = channellayout;
+  return source;
+}
+
 CDVDStreamInfo::CDVDStreamInfo() : extradata{}
 {
   Clear();
@@ -68,7 +83,11 @@ void CDVDStreamInfo::Clear()
   masteringMetadata = nullptr;
   contentLightMetadata = nullptr;
   stereo_mode.clear();
+  multiview = false;
   dovi = {};
+#ifdef HAVE_DVBRIDGE
+  doviELConfig = {};
+#endif
 
   channels   = 0;
   samplerate = 0;
@@ -93,6 +112,10 @@ bool CDVDStreamInfo::Equal(const CDVDStreamInfo& right, int compare)
   {
     return false;
   }
+#ifdef HAVE_DVBRIDGE
+  if (compare & COMPARE_EXTRADATA && doviELConfig != right.doviELConfig)
+    return false;
+#endif
 
   // VIDEO
   // clang-format off
@@ -114,7 +137,8 @@ bool CDVDStreamInfo::Equal(const CDVDStreamInfo& right, int compare)
   || colorRange != right.colorRange
   || colorPrimaries != right.colorPrimaries
   || colorTransferCharacteristic != right.colorTransferCharacteristic
-  || stereo_mode != right.stereo_mode)
+  || stereo_mode != right.stereo_mode
+  || multiview != right.multiview)
     return false;
   // clang-format on
 
@@ -236,7 +260,11 @@ void CDVDStreamInfo::Assign(const CDVDStreamInfo& right, bool withextradata)
   masteringMetadata = right.masteringMetadata;
   contentLightMetadata = right.contentLightMetadata;
   stereo_mode = right.stereo_mode;
+  multiview = right.multiview;
   dovi = right.dovi;
+#ifdef HAVE_DVBRIDGE
+  doviELConfig = withextradata ? right.doviELConfig : FFmpegExtraData{};
+#endif
 
   // AUDIO
   channels      = right.channels;
@@ -304,7 +332,11 @@ void CDVDStreamInfo::Assign(const CDemuxStream& right, bool withextradata)
     masteringMetadata = stream->masteringMetaData;
     contentLightMetadata = stream->contentLightMetaData;
     stereo_mode = stream->stereo_mode;
+    multiview = stream->multiview;
     dovi = stream->dovi;
+#ifdef HAVE_DVBRIDGE
+    doviELConfig = withextradata ? stream->doviELConfig : FFmpegExtraData{};
+#endif
   }
   else if (right.type == StreamType::SUBTITLE)
   {

@@ -19,11 +19,16 @@
 #include "threads/SystemClock.h"
 #include "utils/Geometry.h"
 #include "windowing/Resolution.h"
+#ifdef HAVE_DVBRIDGE
+#include "utils/DVBridgePresentation.h"
+#endif
 
 #include <atomic>
 #include <deque>
 #include <list>
 #include <memory>
+#include <optional>
+#include <mutex>
 
 #include "PlatformDefs.h"
 
@@ -60,6 +65,17 @@ protected:
   virtual void UpdateGuiRender(bool gui) = 0;
   virtual void UpdateVideoRender(bool video) = 0;
   virtual CVideoSettings GetVideoSettings() const = 0;
+
+  /*!
+   * \brief The shift the disc asks the subtitle plane to carry for the frame at \p pts.
+   *
+   * A Blu-ray 3D title places its subtitles in depth by shifting the plane one way for the
+   * left eye and the other for the right, by an amount it varies as the scene does. The
+   * answer is in the video's own pixels, and 0 is a depth like any other - the subtitle
+   * sitting at the screen for that frame. Anything with no depth of its own answers
+   * nothing, which is what leaves the subtitles.stereoscopicdepth setting in charge.
+   */
+  virtual std::optional<int> GetSubtitlePlaneOffset(double pts) { return std::nullopt; }
 };
 
 class CRenderManager
@@ -78,7 +94,9 @@ public:
 
   RESOLUTION GetResolution();
   void UpdateResolution();
-  void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode);
+  void TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode,
+                               bool nativeDV = false);
+  void ResetPictureInfo();
   void SetViewMode(int iViewMode);
   void PreInit();
   void UnInit();
@@ -105,6 +123,15 @@ public:
   bool AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop, EINTERLACEMETHOD deintMethod, bool wait);
   void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts);
   void ShowVideo(bool enable);
+#ifdef CB1_HAS_HDR10_AI
+  bool HDR10AILookahead();
+  bool GetHDR10AIStartTime(double& pts);
+  bool PrepareHDR10AIStartup(bool fullscreen);
+  bool HDR10AIPriming();
+  bool HDR10AIStartupBuffered();
+  void EndHDR10AIQueue();
+  void ResetHDR10AIQueue();
+#endif
 
   /*!
    * \brief True if any subtitle/overlay is visible on the current presented
@@ -148,6 +175,21 @@ protected:
   void PresentBlend(bool clear, DWORD flags, DWORD alpha);
 
   void PrepareNextRender();
+  void UpdateDisplayLatency();
+#ifdef CB1_HAS_HDR10_AI
+  bool PrepareHDR10AILookahead(std::unique_lock<CCriticalSection>& lock);
+  bool ExecuteHDR10AIQueuePreparation(const std::deque<int>& queue, bool paused,
+      uint64_t deadline, std::unique_lock<CCriticalSection>& lock);
+  void ReleaseDiscardedBuffers(bool onlySignaled = false);
+  uint64_t m_aiQueueGeneration{};
+  // Sticky until GUI destruction: worker UnInit must not destroy owned GL work.
+  std::atomic_bool m_aiGUIOwnsRenderer{false};
+  bool m_aiQueueReady{true},m_aiEnd{};
+  bool m_aiQueuePreparationStale{};
+  bool m_aiStartupBuffered{};
+  bool m_aiFullscreenRequested{},m_aiGuiReady{},m_aiFullscreenWanted{};
+  double m_aiStartPts{DVD_NOPTS_VALUE};
+#endif
   bool IsPresenting();
   bool IsGuiLayer();
 
@@ -170,6 +212,7 @@ protected:
   CCriticalSection m_presentlock;
   CCriticalSection m_datalock;
   bool m_bTriggerUpdateResolution = false;
+  std::atomic_bool m_nativeDVRate{false};
   bool m_bRenderGUI = true;
   bool m_renderedDebugOverlay = false;
   bool m_renderDebug = false;
@@ -205,7 +248,7 @@ protected:
   /// Display latency tweak value from AdvancedSettings for the current refresh rate
   /// in milliseconds
   double m_latencyTweak = 0.0;
-  /// Display latency updated in PrepareNextRender in DVD clock units, includes m_latencyTweak
+  /// Native display latency in DVD clock units, includes m_latencyTweak.
   double m_displayLatency = 0.0;
   std::atomic_int m_videoDelay = {};
 
@@ -214,10 +257,14 @@ protected:
 
   struct SPresent
   {
+    std::shared_ptr<const VideoSourceSideData> sourceSideData;
     double         pts;
+#ifdef CB1_HAS_HDR10_AI
+    double duration{};
+#endif
     EFIELDSYNC     presentfield;
     EPRESENTMETHOD presentmethod;
-  } m_Queue[NUM_BUFFERS]{};
+  } m_Queue[MAX_RENDER_BUFFERS]{};
 
   std::deque<int> m_free;
   std::deque<int> m_queued;
@@ -233,6 +280,9 @@ protected:
   int m_lateframes = -1;
   double m_presentpts = 0.0;
   EPRESENTSTEP m_presentstep = PRESENT_IDLE;
+#ifdef HAVE_DVBRIDGE
+  bool m_cb1PresentPending{};
+#endif
   XbmcThreads::EndTime<> m_presentTimer;
   bool m_forceNext = false;
   int m_presentsource = 0;
@@ -250,6 +300,11 @@ protected:
     int m_errCount;
     double m_syncOffset;
     bool m_enabled;
+    bool m_cb1Phase{false};
+#ifdef HAVE_DVBRIDGE
+    DVBRIDGE::PresentationLatency m_cb1Latency;
+    bool m_cb1LatencyActive{false};
+#endif
   };
   CClockSync m_clockSync;
 };

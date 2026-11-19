@@ -7,6 +7,9 @@
  */
 
 #include "LinuxRendererGLES.h"
+#ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackNotification.h"
+#endif
 
 #include "RenderFactory.h"
 #include "ServiceBroker.h"
@@ -15,6 +18,7 @@
 #include "VideoShaders/dither.h"
 #include "application/Application.h"
 #include "cores/IPlayer.h"
+#include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
 #include "guilib/Texture.h"
 #include "rendering/GLExtensions.h"
 #include "rendering/MatrixGL.h"
@@ -29,6 +33,11 @@
 #include "utils/MathUtils.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
+#ifdef HAVE_DVBRIDGE
+#include "cores/VideoSourceSideData.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
+#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#endif
 
 #include <mutex>
 
@@ -136,7 +145,7 @@ bool CLinuxRendererGLES::ValidateRenderTarget()
     // call to LoadShaders
     glFinish();
 
-    for (int i = 0 ; i < NUM_BUFFERS ; i++)
+    for (int i = 0 ; i < MAX_RENDER_BUFFERS ; i++)
     {
       DeleteTexture(i);
     }
@@ -189,6 +198,9 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
   m_sourceHeight = picture.iHeight;
   m_renderOrientation = orientation;
 
+  m_iFlags =
+      GetFlagsChromaPosition(picture.chroma_position) | GetFlagsStereoMode(picture.stereoMode);
+
   m_srcPrimaries = picture.color_primaries;
   m_srcColorBits = picture.colorBits;
   m_srcFullRange = picture.color_range == 1;
@@ -207,11 +219,79 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
   // frame is loaded after every call to Configure().
   m_bValidated = false;
 
+#ifdef CB1_HAS_HDR10_AI
+  m_aiOutputPending = HDR10AILookahead() &&
+      DVBRIDGE::FrameOutputSettings(picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS, picture.hdrType == StreamHdrType::HDR_TYPE_HLG).hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
+  if (m_aiOutputPending)
+  {
+    // Keep the GUI output until AI preparation selects DV or native HDR10.
+    m_dvRequested = m_passthroughHDR = m_hdrFboActive = false;
+    return true;
+  }
+#endif
+  return ConfigureVideoOutput(picture);
+}
+
+bool CLinuxRendererGLES::ConfigureVideoOutput(const VideoPicture& picture)
+{
+#ifdef CB1_HAS_HDR10_AI
+  if (m_aiOutputPending &&
+      KODI::WINDOWING::GBM::CWinSystemGbmGLESContext::DVBridgeRequested(&picture))
+  {
+    // Queue preparation already owns the final surface and its first DV frame.
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    m_dvRequested = true;
+    m_passthroughHDR = false;
+    m_hdrFboActive = window && window->BeginDVBridge();
+    m_bConfigured = m_hdrFboActive;
+    return m_hdrFboActive;
+  }
+#endif
   if (!CServiceBroker::GetWinSystem()->SetVideoOutput(&picture))
+  {
     CLog::Log(LOGWARNING, "LinuxRendererGLES::Configure: SetVideoOutput failed");
+#ifdef HAVE_DVBRIDGE
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    if (KODI::WINDOWING::GBM::CWinSystemGbmGLESContext::DVBridgeRequested(&picture) ||
+        (window && window->HasPendingDVBridgeRestore()))
+    {
+      m_bConfigured = false;
+      return false;
+    }
+#endif
+  }
+
+
+#ifdef HAVE_DVBRIDGE
+  m_dvRequested = KODI::WINDOWING::GBM::CWinSystemGbmGLESContext::DVBridgeRequested(&picture);
+  if (m_dvRequested)
+  {
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    const auto route = window ? window->SelectedDVOutput(&picture).route
+                              : DVBRIDGE::OutputRoute::Vanilla;
+    // The TV-led transport publishes its own HDMI colour state in the first
+    // DV commit. Staging the base layer here can switch the connector twice.
+    if (route != DVBRIDGE::OutputRoute::NativeDV)
+      CServiceBroker::GetWinSystem()->SetColorimetry(&picture);
+    m_passthroughHDR = false;
+    // Native activation follows source import and its output-surface transaction.
+    m_hdrFboActive = window &&
+        (route != DVBRIDGE::OutputRoute::HDR10 || window->ConfigureHDR10Conversion(picture));
+    if (!m_hdrFboActive)
+    {
+      m_bConfigured = false;
+      CLog::Log(LOGERROR, "DVBridge: native output initialization rejected");
+      return false;
+    }
+    m_bConfigured = true;
+    return true;
+  }
+#endif
 
   CServiceBroker::GetWinSystem()->SetColorimetry(&picture);
-
   m_passthroughHDR = CServiceBroker::GetWinSystem()->SetHDR(&picture);
   CLog::Log(LOGDEBUG, "LinuxRendererGLES::Configure: HDR passthrough: {}",
             m_passthroughHDR ? "on" : "off");
@@ -222,6 +302,9 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
     CLog::Log(LOGWARNING, "LinuxRendererGLES::Configure: HDR passthrough active but GUI "
                           "compositing not supported by windowing system");
 
+  // AI priming may have compiled the ordinary shader before HDR was selected.
+  m_reloadShaders = true;
+  m_bConfigured = true;
   return true;
 }
 
@@ -251,6 +334,19 @@ void CLinuxRendererGLES::AddVideoPicture(const VideoPicture &picture, int index)
   buf.videoBuffer = picture.videoBuffer;
   buf.videoBuffer->Acquire();
   buf.loaded = false;
+  buf.doviMetadata = picture.doviMetadata;
+#ifdef HAVE_DVBRIDGE
+  buf.doviEnhancement = picture.doviEnhancement;
+  buf.doviEnhancementBinding = picture.doviEnhancementBinding;
+  if (picture.doviSourceBinding.Valid() || picture.doviMetadata.Data())
+  {
+    buf.doviSourcePicture = std::make_shared<VideoPicture>();
+    buf.doviSourcePicture->CopyRef(picture);
+  }
+  else buf.doviSourcePicture.reset();
+#endif
+  buf.doviPts = picture.doviSourcePts == AV_NOPTS_VALUE ? DVD_NOPTS_VALUE :
+                  static_cast<double>(picture.doviSourcePts);
   buf.m_srcPrimaries = picture.color_primaries;
   buf.m_srcColSpace = picture.color_space;
   buf.m_srcColTransfer = picture.color_transfer;
@@ -269,6 +365,13 @@ void CLinuxRendererGLES::AddVideoPicture(const VideoPicture &picture, int index)
 void CLinuxRendererGLES::ReleaseBuffer(int idx)
 {
   CPictureBuffer &buf = m_buffers[idx];
+  buf.doviMetadata.Reset();
+#ifdef HAVE_DVBRIDGE
+  buf.doviEnhancement.reset();
+  buf.doviEnhancementBinding = {};
+  buf.doviSourcePicture.reset();
+#endif
+  buf.doviPts = DVD_NOPTS_VALUE;
   if (buf.videoBuffer)
   {
     buf.videoBuffer->Release();
@@ -418,6 +521,12 @@ bool CLinuxRendererGLES::Flush(bool saveBuffers)
   // references alone so the renderer can keep presenting the last frame.
   if (!saveBuffers)
   {
+#ifdef HAVE_DVBRIDGE
+    if (m_dvRequested)
+      if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+              CServiceBroker::GetWinSystem()))
+        window->DiscardDVBridgeFrame();
+#endif
     for (int i = 0; i < m_NumYUVBuffers; i++)
     {
       DeleteTexture(i);
@@ -570,6 +679,10 @@ void CLinuxRendererGLES::DrawBlackBars()
 
 void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {
+  m_frameRendered = false;
+#ifdef CB1_HAS_HDR10_AI
+  m_aiFrameRendered = false;
+#endif
   m_iYUVRenderBuffer = index;
 
   if (!m_bConfigured)
@@ -639,7 +752,12 @@ void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigne
     }
   }
 
-  if (!Render(flags, index) && clear)
+  const bool rendered = Render(flags, index);
+  m_frameRendered = rendered;
+#ifdef CB1_HAS_HDR10_AI
+  m_aiFrameRendered = rendered;
+#endif
+  if (!rendered && clear)
     ClearBackBuffer();
 
   VerifyGLState();
@@ -648,6 +766,7 @@ void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigne
 
 void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsigned int alpha)
 {
+  m_frameRendered = false;
   if (!m_bConfigured)
     return;
 
@@ -688,11 +807,47 @@ void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsig
       m_pYUVBobShader->SetAlpha(1.0f);
   }
 
-  if (!Render(flags, index) && clear)
+  const bool rendered = Render(flags, index);
+  m_frameRendered = rendered;
+#ifdef CB1_HAS_HDR10_AI
+  m_aiFrameRendered = rendered;
+#endif
+  if (!rendered && clear)
     ClearBackBuffer();
 
   VerifyGLState();
   glEnable(GL_BLEND);
+}
+
+ESCALINGMETHOD CLinuxRendererGLES::SelectScalingMethod() const
+{
+  auto method = m_videoSettings.m_ScalingMethod;
+  if(!Supports(method))
+  {
+    CLog::Log(LOGWARNING,
+              "CLinuxRendererGLES::UpdateVideoFilter - chosen scaling method {}, is not supported "
+              "by renderer",
+              method);
+    method = VS_SCALINGMETHOD_LINEAR;
+  }
+
+  if (method == VS_SCALINGMETHOD_AUTO)
+  {
+    bool scaleSD = m_sourceHeight < 720 && m_sourceWidth < 1280;
+    bool scaleUp =
+        (int)m_sourceHeight < m_viewRect.Height() && (int)m_sourceWidth < m_viewRect.Width();
+    bool scaleFps =
+        m_fps <
+        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAutoScaleMaxFps +
+            0.01f;
+
+    if (Supports(VS_SCALINGMETHOD_LANCZOS3_FAST) && scaleSD && scaleUp && scaleFps)
+      method = VS_SCALINGMETHOD_LANCZOS3_FAST;
+    else
+      method = VS_SCALINGMETHOD_LINEAR;
+  }
+
+  return method;
 }
 
 void CLinuxRendererGLES::UpdateVideoFilter()
@@ -724,18 +879,9 @@ void CLinuxRendererGLES::UpdateVideoFilter()
 
   const ESCALINGMETHOD previousMethod = m_scalingMethod;
   m_scalingMethodGui = m_videoSettings.m_ScalingMethod;
-  m_scalingMethod = m_scalingMethodGui;
+  m_scalingMethod = SelectScalingMethod();
   m_lastViewRect = viewRect;
   m_lastSourceRect = srcRect;
-
-  if(!Supports(m_scalingMethod))
-  {
-    CLog::Log(LOGWARNING,
-              "CLinuxRendererGLES::UpdateVideoFilter - chosen scaling method {}, is not supported "
-              "by renderer",
-              m_scalingMethod);
-    m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
-  }
 
   if (m_pVideoFilterShader)
   {
@@ -746,22 +892,6 @@ void CLinuxRendererGLES::UpdateVideoFilter()
   m_fbo.fbo.Cleanup();
 
   VerifyGLState();
-
-  if (m_scalingMethod == VS_SCALINGMETHOD_AUTO)
-  {
-    bool scaleSD = m_sourceHeight < 720 && m_sourceWidth < 1280;
-    bool scaleUp =
-        (int)m_sourceHeight < m_viewRect.Height() && (int)m_sourceWidth < m_viewRect.Width();
-    bool scaleFps =
-        m_fps <
-        CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_videoAutoScaleMaxFps +
-            0.01f;
-
-    if (Supports(VS_SCALINGMETHOD_LANCZOS3_FAST) && scaleSD && scaleUp && scaleFps)
-      m_scalingMethod = VS_SCALINGMETHOD_LANCZOS3_FAST;
-    else
-      m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
-  }
 
   if (m_scalingMethod != previousMethod)
     m_reloadShaders = true;
@@ -1065,8 +1195,24 @@ void CLinuxRendererGLES::UnInit()
 
   glFinish();
 
+  bool outputStopped = false;
+#ifdef HAVE_DVBRIDGE
+  if (m_dvRequested)
+  {
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    if (window)
+    {
+      outputStopped = true;
+      if (!window->StopDVBridgePlayback())
+        CLog::Log(LOGDEBUG, "DVBridge: output cleanup deferred until scanout retires");
+    }
+    m_dvRequested = false;
+  }
+#endif
+
   // YUV textures
-  for (int i = 0; i < NUM_BUFFERS; ++i)
+  for (int i = 0; i < MAX_RENDER_BUFFERS; ++i)
   {
     DeleteTexture(i);
   }
@@ -1074,11 +1220,14 @@ void CLinuxRendererGLES::UnInit()
   if (m_bConfigured)
   {
     m_hdrFboActive = false;
-    CServiceBroker::GetWinSystem()->SetGuiCompositing(false);
-    CServiceBroker::GetWinSystem()->SetHDR(nullptr);
+    if (!outputStopped)
+    {
+      CServiceBroker::GetWinSystem()->SetGuiCompositing(false);
+      CServiceBroker::GetWinSystem()->SetHDR(nullptr);
+      CServiceBroker::GetWinSystem()->SetColorimetry(nullptr);
+      CServiceBroker::GetWinSystem()->SetVideoOutput(nullptr);
+    }
     m_passthroughHDR = false;
-    CServiceBroker::GetWinSystem()->SetColorimetry(nullptr);
-    CServiceBroker::GetWinSystem()->SetVideoOutput(nullptr);
   }
 
   // cleanup framebuffer object if it was in use
@@ -1116,38 +1265,148 @@ bool CLinuxRendererGLES::UploadTexture(int index)
     return false;
   }
 
-  if (m_buffers[index].loaded)
+  bool ret{true};
+
+  if (!m_buffers[index].loaded)
   {
-    return true;
+    YuvImage& dst = m_buffers[index].image;
+    m_buffers[index].videoBuffer->GetPlanes(dst.plane);
+    m_buffers[index].videoBuffer->GetStrides(dst.stride);
+
+    if (m_format == AV_PIX_FMT_NV12)
+    {
+      ret = UploadNV12Texture(index);
+    }
+    else if (m_format == AV_PIX_FMT_YUYV422 || m_format == AV_PIX_FMT_UYVY422)
+    {
+      ret = UploadPackedYUVTexture(index);
+    }
+    else
+    {
+      // default to planar YUV texture handlers
+      ret = UploadPlanarYUVTexture(index);
+    }
+
+    if (ret)
+    {
+      m_buffers[index].loaded = true;
+    }
   }
 
-  bool ret{false};
-
-  YuvImage &dst = m_buffers[index].image;
-  m_buffers[index].videoBuffer->GetPlanes(dst.plane);
-  m_buffers[index].videoBuffer->GetStrides(dst.stride);
-
-  if (m_format == AV_PIX_FMT_NV12)
-  {
-    ret = UploadNV12Texture(index);
-  }
-  else if (m_format == AV_PIX_FMT_YUYV422 || m_format == AV_PIX_FMT_UYVY422)
-  {
-    ret = UploadPackedYUVTexture(index);
-  }
-  else
-  {
-    // default to planar YUV texture handlers
-    ret = UploadPlanarYUVTexture(index);
-  }
-
+  // recalculate on every render, not just on upload: ManageRenderArea() moves
+  // m_sourceRect between the two eyes of a stereoscopic source
   if (ret)
   {
-    m_buffers[index].loaded = true;
+    CalculateTextureSourceRects(index, 3);
   }
-
+#ifdef HAVE_DVBRIDGE
+  if (auto* window=dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
+  {
+    CDVBridgeGLES::Layer layer{};
+    const bool usable=ret && BuildDVBridgeLayer(index,layer);
+    const auto& buffer=m_buffers[index];
+    const auto binding=buffer.doviSourcePicture && buffer.doviSourcePicture->doviSourceBinding.Valid() ?
+        buffer.doviSourcePicture->doviSourceBinding : buffer.doviMetadata.Binding();
+    window->ObserveDVImport(binding,DVBridgeGeometry(),usable);
+  }
+#endif
   return ret;
 }
+
+#ifdef HAVE_DVBRIDGE
+bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& layer)
+{
+  auto& buffer=m_buffers[index];
+  if (!buffer.doviSourcePicture || m_textureTarget!=GL_TEXTURE_2D || m_renderOrientation!=0)
+    return false;
+  const auto& source=*buffer.doviSourcePicture;
+  const bool hdr10=!source.doviSourceInfo.profile && source.doviSourceBinding.Valid() &&
+      (source.hdrType==StreamHdrType::HDR_TYPE_HDR10 || source.hdrType==StreamHdrType::HDR_TYPE_HDR10PLUS);
+  if (!hdr10 && (!buffer.doviMetadata.Data() || buffer.doviPts==DVD_NOPTS_VALUE ||
+      !std::isfinite(buffer.doviPts))) return false;
+  if (m_sourceWidth<=0 || m_sourceWidth>3840 || m_sourceHeight<=0 || m_sourceHeight>2160)
+    return false;
+  switch (m_format)
+  {
+    case AV_PIX_FMT_YUV420P10LE: layer.layout=DVBRIDGE_YUV420P10; break;
+    case AV_PIX_FMT_YUV444P10LE: layer.layout=DVBRIDGE_YUV444P10; break;
+    default: return false;
+  }
+  layer.width=m_sourceWidth; layer.height=m_sourceHeight;
+  layer.scalingMethod=SelectScalingMethod();
+  layer.pts=hdr10 ? source.pts / DVD_TIME_BASE : buffer.doviPts;
+  layer.binding=hdr10 ? source.doviSourceBinding : buffer.doviMetadata.Binding();
+  if (!std::isfinite(layer.pts) || (hdr10 && (source.pts==DVD_NOPTS_VALUE ||
+      source.doviSourcePts==AV_NOPTS_VALUE))) return false;
+  if (hdr10)
+  {
+    layer.fullRange=source.color_range!=0;
+    if (source.hasDisplayMetadata && source.displayMetadata.has_luminance)
+    {
+      layer.hdr.max_luma=av_q2d(source.displayMetadata.max_luminance);
+      layer.hdr.min_luma=av_q2d(source.displayMetadata.min_luminance);
+    }
+    if (source.hasLightMetadata)
+    { layer.hdr.max_cll=source.lightMetadata.MaxCLL; layer.hdr.max_fall=source.lightMetadata.MaxFALL; }
+  }
+  layer.lease=buffer.doviSourcePicture;
+  layer.sourceInfo=buffer.doviSourcePicture->doviSourceInfo;
+  layer.sourceSideData=buffer.doviSourcePicture->sourceSideData;
+  layer.sourceSerial=layer.sourceSideData ? layer.sourceSideData->Serial() : 0;
+  layer.hdr10PlusSource = source.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS;
+  layer.chromaLocation=buffer.doviSourcePicture->chroma_position;
+  for (int p=0;p<3;++p)
+  {
+    const auto& plane=buffer.fields[FIELD_FULL][p];
+    const bool subsampled=p && m_format==AV_PIX_FMT_YUV420P10LE;
+    const unsigned width=subsampled ? (m_sourceWidth+1)/2 : m_sourceWidth;
+    const unsigned height=subsampled ? (m_sourceHeight+1)/2 : m_sourceHeight;
+    if (!plane.id || plane.texwidth!=width || plane.texheight!=height) return false;
+    layer.planes[p]={plane.id,static_cast<int>(plane.texwidth),static_cast<int>(plane.texheight)};
+  }
+  return layer.binding.Valid();
+}
+
+bool CLinuxRendererGLES::RenderDVBridge(int index)
+{
+  auto* window=dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
+  CDVBridgeGLES::Layer layer{};
+  if (!window || !BuildDVBridgeLayer(index,layer)) return false;
+  const auto& buffer=m_buffers[index];
+  return window->RenderDVBridge(layer,buffer.doviEnhancement,buffer.doviEnhancementBinding,
+      buffer.doviMetadata,DVBridgeGeometry());
+}
+
+dvbridge_geometry CLinuxRendererGLES::DVBridgeGeometry()
+{
+  auto* window = CServiceBroker::GetWinSystem();
+  CRect source, dest, view;
+  GetVideoRect(source, dest, view);
+  const int width = window->GetWidth(), height = window->GetHeight();
+  const auto& context = window->GetGfxContext();
+  if (width <= 0 || height <= 0 || context.GetWidth() <= 0 || context.GetHeight() <= 0)
+    return {};
+  const CRect original = dest;
+  dest.Intersect(CRect(0, 0, context.GetWidth(), context.GetHeight()));
+  if (dest.Width() <= 0 || dest.Height() <= 0 || original.Width() <= 0 || original.Height() <= 0)
+    return {};
+  const float sourceX = source.Width() / original.Width();
+  const float sourceY = source.Height() / original.Height();
+  source.x1 += (dest.x1 - original.x1) * sourceX;
+  source.x2 += (dest.x2 - original.x2) * sourceX;
+  source.y1 += (dest.y1 - original.y1) * sourceY;
+  source.y2 += (dest.y2 - original.y2) * sourceY;
+  const float sx = float(width) / context.GetWidth();
+  const float sy = float(height) / context.GetHeight();
+  const float left = dest.x1 * sx, top = dest.y1 * sy;
+  const float right = dest.x2 * sx, bottom = dest.y2 * sy;
+  const int x = std::floor(left), y = std::floor(top);
+  return {static_cast<int>(m_sourceWidth), static_cast<int>(m_sourceHeight),
+          x, y, static_cast<int>(std::ceil(right)) - x,
+          static_cast<int>(std::ceil(bottom)) - y, width, height,
+          {source.x1, source.y1, source.x2, source.y2}, {left, top, right, bottom}, false};
+}
+#endif
 
 bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 {
@@ -1171,6 +1430,26 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
     return false;
   }
 
+#ifdef HAVE_DVBRIDGE
+  if (m_buffers[index].doviSourcePicture)
+  {
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    if (!window || !window->PrepareDVOutputFrame(*m_buffers[index].doviSourcePicture))
+      return false;
+    m_dvRequested = window->DVBridgeRequested(m_buffers[index].doviSourcePicture.get());
+  }
+  if (m_dvRequested)
+  {
+    const bool rendered = m_currentField == FIELD_FULL && RenderDVBridge(index);
+    AfterRenderHook(index);
+    if (rendered)
+      DVBRIDGE::PlaybackNotification::RenderedNative(
+          m_buffers[index].videoBuffer ? m_buffers[index].videoBuffer->PlaybackGeneration() : 0,
+          m_buffers[index].doviMetadata.Binding());
+    return rendered;
+  }
+#endif
   if (RenderHook(index))
   {
     ;
@@ -1204,6 +1483,10 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
   }
 
   AfterRenderHook(index);
+#ifdef HAVE_DVBRIDGE
+  DVBRIDGE::PlaybackNotification::RenderedOrdinary(
+      m_buffers[index].videoBuffer ? m_buffers[index].videoBuffer->PlaybackGeneration() : 0);
+#endif
   return true;
 }
 
@@ -1617,8 +1900,6 @@ bool CLinuxRendererGLES::UploadPlanarYUVTexture(int source)
 
   VerifyGLState();
 
-  CalculateTextureSourceRects(source, 3);
-
   return true;
 }
 
@@ -1822,8 +2103,6 @@ bool CLinuxRendererGLES::UploadNV12Texture(int source)
 
   VerifyGLState();
 
-  CalculateTextureSourceRects(source, 3);
-
   return true;
 }
 
@@ -1978,8 +2257,6 @@ bool CLinuxRendererGLES::UploadPackedYUVTexture(int source)
             im->bpp, im->plane[0]);
 
   VerifyGLState();
-
-  CalculateTextureSourceRects(source, 3);
 
   return true;
 }

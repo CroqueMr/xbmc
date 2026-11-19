@@ -12,6 +12,7 @@
 #include "cores/VideoPlayer/VideoRenderers/RenderFlags.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
+#include "rendering/RenderSystemTypes.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "settings/DisplaySettings.h"
@@ -111,7 +112,8 @@ void CBaseRenderer::CalcDestRect(float offsetX,
                                  float inputFrameRatio,
                                  float zoomAmount,
                                  float verticalShift,
-                                 CRect& destRect)
+                                 CRect& destRect,
+                                 bool useVideoSettings)
 {
   // if view window is empty, set empty destination
   if (height == 0 || width == 0)
@@ -129,7 +131,10 @@ void CBaseRenderer::CalcDestRect(float offsetX,
 
   // allow a certain error to maximize size of render area
   float fCorrection = width / height / outputFrameRatio - 1.0f;
-  float fAllowed = CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ERRORINASPECT) * 0.01f;
+  const float fAllowed = useVideoSettings
+      ? CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+            CSettings::SETTING_VIDEOPLAYER_ERRORINASPECT) * 0.01f
+      : 0.0f;
   if (fCorrection > fAllowed)
     fCorrection = fAllowed;
   if (fCorrection < -fAllowed)
@@ -138,8 +143,8 @@ void CBaseRenderer::CalcDestRect(float offsetX,
   outputFrameRatio *= 1.0f + fCorrection;
 
   bool isRotated = false;
-  if (m_renderOrientation == 90 ||
-      m_renderOrientation == 270)
+  if (useVideoSettings && (m_renderOrientation == 90 ||
+                          m_renderOrientation == 270))
     isRotated = true;
 
   float newWidth;
@@ -165,6 +170,30 @@ void CBaseRenderer::CalcDestRect(float offsetX,
     {
       newWidth = std::min(width, height);
       newHeight = newWidth * outputFrameRatio;
+    }
+  }
+
+  if (m_videoSettings.m_ViewMode == ViewModeAuto && zoomAmount == 1.0f)
+  {
+    float sourceWidth = m_sourceRect.Width() > 0 ? m_sourceRect.Width() : m_sourceWidth;
+    float sourceHeight = m_sourceRect.Height() > 0 ? m_sourceRect.Height() : m_sourceHeight;
+    if (isRotated)
+      std::swap(sourceWidth, sourceHeight);
+
+    const auto& info = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
+    // Hardware-plane destinations already use physical pixels.
+    const float pixelScaleX = useVideoSettings ? float(info.iScreenWidth) / info.iWidth : 1.0f;
+    const float pixelScaleY = useVideoSettings ? float(info.iScreenHeight) / info.iHeight : 1.0f;
+    if (sourceWidth > 0 && sourceHeight > 0)
+    {
+      const float scaleX = newWidth * pixelScaleX / sourceWidth;
+      const float scaleY = newHeight * pixelScaleY / sourceHeight;
+      const float scale = std::max(scaleX, scaleY);
+      if (scaleX >= 1.0f && scaleY >= 1.0f && scale <= 1.01f)
+      {
+        newWidth /= scale;
+        newHeight /= scale;
+      }
     }
   }
 
@@ -348,10 +377,32 @@ void CBaseRenderer::ManageRenderArea()
       break;
   }
 
+  // Only a cropped eye needs the per-eye aspect; a full frame keeps its own.
+  const bool eyeCropped =
+      (stereo_view == RenderStereoView::LEFT || stereo_view == RenderStereoView::RIGHT);
+
   CalcNormalRenderRect(m_viewRect.x1, m_viewRect.y1, m_viewRect.Width(), m_viewRect.Height(),
-                       GetAspectRatio() * CDisplaySettings::GetInstance().GetPixelRatio(),
+                       (eyeCropped ? GetPerEyeAspectRatio() : GetAspectRatio()) *
+                           CDisplaySettings::GetInstance().GetPixelRatio(),
                        CDisplaySettings::GetInstance().GetZoomAmount(),
                        CDisplaySettings::GetInstance().GetVerticalShift());
+}
+
+float CBaseRenderer::GetPerEyeAspectRatio() const
+{
+  const float ratio = GetAspectRatio();
+
+  // A half packing squeezes each eye into a normal-looking frame, so it stays inside
+  // the range a single frame can have and is left to the display mode's pixel ratio.
+  switch (CONF_FLAGS_STEREO_MODE_MASK(m_iFlags))
+  {
+    case CONF_FLAGS_STEREO_MODE_SBS:
+      return ratio > STEREO_FULL_SBS_MIN_ASPECT ? ratio * 0.5f : ratio;
+    case CONF_FLAGS_STEREO_MODE_TAB:
+      return ratio < STEREO_FULL_TAB_MAX_ASPECT ? ratio * 2.0f : ratio;
+    default:
+      return ratio;
+  }
 }
 
 EShaderFormat CBaseRenderer::GetShaderFormat()
@@ -399,7 +450,7 @@ EShaderFormat CBaseRenderer::GetShaderFormat()
 
 void CBaseRenderer::SetViewMode(int viewMode)
 {
-  if (viewMode < ViewModeNormal || viewMode > ViewModeZoom110Width)
+  if (viewMode < ViewModeNormal || viewMode > ViewModeAuto)
     viewMode = ViewModeNormal;
 
   m_videoSettings.m_ViewMode = viewMode;
@@ -413,7 +464,8 @@ void CBaseRenderer::SetViewMode(int viewMode)
   float sourceFrameRatio = GetAspectRatio();
 
   bool is43 = (sourceFrameRatio < 8.f/(3.f*sqrt(3.f)) &&
-              m_videoSettings.m_ViewMode == ViewModeNormal);
+              (m_videoSettings.m_ViewMode == ViewModeNormal ||
+               m_videoSettings.m_ViewMode == ViewModeAuto));
 
   // Splitres scaling factor
   float xscale = (float)info.iScreenWidth  / (float)info.iWidth;

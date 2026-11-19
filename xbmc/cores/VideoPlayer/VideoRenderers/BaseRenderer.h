@@ -17,9 +17,18 @@
 
 #include <utility>
 #include <vector>
+#ifdef CB1_HAS_HDR10_AI
+#include <deque>
+#include <functional>
+#endif
 
 #define MAX_FIELDS 3
 #define NUM_BUFFERS 6
+#ifdef CB1_HAS_HDR10_AI
+constexpr int MAX_RENDER_BUFFERS = 64;
+#else
+constexpr int MAX_RENDER_BUFFERS = NUM_BUFFERS;
+#endif
 
 class CSetting;
 struct IntegerSettingOption;
@@ -44,6 +53,19 @@ enum RenderMethods
 
 struct VideoPicture;
 
+#ifdef CB1_HAS_HDR10_AI
+// Capture reads renderer slots under the presentation lock. Only execute may
+// run unlocked on the GUI/GL owner; publish validates the head under that lock.
+struct HDR10AIQueuePreparation
+{
+  struct Outcome { bool ready; bool lookahead; };
+  bool ready{true};
+  std::function<Outcome()> execute;
+  std::function<bool(const Outcome&)> publish;
+  bool buffered{false}; // Valid owned startup horizon, available before execute.
+};
+#endif
+
 namespace KODI::RENDERING::CAPTURE
 {
 struct CaptureSpec;
@@ -66,6 +88,9 @@ public:
   virtual void SetBufferSize(int numBuffers) { }
   virtual void ReleaseBuffer(int idx) { }
   virtual bool NeedBuffer(int idx) { return false; }
+#ifdef HAVE_DVBRIDGE
+  virtual void SetDVBridgeFELSuccessor(int index) { }
+#endif
   virtual bool IsGuiLayer() { return true; }
   //! True when video never reaches the framebuffer: a DRM plane, an Android
   //! SurfaceView, the Amlogic video layer. Such a renderer must produce its
@@ -81,9 +106,23 @@ public:
   }
   // Render info, can be called before configure
   virtual CRenderInfo GetRenderInfo() { return CRenderInfo(); }
+#ifdef CB1_HAS_HDR10_AI
+  virtual bool HDR10AIQueueEligible() const { return false; }
+  virtual bool HDR10AILookahead() const { return false; }
+  virtual bool HDR10AIFramePending() const { return false; }
+  virtual bool HDR10AIFrameCommitted() const { return false; }
+  virtual bool PrepareHDR10AIQueue(const std::deque<int>& queue, bool end, bool paused,
+      uint64_t presentationDeadline = 0)
+  { return true; }
+  virtual HDR10AIQueuePreparation CaptureHDR10AIQueue(const std::deque<int>& queue,
+      bool end, bool paused, uint64_t presentationDeadline)
+  { return {PrepareHDR10AIQueue(queue,end,paused,presentationDeadline), {}, {}}; }
+#endif
   virtual void Update() = 0;
   virtual void RenderUpdate(
       int index, int index2, bool clear, unsigned int flags, unsigned int alpha) = 0;
+  // Read-only receipt for the last video render attempt; unknown is not success.
+  virtual bool HasRenderedFrame() const { return false; }
   virtual bool ConfigChanged(const VideoPicture &picture) = 0;
 
   // Feature support
@@ -122,10 +161,23 @@ protected:
                     float inputFrameRatio,
                     float zoomAmount,
                     float verticalShift,
-                    CRect& destRect);
+                    CRect& destRect,
+                    bool useVideoSettings = true);
   void CalcNormalRenderRect(float offsetX, float offsetY, float width, float height,
                             float inputFrameRatio, float zoomAmount, float verticalShift);
   void CalculateFrameAspectRatio(unsigned int desired_width, unsigned int desired_height);
+
+  /*!
+   * \brief Aspect ratio of a single eye of a packed stereoscopic source.
+   *
+   * For a "full" side-by-side / top-and-bottom source the declared aspect ratio
+   * describes the whole packed frame, so one eye is half (SBS) or double (TAB)
+   * that. Corrected only when the declared ratio falls outside the range a
+   * single frame can plausibly have, so "half" packed sources and all
+   * non-stereoscopic sources are returned unchanged.
+   */
+  float GetPerEyeAspectRatio() const;
+
   virtual void ManageRenderArea();
   virtual void ReorderDrawPoints();
   virtual EShaderFormat GetShaderFormat();

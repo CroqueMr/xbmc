@@ -177,8 +177,12 @@ public:
   std::shared_ptr<AVContentLightMetadata> contentLightMetaData;
 
   std::string stereo_mode; // expected stereo mode
+  bool multiview = false; // Separate coded views require native decoder packing.
   StreamHdrType hdr_type = StreamHdrType::HDR_TYPE_NONE; // type of HDR for this stream (hdr10, etc)
   AVDOVIDecoderConfigurationRecord dovi{};
+#ifdef HAVE_DVBRIDGE
+  FFmpegExtraData doviELConfig;
+#endif
 };
 
 class CDemuxStreamAudio : public CDemuxStream
@@ -261,6 +265,9 @@ public:
    * Seek, time in msec calculated from stream start
    */
   virtual bool SeekTime(double time, bool backwards = false, double* startpts = nullptr) = 0;
+
+  // The last seek deliberately acquired earlier decoder references.
+  virtual bool HasSeekPreroll() const { return false; }
 
   /*
    * Seek to a specified chapter.

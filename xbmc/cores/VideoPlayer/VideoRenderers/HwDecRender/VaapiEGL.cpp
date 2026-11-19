@@ -32,36 +32,34 @@ bool CVaapi2Texture::Import(CVaapiRenderPicture* pic)
 {
   if (m_imported)
     return true;
+  VADRMPRIMESurfaceDescriptor surface{};
+  const VAStatus status = vaExportSurfaceHandle(pic->vadsp, pic->procPic.videoSurface,
+      VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+      VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS, &surface);
+  if (status != VA_STATUS_SUCCESS)
+  {
+    CLog::Log(LOGWARNING, "CVaapi2Texture::Import: export failed: {}", vaErrorStr(status));
+    return false;
+  }
+  std::array<KODI::UTILS::POSIX::CFileHandle, 4> drmFDs;
+  for (unsigned i = 0; i < surface.num_objects && i < drmFDs.size(); ++i)
+    drmFDs[i].attach(surface.objects[i].fd);
+  return Import(pic, surface);
+}
 
+bool CVaapi2Texture::Import(CVaapiRenderPicture* pic, const VADRMPRIMESurfaceDescriptor& surface)
+{
+  if (m_imported)
+    return true;
   auto failImport = [this]()
   {
-    // also destroys images/textures a partly failed import created
     Reset();
     return false;
   };
-
-  VAStatus status;
-
-  VADRMPRIMESurfaceDescriptor surface;
-
-  status = vaExportSurfaceHandle(pic->vadsp, pic->procPic.videoSurface,
-    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
-    VA_EXPORT_SURFACE_READ_ONLY | VA_EXPORT_SURFACE_SEPARATE_LAYERS,
-    &surface);
-
-  if (status != VA_STATUS_SUCCESS)
-  {
-    CLog::Log(LOGWARNING, "CVaapi2Texture::Import: vaExportSurfaceHandle failed - Error: {} ({})",
-              vaErrorStr(status), status);
+  if (!surface.num_objects || surface.num_objects > 4 || !surface.num_layers || surface.num_layers > 4)
     return failImport();
-  }
-
-  // EGL takes its own dma-buf reference at import; the fds need not outlive this function
-  std::array<KODI::UTILS::POSIX::CFileHandle, 4> drmFDs;
-  for (uint32_t object = 0; object < surface.num_objects && object < drmFDs.size(); object++)
-    drmFDs[object].attach(surface.objects[object].fd);
-
-  status = vaSyncSurface(pic->vadsp, pic->procPic.videoSurface);
+  VAStatus status;
+  status = pic->decodeCompleted ? VA_STATUS_SUCCESS : vaSyncSurface(pic->vadsp, pic->procPic.videoSurface);
   if (status != VA_STATUS_SUCCESS)
   {
     CLog::Log(LOGERROR, "CVaapi2Texture::Import: vaSyncSurface - Error: {} ({})",
@@ -251,9 +249,10 @@ std::optional<DRMPRIME::DmaBufIdentity> IdentityFromVaDescriptor(
 
 } // namespace
 
-void CVaapiTexturePool::Init(InteropInfo& interop)
+void CVaapiTexturePool::Init(InteropInfo& interop, size_t maxEntries)
 {
   m_interop = interop;
+  m_cache = DRMPRIME::CDmaBufIdentityCache{maxEntries, "vaapi"};
 }
 
 CVaapi2Texture* CVaapiTexturePool::Get(CVaapiRenderPicture* pic,
@@ -270,18 +269,19 @@ CVaapi2Texture* CVaapiTexturePool::Get(CVaapiRenderPicture* pic,
     return nullptr;
   }
 
-  // this export only identifies the memory; Import on a miss re-exports its own fds
+  // Retain these descriptors through a miss; EGL borrows them during import.
   const auto identity = IdentityFromVaDescriptor(surface, pic->DVDPic.iWidth, pic->DVDPic.iHeight);
-  for (uint32_t i = 0; i < surface.num_objects; i++)
-    close(surface.objects[i].fd);
+  std::array<KODI::UTILS::POSIX::CFileHandle, 4> drmFDs;
+  for (unsigned i = 0; i < surface.num_objects && i < drmFDs.size(); ++i)
+    drmFDs[i].attach(surface.objects[i].fd);
   if (!identity)
     return nullptr;
 
   uint32_t handle = m_cache.Lookup(*identity);
   if (handle)
   {
-    // Import syncs only on a miss; a cached texture still needs this frame's decode done
-    status = vaSyncSurface(pic->vadsp, pic->procPic.videoSurface);
+    // The producer's completion belongs to this picture, not to the cached storage.
+    status = pic->decodeCompleted ? VA_STATUS_SUCCESS : vaSyncSurface(pic->vadsp, pic->procPic.videoSurface);
     if (status != VA_STATUS_SUCCESS)
     {
       CLog::Log(LOGERROR, "CVaapiTexturePool::{}: vaSyncSurface - Error: {} ({})", __FUNCTION__,
@@ -300,11 +300,14 @@ CVaapi2Texture* CVaapiTexturePool::Get(CVaapiRenderPicture* pic,
     else
     {
       slot = m_entries.size();
-      m_entries.push_back(std::make_unique<CVaapi2Texture>());
+      m_entries.emplace_back(new CVaapi2Texture(),[](CVaapi2Texture* texture) {
+        texture->Reset();
+        delete texture;
+      });
       m_entries[slot]->Init(m_interop);
     }
 
-    if (!m_entries[slot]->Import(pic))
+    if (!m_entries[slot]->Import(pic, surface))
     {
       m_free.push_back(slot);
       return nullptr;
@@ -321,7 +324,8 @@ CVaapi2Texture* CVaapiTexturePool::Get(CVaapiRenderPicture* pic,
   protect.push_back(handle);
   for (size_t slot = 0; slot < m_entries.size(); slot++)
   {
-    if (std::find(inUse.begin(), inUse.end(), m_entries[slot].get()) != inUse.end())
+    if (m_entries[slot].use_count() > 1 ||
+        std::find(inUse.begin(), inUse.end(), m_entries[slot].get()) != inUse.end())
       protect.push_back(static_cast<uint32_t>(slot) + 1);
   }
 
@@ -337,13 +341,16 @@ CVaapi2Texture* CVaapiTexturePool::Get(CVaapiRenderPicture* pic,
 void CVaapiTexturePool::ReleaseAll()
 {
   m_cache.TakeAll();
-  for (auto& entry : m_entries)
-  {
-    if (entry)
-      entry->Reset();
-  }
+  // Foreign DV leases defer Reset until their real source-read completion.
   m_entries.clear();
   m_free.clear();
+}
+
+std::shared_ptr<void> CVaapiTexturePool::Retain(CVaapiTexture* texture) const
+{
+  for (const auto& entry : m_entries)
+    if (entry.get() == texture) return entry;
+  return {};
 }
 
 bool CVaapi2Texture::TestEsh(VADisplay vaDpy, EGLDisplay eglDisplay, std::uint32_t rtFormat, std::int32_t pixelFormat)
@@ -390,22 +397,24 @@ bool CVaapi2Texture::TestEsh(VADisplay vaDpy, EGLDisplay eglDisplay, std::uint32
     if (layer.object_index[0] < drmPrimeSurface.num_objects)
     {
       auto const& object = drmPrimeSurface.objects[layer.object_index[0]];
-      EGLint attribs[] = {EGL_LINUX_DRM_FOURCC_EXT,
-                          static_cast<EGLint>(drmPrimeSurface.layers[0].drm_format),
-                          EGL_WIDTH,
-                          width,
-                          EGL_HEIGHT,
-                          height,
-                          EGL_DMA_BUF_PLANE0_FD_EXT,
-                          static_cast<EGLint>(object.fd),
-                          EGL_DMA_BUF_PLANE0_OFFSET_EXT,
-                          static_cast<EGLint>(layer.offset[0]),
-                          EGL_DMA_BUF_PLANE0_PITCH_EXT,
-                          static_cast<EGLint>(layer.pitch[0]),
-                          EGL_NONE};
+      CEGLAttributes<8> attribs;
+      attribs.Add({{EGL_LINUX_DRM_FOURCC_EXT, static_cast<EGLint>(layer.drm_format)},
+                   {EGL_WIDTH, width},
+                   {EGL_HEIGHT, height},
+                   {EGL_DMA_BUF_PLANE0_FD_EXT, object.fd},
+                   {EGL_DMA_BUF_PLANE0_OFFSET_EXT, static_cast<EGLint>(layer.offset[0])},
+                   {EGL_DMA_BUF_PLANE0_PITCH_EXT, static_cast<EGLint>(layer.pitch[0])}});
+
+      if (CEGLUtils::HasExtension(eglDisplay, "EGL_EXT_image_dma_buf_import_modifiers"))
+      {
+        attribs.Add({{EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
+                      static_cast<EGLint>(object.drm_format_modifier)},
+                     {EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
+                      static_cast<EGLint>(object.drm_format_modifier >> 32)}});
+      }
 
       EGLImageKHR eglImage =
-          eglCreateImageKHR(eglDisplay, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attribs);
+          eglCreateImageKHR(eglDisplay, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attribs.Get());
       if (eglImage)
       {
         eglDestroyImageKHR(eglDisplay, eglImage);

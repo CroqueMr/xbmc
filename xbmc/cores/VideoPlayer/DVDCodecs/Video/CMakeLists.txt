@@ -1,11 +1,13 @@
 set(SOURCES AddonVideoCodec.cpp
             DVDVideoCodec.cpp
-            DVDVideoCodecFFmpeg.cpp)
+            DVDVideoCodecFFmpeg.cpp
+            MultiviewFramePairer.cpp)
 
 set(HEADERS AddonVideoCodec.h
             DVDVideoCodec.h
             DVDVideoCodecFFmpeg.h
-            DVDVideoPP.h)
+            DVDVideoPP.h
+            MultiviewFramePairer.h)
 
 if(TARGET ffmpeg::libpostproc)
   list(APPEND SOURCES DVDVideoPPFFmpeg.cpp)
@@ -44,3 +46,7 @@ if(("gbm" IN_LIST CORE_PLATFORM_NAME_LC OR "wayland" IN_LIST CORE_PLATFORM_NAME_
 endif()
 
 core_add_library(dvdvideocodecs)
+target_include_directories(${CORE_LIBRARY} PRIVATE "${DVBRIDGE_SOURCE_DIR}")
+if(ENABLE_DVBRIDGE)
+  target_link_libraries(${CORE_LIBRARY} PRIVATE dvbridge_core)
+endif()

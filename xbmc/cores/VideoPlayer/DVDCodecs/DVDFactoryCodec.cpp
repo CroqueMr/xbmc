@@ -22,13 +22,19 @@
 #include "Video/AddonVideoCodec.h"
 #include "Video/DVDVideoCodec.h"
 #include "Video/DVDVideoCodecFFmpeg.h"
+#include "ServiceBroker.h"
 #include "addons/AddonProvider.h"
 #include "cores/VideoPlayer/DVDCodecs/DVDCodecs.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 
 #include <mutex>
 #include <utility>
+#ifdef HAVE_DVBRIDGE
+#include "Video/DVPlaybackPolicy.h"
+#endif
 
 //------------------------------------------------------------------------------
 // Video
@@ -68,6 +74,21 @@ std::unique_ptr<CDVDVideoCodec> CDVDFactoryCodec::CreateVideoCodec(CDVDStreamInf
     return nullptr;
   }
 
+  // Native multiview packing requires CPU-readable frames from the FFmpeg codec.
+  if (hint.multiview)
+  {
+    pCodec = std::make_unique<CDVDVideoCodecFFmpeg>(processInfo);
+    return pCodec->Open(hint, options) ? std::move(pCodec) : nullptr;
+  }
+
+  // DVBridge carries metadata and paired hardware surfaces through the VAAPI adapter.
+#ifdef HAVE_DVBRIDGE
+  if (DVBRIDGE::RetainsDVSource(hint))
+  {
+    pCodec = std::make_unique<CDVDVideoCodecFFmpeg>(processInfo);
+    return pCodec->Open(hint, options) ? std::move(pCodec) : nullptr;
+  }
+#endif
   // platform specific video decoders
   if (!(hint.codecOptions & CODEC_FORCE_SOFTWARE))
   {
@@ -178,6 +199,25 @@ std::unique_ptr<CDVDAudioCodec> CDVDFactoryCodec::CreateAudioCodec(
   std::unique_ptr<CDVDAudioCodec> pCodec;
   CDVDCodecOptions options;
 
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  CLog::Log(LOGINFO,
+            "Audio passthrough selection: codec={} profile={} rate={} player_allows={} "
+            "stream_type={} realtime={} sync_display={} configured={} output_config={} "
+            "formats=ac3:{},eac3:{},dts:{},dtshd:{},truehd:{} pcm_device={} "
+            "passthrough_device={}",
+            static_cast<int>(hint.codec), hint.profile, hint.samplerate, allowpassthrough,
+            static_cast<int>(ptStreamType), processInfo.IsRealtimeStream(),
+            settings->GetBool(CSettings::SETTING_VIDEOPLAYER_USEDISPLAYASCLOCK),
+            settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGH),
+            settings->GetInt(CSettings::SETTING_AUDIOOUTPUT_CONFIG),
+            settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_AC3PASSTHROUGH),
+            settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_EAC3PASSTHROUGH),
+            settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSPASSTHROUGH),
+            settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_DTSHDPASSTHROUGH),
+            settings->GetBool(CSettings::SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH),
+            settings->GetString(CSettings::SETTING_AUDIOOUTPUT_AUDIODEVICE),
+            settings->GetString(CSettings::SETTING_AUDIOOUTPUT_PASSTHROUGHDEVICE));
+
   if (allowpassthrough && ptStreamType != CAEStreamInfo::STREAM_TYPE_NULL)
     options.m_keys.emplace_back("ptstreamtype", StringUtils::SizeToString(ptStreamType));
 
@@ -287,4 +327,3 @@ std::unique_ptr<CDVDOverlayCodec> CDVDFactoryCodec::CreateOverlayCodec(CDVDStrea
 
   return nullptr;
 }
-

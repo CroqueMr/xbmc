@@ -9,12 +9,17 @@
 #pragma once
 
 #include "EdlEdit.h"
+#include "VideoProcessingInfo.h"
+#include "cores/AudioEngine/Utils/AEAudioSourceInfo.h"
 #include "threads/CriticalSection.h"
 
 #include <atomic>
 #include <chrono>
 #include <string>
+#include <memory>
 #include <vector>
+
+class VideoSourceSideData;
 
 class CDataCacheCore
 {
@@ -28,6 +33,13 @@ public:
   void SignalVideoInfoChange();
   void SignalAudioInfoChange();
   void SignalSubtitleInfoChange();
+  uint64_t ResetVideoProcessingInfo();
+  uint64_t GetVideoProcessingGeneration();
+  bool SetVideoProcessingInfo(uint64_t generation, const VideoProcessingInfo& info);
+  VideoProcessingInfo GetVideoProcessingInfo();
+  bool SetVideoSourceSideData(uint64_t generation, std::shared_ptr<const VideoSourceSideData> source);
+  std::string GetVideoSourceSideData();
+  bool HasVideoHDR10PlusSource();
 
   // player video info
   void SetVideoDecoderName(std::string name, bool isHw);
@@ -66,6 +78,8 @@ public:
   bool IsVideoInterlaced();
 
   // player audio info
+  void SetAudioSourceInfo(const AE::AudioSourceInfo& source);
+  AE::AudioSourceInfo GetAudioSourceInfo();
   void SetAudioDecoderName(std::string name);
   std::string GetAudioDecoderName();
   void SetAudioChannels(std::string channels);
@@ -228,6 +242,9 @@ protected:
   std::atomic_bool m_hasAVInfoChanges = false;
 
   CCriticalSection m_videoPlayerSection;
+  VideoProcessingInfo m_videoProcessingInfo;
+  std::shared_ptr<const VideoSourceSideData> m_videoSourceSideData;
+  uint64_t m_videoProcessingGeneration{};
   struct SPlayerVideoInfo
   {
     std::string decoderName;
@@ -248,6 +265,7 @@ protected:
   CCriticalSection m_audioPlayerSection;
   struct SPlayerAudioInfo
   {
+    AE::AudioSourceInfo source;
     std::string decoderName;
     std::string channels;
     int sampleRate;

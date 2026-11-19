@@ -8,11 +8,14 @@
 
 #pragma once
 
+#include "BlurayOffsetMetadata.h"
 #include "DVDDemux.h"
+#include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "threads/CriticalSection.h"
 #include "threads/SystemClock.h"
 #include <map>
 #include <memory>
+#include <optional>
 #include <vector>
 
 extern "C" {
@@ -20,6 +23,9 @@ extern "C" {
 }
 
 class CDVDDemuxFFmpeg;
+#ifdef HAVE_DVBRIDGE
+#include "BlurayDovi.h"
+#endif
 class CDVDInputStream;
 class CURL;
 struct ChapterFFmpeg;
@@ -62,6 +68,8 @@ public:
   std::string GetStreamName() override;
 
   std::string m_description;
+  std::optional<unsigned int> m_offsetSequence;
+
 protected:
   CDVDDemuxFFmpeg* m_parent;
   AVStream* m_stream = nullptr;
@@ -95,8 +103,12 @@ public:
 
   DemuxPacket* Read() override;
   DemuxPacket* ReadInternal(bool keep);
+#ifdef HAVE_DVBRIDGE
+  bool CaptureBlurayVideoWindow();
+#endif
 
   bool SeekTime(double time, bool backwards = false, double* startpts = NULL) override;
+  bool HasSeekPreroll() const override { return m_seekPreroll; }
   bool SeekByte(int64_t pos);
   int GetStreamLength() override;
   CDemuxStream* GetStream(int iStreamId) const override;
@@ -115,6 +127,23 @@ public:
   bool IsStreaming() const override;
 
   bool Aborted();
+
+  /*!
+   * \brief Whether the decoder for this codec can decode and output every view
+   *        of a multiview stream, i.e. carries the view_ids option.
+   */
+  static bool SupportsMultiviewDecode(AVCodecID codecId);
+
+  /*!
+   * \brief The plane offset metadata an H.264 MVC stream carries in its dependent view,
+   *        for placing subtitles in depth. Null until such a stream has been added; the
+   *        store then lives as long as the demuxer, so a holder keeps receiving updates
+   *        across a stream rebuild.
+   */
+  const std::shared_ptr<KODI::VIDEO::BLURAY::COffsetMetadataStore>& GetOffsetMetadata() const
+  {
+    return m_offsetMetadata;
+  }
 
   AVFormatContext* m_pFormatContext;
   std::shared_ptr<CDVDInputStream> m_pInput;
@@ -142,12 +171,30 @@ protected:
   unsigned int HLSSelectProgram();
 
   std::string GetStereoModeFromMetadata(AVDictionary* pMetadata);
+  std::string GetStereoModeFromSideData(const AVStream* pStream, bool& multiview);
+  bool HasMvcExtension(const AVStream* pStream);
+  void ConfigureOffsetMetadata(const AVStream* pStream, const CDemuxStreamVideo* stream);
+  void ReadOffsetMetadata(const DemuxPacket& packet);
+  void ResetOffsetMetadata();
   std::string ConvertCodecToInternalStereoMode(const std::string& mode, const StereoModeConversionMap* conversionMap);
 
   void GetL16Parameters(int& channels, int& samplerate);
   double SelectAspect(AVStream* st, bool& forced);
 
   StreamHdrType DetermineHdrType(AVStream* pStream);
+
+#ifdef HAVE_DVBRIDGE
+  void InitBlurayDovi(unsigned int program);
+  int ReadBlurayDovi(AVPacket* packet);
+  std::unique_ptr<CBlurayDovi> m_blurayDovi;
+  int m_blurayBase{-1}, m_blurayEnhancement{-1};
+  unsigned m_doviGroups{0};
+  bool m_blurayAwaitBase{false};
+  DemuxPacket::DoviLayerTimes m_blurayTiming;
+  CBlurayVideoWindow m_blurayVideoWindow;
+  bool m_blurayWindowCaptured{false};
+  uint64_t m_blurayEpoch{0};
+#endif
 
   CCriticalSection m_critSection;
   std::map<int, CDemuxStream*> m_streams;
@@ -165,6 +212,16 @@ protected:
   unsigned int m_newProgram;
   unsigned int m_initialProgramNumber;
   int m_seekStream;
+
+  // An MVC remux carries the disc's plane offsets in the dependent view's SEI, inside
+  // the same length-prefixed access units as the base view
+  std::shared_ptr<KODI::VIDEO::BLURAY::COffsetMetadataStore> m_offsetMetadata;
+  int m_offsetStreamIndex{-1};
+  unsigned int m_offsetNalLengthSize{0};
+  double m_offsetFrameDuration{0.0};
+  unsigned int m_offsetAccessUnitsWithout{0};
+  bool m_loggedOffsetMetadata{false};
+  bool m_loggedOffsetMetadataMissing{false};
 
   XbmcThreads::EndTime<> m_timeout;
 
@@ -198,6 +255,7 @@ protected:
   int m_displayTime = 0;
   double m_dtsAtDisplayTime;
   bool m_seekToKeyFrame = false;
+  bool m_seekPreroll = false;
   double m_startTime = 0;
   std::vector<ChapterFFmpeg> m_chapters;
 };

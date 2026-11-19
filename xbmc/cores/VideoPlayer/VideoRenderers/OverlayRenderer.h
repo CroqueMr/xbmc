@@ -19,6 +19,7 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <optional>
 #include <vector>
 
 typedef struct ass_image ASS_Image;
@@ -91,6 +92,9 @@ namespace OVERLAY {
 
     // pixels are already HDR, matching video's colorimetry
     bool m_isHDROverlay{false};
+    DVDOverlaySource m_source{DVDOverlaySource::SUBTITLE};
+    bool m_isBitmap{false};
+    unsigned m_paletteOutputState{0};
 
   protected:
     /*!
@@ -111,6 +115,16 @@ namespace OVERLAY {
     void Notify(const Observable& obs, const ObservableMessage msg) override;
 
     void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts, int index);
+
+    /*!
+     * \brief Set the shift the disc asks the subtitle plane to carry, in video pixels.
+     *
+     * A Blu-ray 3D title places its subtitles in depth by shifting the plane one way for
+     * the left eye and the other for the right. Set for each frame as it is presented,
+     * since the amount is the title's to vary; nothing where the subtitle being shown
+     * follows no such sequence, which is what leaves the setting in charge.
+     */
+    void SetSubtitlePlaneOffset(std::optional<int> offset) { m_subtitlePlaneOffset = offset; }
     virtual void Render(int idx, float depth = 0.0f);
 
     // render overlays already in HDR (not sRGB)
@@ -191,6 +205,18 @@ namespace OVERLAY {
     };
 
     void Render(COverlay* o);
+    SRenderState ComputeBaseState(const COverlay* o) const;
+    void PrepareBitmapBounds(int idx);
+
+    /*!
+     * \brief The horizontal shift the current eye's subtitles carry, in screen pixels.
+     *
+     * A title that places its subtitles in depth itself answers for the frame being
+     * presented, in the video's own pixels, so that is scaled the same way the overlay is;
+     * the subtitles.stereoscopicdepth setting answers for everything else. Either way it
+     * is signed by the eye being drawn.
+     */
+    float SubtitleDepth() const;
     std::shared_ptr<COverlay> Convert(SElement& e);
     // Build a COverlay (cached or freshly created) from the libass output
     // already produced by PrepareOverlays. Does not call ass_render_frame.
@@ -214,13 +240,21 @@ namespace OVERLAY {
     };
 
     mutable CCriticalSection m_section;
-    std::vector<SElement> m_buffers[NUM_BUFFERS];
+    std::vector<SElement> m_buffers[MAX_RENDER_BUFFERS];
     std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;
     static unsigned int m_textureid;
     CRect m_rv; // Frame size
     CRect m_rs; // Source size
     CRect m_rd; // Video size, may be influenced by video settings (e.g. zoom)
     std::string m_stereomode;
+
+    //! What the disc asks the subtitle plane to be shifted by, in the video's own pixels,
+    //! or nothing where the title places its subtitles in depth no differently frame to frame.
+    std::optional<int> m_subtitlePlaneOffset;
+
+    //! The offset the overlays on screen were last actually drawn with. Compared against
+    //! m_subtitlePlaneOffset to notice a depth change a redraw has yet to show.
+    std::optional<int> m_lastDrawnPlaneOffset;
     // Current subtitle position
     int m_subtitlePosition{0};
     // Current subtitle position from resolution info,
@@ -238,5 +272,8 @@ namespace OVERLAY {
     // to detect arrival/disappearance transitions (image/SPU have no
     // per-frame change signal of their own, unlike libass detect_change).
     bool m_prevHadImageSpu{false};
+    KODI::SUBTITLES::BitmapOptions m_bitmapOptions;
+    std::atomic<bool> m_bitmapSettingsChanged{true};
+    CRect m_bitmapBounds;
   };
 }

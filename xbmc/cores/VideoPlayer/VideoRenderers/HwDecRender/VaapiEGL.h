@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <va/va.h>
+#include <va/va_drmcommon.h>
 
 #include "system_egl.h"
 #include "system_gl.h"
@@ -58,6 +59,7 @@ class CVaapi2Texture : public CVaapiTexture
 {
 public:
   bool Import(CVaapiRenderPicture* pic) override;
+  bool Import(CVaapiRenderPicture* pic, const VADRMPRIMESurfaceDescriptor& surface);
   void Reset() override;
   void Init(InteropInfo &interop) override;
 
@@ -92,10 +94,11 @@ public:
   // must exceed the largest VAAPI surface pool (AV1: 27) or cycling evicts every frame
   static constexpr size_t MAX_ENTRIES = 32;
 
-  void Init(InteropInfo& interop);
+  void Init(InteropInfo& interop, size_t maxEntries = MAX_ENTRIES);
   //! \brief Imported texture for the picture's surface dma-buf; nullptr on export or import failure.
   //! Textures in inUse are protected from eviction while a render slot still names them.
   CVaapi2Texture* Get(CVaapiRenderPicture* pic, std::span<CVaapiTexture* const> inUse);
+  std::shared_ptr<void> Retain(CVaapiTexture* texture) const;
   //! \brief Reset and drop every cached texture; needs the GL context current.
   void ReleaseAll();
 
@@ -103,8 +106,7 @@ private:
   InteropInfo m_interop{};
   DRMPRIME::CDmaBufIdentityCache m_cache{MAX_ENTRIES, "vaapi"};
   // cache handle = entry index + 1; freed slots are recycled
-  std::vector<std::unique_ptr<CVaapi2Texture>> m_entries;
+  std::vector<std::shared_ptr<CVaapi2Texture>> m_entries;
   std::vector<size_t> m_free;
 };
 }
-
