@@ -104,6 +104,12 @@ void CDisplayInfo::Parse()
 
           switch (cta_tag)
           {
+            case DI_CTA_DATA_BLOCK_HDR10PLUS:
+            {
+              if (const auto* hdr = di_cta_data_block_get_hdr10plus(block))
+                m_hdr10plusVersion = hdr->version;
+              break;
+            }
             case DI_CTA_DATA_BLOCK_DOLBY_VIDEO:
             {
               // Report the connected display's capability, not the current output mode.

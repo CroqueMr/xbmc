@@ -20,6 +20,7 @@ extern "C"
 #include "dvbridge_render.h"
 #include "dvbridge_dmabuf.h"
 #include "dvbridge_fel_vpp.h"
+#include "cb1_dv_hdr10plus.h"
 }
 #if DVBRIDGE_DV_POLICY_API < 5 || DVBRIDGE_HDR10_POLICY_API < 4
 #error "DV bridge requires DV policy API 5 and HDR10 policy API 4"
@@ -137,6 +138,8 @@ public:
     uint64_t informationGeneration{};
     std::shared_ptr<const VideoSourceSideData> sourceSideData{};
     int felFilter{-1}, felBackend{};
+    std::optional<std::array<uint8_t,CB1_HDR10PLUS_VSIF_BYTES>> hdr10plus{};
+    bool hdr10plusAccepted{};
   };
   Submission CaptureSubmission() const
   {
@@ -147,6 +150,13 @@ public:
     submission.felBackend=fel ? (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE ? 3 :
         m_hardwareBinding == m_pendingBinding &&
         m_hardwareFELFilter == m_requested.felUpscaling && m_hardwareFELVpp ? 2 : 1) : 0;
+    if (m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS && m_prepared && m_hdr10plusMetadata)
+    {
+      std::array<uint8_t,CB1_HDR10PLUS_VSIF_BYTES> packet;
+      if (cb1_hdr10plus_vsif(packet.data(), &*m_hdr10plusMetadata,
+          m_guiComposed || m_overlayVisible, true) == CB1_HDR10PLUS_OK)
+        submission.hdr10plus = packet;
+    }
     return submission;
   }
   bool AsyncPreparationActive() const { return m_live && m_hasCommitted && m_asyncEligible; }
@@ -193,6 +203,11 @@ public:
   bool Presented(bool success);
 
 private:
+  FrameStatus BeginHDR10Plus();
+  FrameStatus PollHDR10Plus();
+  cb1_hdr10plus_analysis* m_hdr10plusAnalysis{};
+  std::optional<AVDynamicHDRPlus> m_hdr10plusMetadata;
+  cb1_dv_hdr10plus_report m_hdr10plusReport{};
   struct FELPrefetch;
   std::shared_ptr<FELPrefetch> m_felPrefetch;
   FrameStatus TakeFELPrefetch(const std::shared_ptr<AVFrame>& frame,

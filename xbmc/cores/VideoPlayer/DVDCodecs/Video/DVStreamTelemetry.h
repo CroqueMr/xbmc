@@ -64,6 +64,7 @@ struct StreamSnapshot
     uint32_t creativeApplied{}, creativeEdited{};
     int creativeStatus{}, creativeReason{};
     bool fastChroma{};
+    bool iptTransport{};
     int fastRenderingMode{};
     int felUpscaling{-1};
 #ifdef CB1_HAS_HDR10_AI
@@ -85,8 +86,9 @@ struct StreamSnapshot
         if (effective==2) return cb1_circuit_version(CB1_DV_HDR10_BASIC);
         if (effective==3) return cb1_circuit_version(CB1_DV_HDR10_EXPERT);
         if (effective==4) return cb1_circuit_version(CB1_DV_DV_ADAPTIVE);
-        if (effective==5) return cb1_circuit_version(CB1_DV_DV_MASTER_REFERENCE);
+        if (effective==5) return cb1_circuit_version(iptTransport ? CB1_DV_DV_MASTER_IPT : CB1_DV_DV_MASTER_REFERENCE);
         if (effective==6) return cb1_circuit_version(CB1_DV_DV_ADAPTIVE_B);
+        if (effective==7) return cb1_circuit_version(CB1_DV_HDR10PLUS);
       }
       return "";
     }
@@ -114,7 +116,7 @@ struct StreamSnapshot
     result[5]=blocks[5]; // Active-picture geometry, not a creative trim.
     for(unsigned level=0;level<32;++level)
       if (output.creativeApplied & (1u<<level)) result[level]=blocks[level];
-    if (output.flags & CDVPlaybackInfo::HDR10 || output.authoredLegacy)
+    if (((output.flags & CDVPlaybackInfo::HDR10) && output.effective!=7) || output.authoredLegacy)
     {
       result[1]=blocks[1] && pq[0]<=pq[2] && pq[2]<=pq[1] && pq[1]>0 && pq[1]<=4095;
       result[6]=blocks[6] && (output.effective>=3 || output.level6);
@@ -247,7 +249,8 @@ public:
     m_snapshot.output = output;
     if (m_snapshot.transaction.identity==SourceBinding{output.stream,output.picture,output.revision})
     {
-      m_snapshot.output.reason=m_snapshot.transaction.reason;
+      if (output.effective!=7 || output.reason==OutputReason::None)
+        m_snapshot.output.reason=m_snapshot.transaction.reason;
       m_snapshot.output.requested=m_snapshot.transaction.requested;
       m_snapshot.output.minimumLinkBits=(output.flags & CDVPlaybackInfo::HDR10) ? 10 : 0;
     }

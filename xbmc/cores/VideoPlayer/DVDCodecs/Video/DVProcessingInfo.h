@@ -26,6 +26,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   accepted.creativeEdited=output.creativeEdited; accepted.creativeStatus=output.creativeStatus;
   accepted.creativeReason=output.creativeReason; accepted.fastChroma=output.fastChroma;
   accepted.fastRenderingMode=output.fastRenderingMode;
+  accepted.iptTransport=output.iptTransport;
   accepted.felUpscaling=output.felUpscaling;
 #ifdef CB1_HAS_HDR10_AI
   accepted.hdr10AI=output.hdr10AI; accepted.aiL1L3=output.aiL1L3;
@@ -33,6 +34,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   if (output.flags) { accepted.engine=cb1_engine_version(); accepted.circuit=output.Circuit(); }
 #endif
   if (output.flags & CDVPlaybackInfo::HDMI) info.outputType=VideoOutputType::DolbyVision;
+  else if (output.flags & CDVPlaybackInfo::HDR10PLUS) info.outputType=VideoOutputType::HDR10Plus;
   else if (output.flags & CDVPlaybackInfo::HDR10) info.outputType=VideoOutputType::HDR10;
   info.profile=source.profile; info.level=source.level; info.major=source.major; info.minor=source.minor;
   info.bl=source.bl; info.el=source.el; info.rpu=source.rpu; info.fel=source.fel;

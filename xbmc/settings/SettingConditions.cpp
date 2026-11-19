@@ -517,6 +517,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   // A failed frame or disabled import does not remove reusable output capabilities.
   caps.nativeDV=available.nativeDV;
   caps.hdr10=available.hdr10;
+  caps.hdr10plus=available.hdr10plus;
   if (caps.isDV && preferences.output==DVBRIDGE::OutputMode::Disabled)
   {
     caps.processingKnown=available.processingKnown;
@@ -529,7 +530,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   const bool hdr10Source=hdr10Menu || setting->GetId()=="dvbridge.hdr10source";
   const auto& processing=hdr10Source && !caps.sourceKnown ? caps.hdr10Processing : caps.processing;
   constexpr int menuModes[]{1,5,
-      4,0,2,3};
+      4,0,2,3,6};
 #ifdef CB1_HAS_HDR10_AI
   constexpr int hdr10MenuModes[]{1,4,0};
 #else
@@ -540,7 +541,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
     const int mode=hdr10Menu ? (option.value>=0 && option.value<int(std::size(hdr10MenuModes)) ? hdr10MenuModes[option.value] : 0) :
         hdr10Source ? (option.value==1 ? 1 : option.value==2 ? 4 : 0) :
         menu ? (option.value>=0 && option.value<int(std::size(menuModes)) ? menuModes[option.value] : 0) :
-        method ? (option.value==0 ? 2 : option.value==1 ? 3 : 0) :
+        method ? (option.value==0 ? 2 : option.value==1 ? 3 : option.value==2 ? 6 : 0) :
         (option.value==0 ? 1 : option.value==1 ? 2 : option.value==3 || option.value==5 ? 4 : option.value==4 ? 5 : 0);
     auto reason=DVBRIDGE::OutputReason::None;
     if (mode)
@@ -548,6 +549,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
       const bool dv=mode==1 || mode==4 || mode==5;
       if (!(dv ? caps.nativeDV : caps.hdr10))
         reason=dv ? DVBRIDGE::OutputReason::NoDVTransport : DVBRIDGE::OutputReason::NoHDR10Transport;
+      else if (mode==6 && !caps.hdr10plus) reason=DVBRIDGE::OutputReason::NoHDR10PlusTransport;
       else if (!caps.processingKnown) reason=DVBRIDGE::OutputReason::NoGPUProcessing;
       else if (caps.sourceKnown && !(hdr10Source ? (caps.isHDR10 && !caps.isDV) : caps.isDV))
         reason=DVBRIDGE::OutputReason::SourceIneligible;

@@ -181,7 +181,9 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.MinimumLinkBits", active && data.output.minimumLinkBits ?
         StringUtils::Format(localizer.Get(40852),data.output.minimumLinkBits) : "");
     SetProperty("DV.Transport", active ? CDVPlaybackInfo::Transport(data.output.format) : "");
-    SetProperty("DV.SignalIntent", active & CDVPlaybackInfo::HDMI ? "TV-Led Dolby Vision tunnel" :
+    SetProperty("DV.SignalIntent", active & CDVPlaybackInfo::HDMI ?
+        (data.output.iptTransport ? "TV-Led / IPT-PQc2 tunnel" : "TV-Led / YCbCr tunnel") :
+        active & CDVPlaybackInfo::HDR10PLUS ? "PQ / BT.2020 / HDR10+" :
         hdr10 ? "PQ / BT.2020" : "");
     SetProperty("DV.Committed", active && data.output.stream ? StringUtils::Format("{} / {} / {}",
         data.output.stream,data.output.picture,data.output.revision) : "");
@@ -216,7 +218,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.HDR10Policy", hdr10 ? CDVPlaybackInfo::Policy(data.output) : "");
     SetProperty("DV.HDR10Target", hdr10 ? StringUtils::Format("{:g} nits", data.output.target) : "");
     SetProperty("DV.HDR10TargetLabel", hdr10 ? (data.output.effective==2 ? "Source reference" :
-        data.output.effective==3 ? "Display reference" : "Mapping target") : "");
+        data.output.effective==3 ? "Display reference" : data.output.effective==7 ? "Curve reference" : "Mapping target") : "");
     SetProperty("DV.CreativeTrims", active ? (data.output.creativeKnown ?
         (data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Invalid) ||
          data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Unsupported) ?
@@ -228,6 +230,11 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
           data.output.creativeApplied ? "Metadata-guided expansion" :
           data.output.creativeEdited ? "Metadata adjusted for TV" : "Original metadata preserved") :
         data.output.authoredLegacy || hdr10 ? "Source trims not applied" : "Forwarded to TV") : "");
+    if (active && data.output.effective==7)
+      SetProperty("DV.CreativeTrims", !(active & CDVPlaybackInfo::HDR10PLUS) ? "HDR10 output / dynamic metadata unavailable" :
+          data.output.creativeEdited & (1u<<8) ? "L8 curve converted to HDR10+" :
+          data.output.creativeEdited & (1u<<2) ? "L2 curve converted to HDR10+" :
+          data.output.creativeEdited & (1u<<1) ? "Scene curve converted to HDR10+" : "Statistics only / trims not represented");
     SetProperty("DV.Precision", active ? StringUtils::Format("{}-bit framebuffer", data.output.bits) : "N/A");
     SetProperty("DV.L1PQ", metadata && data.l1 ? StringUtils::Format("{} | {} | {}", data.pq[0], data.pq[1], data.pq[2]) : "N/A");
     const auto nits = [](unsigned pq) {

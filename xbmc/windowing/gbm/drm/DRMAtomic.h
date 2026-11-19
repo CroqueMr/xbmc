@@ -33,6 +33,8 @@ public:
   ~CDRMAtomic() override;
   void FlipPage(struct gbm_bo* bo, bool rendered, bool videoLayer, bool async) override;
   bool LastPageAccepted() const { return m_lastPageAccepted; }
+  void StageHDR10Plus(std::optional<std::array<uint8_t, 31>> packet, uint64_t generation);
+  bool HDR10PlusActive() const { return m_hdr10plusActive; }
   bool TestFramebuffer(struct gbm_bo* bo);
   bool IsSelectedModeCommitted() const;
   bool SetVideoMode(const RESOLUTION_INFO& res, struct gbm_bo* bo) override;
@@ -70,6 +72,12 @@ public:
   static bool SupportsAtomicModesetting();
 
 private:
+  bool PrepareHDR10Plus(int& flags, bool& frameMetadata);
+  bool RemoveRejectedHDR10Plus(int& flags);
+  int TestAtomicFrame(int& flags, bool frameMetadata);
+  std::optional<std::array<uint8_t, 31>> m_hdr10plusPacket;
+  uint64_t m_hdr10plusGeneration{}, m_hdr10plusRejectedGeneration{}, m_hdr10plusRejectedEdid{};
+  bool m_hdr10plusActive{};
   bool DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer,
                        bool strict = false);
   void FinishRequest(bool accepted);
@@ -97,7 +105,7 @@ private:
   int m_cb1TimingInput{-1};
   uint64_t m_cb1TimingPeriodNs{}, m_cb1SubmittedNs{};
   std::optional<int64_t> m_cb1Headroom;
-  void ResetCB1Timing();
+  void ResetCB1Timing(bool discardSample = true);
   void ResetCB1PresentationTime() { m_cb1CompletedNs = m_cb1PreviousCompletedNs = 0; }
   bool m_lastPageAccepted{};
   bool m_active = true;
@@ -119,6 +127,8 @@ private:
     void CacheProperties();
     std::optional<drmModeModeInfo> signalMode;
     std::optional<uint64_t> requestedDV;
+    CDRMPropertyBlob hdr10plusBlob;
+    std::optional<bool> hdr10plus;
     void LogAtomicRequest();
     void LogDVProperties();
 

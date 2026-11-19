@@ -7,9 +7,10 @@
 #include <optional>
 #include <string>
 
-enum class VideoOutputType { SDR, HDR10, HLG, DolbyVision };
+enum class VideoOutputType { SDR, HDR10, HLG, DolbyVision, HDR10Plus };
 enum class VideoProcessingReason { None, NoDVTransport, NoHDR10Transport,
-  NoGPUProcessing, SourceIneligible, TVProfileRequired, ActivationFailed, RestoreFailed };
+  NoGPUProcessing, SourceIneligible, TVProfileRequired, ActivationFailed, RestoreFailed,
+  NoHDR10PlusTransport };
 enum class VideoCreativeStatus { Invalid, Unsupported, Neutral, Ready };
 
 // Native playback facts. Renderer objects and full metadata buffers stay with their owners.
@@ -48,6 +49,7 @@ struct VideoProcessingInfo
     uint32_t creativeApplied{}, creativeEdited{};
     int creativeStatus{}, creativeReason{};
     bool fastChroma{};
+    bool iptTransport{};
     int fastRenderingMode{};
     int felUpscaling{-1};
     bool hdr10AI{}, emittedL1Known{};

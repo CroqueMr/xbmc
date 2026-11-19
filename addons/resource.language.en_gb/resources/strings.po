@@ -25813,7 +25813,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40813"
-msgid "HDR10 conversion"
+msgid "HDR10 / HDR10+ conversion"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25851,7 +25851,15 @@ msgid "HDR10 conversion method"
 msgstr ""
 
 msgctxt "#40821"
-msgid "Basic uses source metadata. Expert requires a TV profile. Unsupported output uses a visible compatibility fallback."
+msgid "Basic uses source metadata. Expert requires a TV profile. HDR10+ sends picture statistics and representable trims to a compatible display."
+msgstr ""
+
+msgctxt "#40920"
+msgid "HDR10+ conversion (experimental)"
+msgstr ""
+
+msgctxt "#40921"
+msgid "HDR10+ output requires a supported HDMI driver and display."
 msgstr ""
 
 msgctxt "#40822"
@@ -26065,5 +26073,29 @@ msgstr ""
 
 msgctxt "#40915"
 msgid "Insufficient rendering headroom. Switching to Dolby Vision Standard."
+msgstr ""
+
+msgctxt "#40916"
+msgid "Master Reference output"
+msgstr ""
+
+msgctxt "#40917"
+msgid "Preferred TV-Led transport. Profile 5 remains direct IPT."
+msgstr ""
+
+msgctxt "#40918"
+msgid "YCbCr"
+msgstr ""
+
+msgctxt "#40919"
+msgid "IPT-PQc2"
+msgstr ""
+
+msgctxt "#40920"
+msgid "Allow Master Reference to switch to Standard"
+msgstr ""
+
+msgctxt "#40921"
+msgid "Switch when sustained rendering headroom is insufficient. Off keeps Master Reference strict."
 msgstr ""
 
