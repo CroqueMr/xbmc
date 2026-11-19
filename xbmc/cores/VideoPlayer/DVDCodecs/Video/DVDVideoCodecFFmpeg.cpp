@@ -34,6 +34,7 @@
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include "dvbridge_metadata_bounds.h"
@@ -75,6 +76,11 @@ namespace
 {
 char presentableDVPacket;
 char decodeOnlyDVPacket;
+struct FELBaseIdentity
+{
+  int64_t pts;
+  uint64_t epoch;
+};
 }
 #endif
 
@@ -754,6 +760,20 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   avpkt->pts = (packet.pts == DVD_NOPTS_VALUE)
                    ? AV_NOPTS_VALUE
                    : static_cast<int64_t>(packet.pts / DVD_TIME_BASE * AV_TIME_BASE);
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel && layer.valid && layer.basePts != AV_NOPTS_VALUE)
+  {
+    avpkt->opaque_ref = av_buffer_alloc(sizeof(FELBaseIdentity));
+    if (!avpkt->opaque_ref)
+    {
+      av_packet_free(&avpkt);
+      m_dvFailed = true;
+      return true;
+    }
+    const FELBaseIdentity identity{layer.basePts, layer.epoch};
+    std::memcpy(avpkt->opaque_ref->data, &identity, sizeof(identity));
+  }
+#endif
   avpkt->side_data = static_cast<AVPacketSideData*>(packet.pSideData);
   avpkt->side_data_elems = packet.iSideDataElems;
 
@@ -776,6 +796,10 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
     const auto& timing = packet.doviLayerTimes;
     const dvbridge_fel_source source{timing.basePts, timing.enhancementPts,
         {timing.clockNum, timing.clockDen}, timing.epoch, timing.presentable};
+    // Kodi's normalized time is for presentation. The companion decoder joins
+    // declared layers by the original access-unit identity.
+    if (timing.valid)
+      avpkt->pts = timing.basePts;
     const bool submitted = timing.valid ? dvbridge_fel_submit_source(m_dvFel.get(), avpkt, &source) :
                                          dvbridge_fel_submit(m_dvFel.get(), avpkt);
     if (!submitted)
@@ -788,8 +812,9 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   //! @todo: properly handle avpkt side_data. this works around our improper use of the side_data
   // as we pass pointers to ffmpeg allocated memory for the side_data. we should really be allocating
   // and storing our own AVPacket. This will require some extensive changes.
-  av_buffer_unref(&avpkt->buf);
-  av_free(avpkt);
+  avpkt->side_data = nullptr;
+  avpkt->side_data_elems = 0;
+  av_packet_free(&avpkt);
 
 #ifdef HAVE_DVBRIDGE
   if (m_dvFel && layer.valid && layer.basePts == AV_NOPTS_VALUE)
@@ -846,7 +871,8 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
         while (!m_dvPending.empty())
         {
           auto& base = m_dvPending.front();
-          if (base->doviSourcePts == AV_NOPTS_VALUE)
+          const int64_t pairPts = m_dvLayerEpoch ? base->doviPairPts : base->doviSourcePts;
+          if (pairPts == AV_NOPTS_VALUE || base->doviSourcePts == AV_NOPTS_VALUE)
             return VC_FATAL;
           AVFrame* enhancement = nullptr;
           const auto& metadata = base->doviMetadata;
@@ -854,9 +880,9 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
               (base->doviSourceInfo.frameRpu ||
                ((m_hints.codecOptions & CODEC_BLURAY_NAVIGATION) && m_dvLayerEpoch));
           const int result = ownRpu ?
-              dvbridge_fel_take_mel(m_dvFel.get(), base->doviSourcePts, &enhancement,
+              dvbridge_fel_take_mel(m_dvFel.get(), pairPts, &enhancement,
                                    metadata.Data(), metadata.Size()) :
-              dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts, &enhancement);
+              dvbridge_fel_take(m_dvFel.get(), pairPts, &enhancement);
           if (result == 2)
           {
             m_dvPending.pop_front();
@@ -878,6 +904,8 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
           }
           if (result == 1)
           {
+            // Keep the renderer's BL and EL timestamps on the same presentation clock.
+            enhancement->pts = enhancement->best_effort_timestamp = base->doviSourcePts;
             ReportDVStartup(4, "el-decoded");
 #ifdef HAVE_LIBVA
             if (base->iFlags & DVP_FLAG_DROPPED)
@@ -1690,7 +1718,18 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   }
   pVideoPicture->doviSourcePts = m_pFrame->best_effort_timestamp;
 #ifdef HAVE_DVBRIDGE
-  if (m_dvLayerEpoch) pVideoPicture->doviSourcePts = m_pFrame->pts;
+  if (m_dvLayerEpoch)
+  {
+    pVideoPicture->doviSourcePts = m_pFrame->pts;
+    const auto* identity = m_pFrame->opaque_ref;
+    if (m_dvFel && identity && identity->size == sizeof(FELBaseIdentity))
+    {
+      FELBaseIdentity source{};
+      std::memcpy(&source, identity->data, sizeof(source));
+      if (source.epoch == m_dvLayerEpoch)
+        pVideoPicture->doviPairPts = source.pts;
+    }
+  }
 #endif
   if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
