@@ -36,6 +36,9 @@
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/WindowIDs.h"
+#if defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+#include "HwDecRender/RendererVAAPIGLES.h"
+#endif
 #endif
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
@@ -203,20 +206,25 @@ bool CRenderManager::Configure()
   std::unique_lock lock2(m_presentlock);
   std::unique_lock lock3(m_datalock);
 
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+  auto* vaapi = dynamic_cast<CRendererVAAPIGLES*>(m_pRenderer);
+  const bool retained = vaapi &&
+      vaapi->RetainHDR10DVOutput(*m_pConfigPicture, m_fps, m_orientation);
+#endif
   if (m_pRenderer)
-  {
     DeleteRenderer();
-  }
 
-  if (!m_pRenderer)
-  {
-    CreateRenderer();
-    if (!m_pRenderer)
-      return false;
-  }
-
-  m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
-  bool result = m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
+  CreateRenderer();
+  if (m_pRenderer)
+    m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
+  const bool result = m_pRenderer &&
+      m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+  if (retained && !result)
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+            CServiceBroker::GetWinSystem()))
+      window->StopDVBridgePlayback();
+#endif
   if (result)
   {
     CRenderInfo info = m_pRenderer->GetRenderInfo();

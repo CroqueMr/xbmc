@@ -102,6 +102,7 @@ bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsig
       !picture.doviSourceInfo.profile && !(picture.iFlags & DVP_FLAG_INTERLACED) &&
       DVBridgeOrientationSupported(orientation) ? pic->renderBufferCount : NUM_BUFFERS;
   m_aiLookahead=m_aiBuffers>NUM_BUFFERS;
+  SetFps(fps);
 #endif
 
   if (m_isVAAPIBuffer)
@@ -143,6 +144,27 @@ CRenderInfo CRendererVAAPIGLES::GetRenderInfo()
   CRenderInfo info;
   info.max_buffer_size = m_aiBuffers;
   return info;
+}
+
+bool CRendererVAAPIGLES::RetainHDR10DVOutput(const VideoPicture& picture, float fps,
+                                            unsigned int orientation)
+{
+  const auto* next = dynamic_cast<const CVaapiRenderPicture*>(picture.videoBuffer);
+  if (!m_dvRequested || !m_aiLookahead || !next || !next->valid ||
+      next->procPic.videoSurface == VA_INVALID_ID || next->procPic.fourcc != m_vaapiFourcc ||
+      next->renderBufferCount <= NUM_BUFFERS || picture.iWidth != m_sourceWidth ||
+      picture.iHeight != m_sourceHeight || !DVBridgeOrientationSupported(orientation) ||
+      (picture.iFlags & DVP_FLAG_INTERLACED) || std::abs(fps - m_fps) > 0.001f)
+    return false;
+
+  auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      CServiceBroker::GetWinSystem());
+  if (!window || !window->RetainHDR10DVOutput(picture))
+    return false;
+
+  // The successor owns output cleanup. The old renderer only frees its textures.
+  m_dvRequested = m_bConfigured = false;
+  return true;
 }
 
 bool CRendererVAAPIGLES::HDR10AILookahead() const

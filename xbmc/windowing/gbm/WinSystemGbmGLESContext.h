@@ -113,6 +113,12 @@ public:
   bool PrepareDVOutputFrame(const VideoPicture& picture);
 #ifdef CB1_HAS_HDR10_AI
   bool HDR10AILookaheadActive() const;
+  bool RetainHDR10DVOutput(const VideoPicture& picture);
+  bool OwnsHDR10DVOutput() const
+  {
+    return m_dvState.Captured() && m_dvSelection.route == DVBRIDGE::OutputRoute::NativeDV &&
+        !m_dvStopPending && !m_dvEndPending && HDR10AIFrameCommitted();
+  }
   bool HDR10AIMetadataOnly() const { return m_dvContext && m_dvContext->HDR10AI().MetadataOnly(); }
   bool HDR10AISelectionPending() const
   {

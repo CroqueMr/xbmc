@@ -1904,6 +1904,29 @@ DVBRIDGE::OutputSelection CWinSystemGbmGLESContext::SelectedDVOutput(const Video
 #ifndef CB1_L1L3_BUNDLE_DIR
 #define CB1_L1L3_BUNDLE_DIR "/usr/share/cb1/l1l3"
 #endif
+bool CWinSystemGbmGLESContext::RetainHDR10DVOutput(const VideoPicture& picture)
+{
+  // Source format and policy can change independently of the current scanout.
+  if (picture.hdrType != StreamHdrType::HDR_TYPE_HDR10 || picture.doviSourceInfo.profile ||
+      !picture.stereoMode.empty() || !picture.doviSourceBinding.Valid() ||
+      !m_dvState.Captured() || m_dvSelection.route != DVBRIDGE::OutputRoute::NativeDV ||
+      m_dvStopPending || m_dvEndPending || m_dvActivating || m_dvRecoveryPending ||
+      m_dvOrdinaryFrame || HasPendingDVOutputSurface() || !HDR10AIFrameCommitted())
+    return false;
+  const auto preferences = DVBRIDGE::FrameOutputSettings();
+  const auto mode = preferences.hdr10Source;
+  if ((mode != DVBRIDGE::HDR10SourceMode::ReferenceDV &&
+       mode != DVBRIDGE::HDR10SourceMode::EnhancedDV) ||
+      !m_dvContext->HDR10AI().Current(m_aiActivation, preferences))
+    return false;
+
+  // Keep the accepted framebuffer and connector state, while resetting
+  // source-dependent renderer history before admitting the next clip.
+  m_dvBridge->Reset();
+  m_cb1FramePending = m_dvFrame = m_dvNativeGui = false;
+  return true;
+}
+
 bool CWinSystemGbmGLESContext::HDR10AILookaheadActive() const
 {
   std::lock_guard lock(m_dvCapabilityMutex);

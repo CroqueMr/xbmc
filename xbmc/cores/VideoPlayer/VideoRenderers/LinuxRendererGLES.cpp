@@ -229,8 +229,11 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
       DVBRIDGE::FrameOutputSettings(picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS, picture.hdrType == StreamHdrType::HDR_TYPE_HLG).hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
   if (m_aiOutputPending)
   {
-    // Keep the GUI output until AI preparation selects DV or native HDR10.
-    m_dvRequested = m_passthroughHDR = m_hdrFboActive = false;
+    // An already committed HDR10-to-DV output can outlive the renderer.
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    m_dvRequested = window && window->OwnsHDR10DVOutput();
+    m_passthroughHDR = m_hdrFboActive = false;
     return true;
   }
 #endif
