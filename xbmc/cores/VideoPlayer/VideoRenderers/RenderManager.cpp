@@ -1802,6 +1802,16 @@ void CRenderManager::DiscardBuffer()
   m_presentevent.notifyAll();
 }
 
+bool CRenderManager::HasPendingVideoPresentation()
+{
+  std::unique_lock lock(m_presentlock);
+#ifdef HAVE_DVBRIDGE
+  if (m_cb1PresentPending)
+    return true;
+#endif
+  return !m_queued.empty() || m_presentstep != PRESENT_IDLE;
+}
+
 bool CRenderManager::GetStats(int &lateframes, double &pts, int &queued, int &discard)
 {
   std::unique_lock lock(m_presentlock);

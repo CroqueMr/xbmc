@@ -160,6 +160,7 @@ public:
    * looking at the end of the queue.
    */
   bool GetStats(int &lateframes, double &pts, int &queued, int &discard);
+  bool HasPendingVideoPresentation();
 
   /**
    * Video player call this on flush in order to discard any queued frames
