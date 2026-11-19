@@ -1006,25 +1006,23 @@ void CRenderManager::SetViewMode(int iViewMode)
   m_playerPort->VideoParamsChange();
 }
 
-namespace
-{
-RESOLUTION ChoosePlaybackResolution(const VideoPicture& picture, double fps, bool nativeDV)
+RESOLUTION CRenderManager::ChoosePlaybackResolution(double fps, int width, int height, bool stereo,
+                                                    bool nativeDV, bool atStartup)
 {
 #ifdef HAVE_DVBRIDGE
   const auto advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
-  if (nativeDV && picture.stereoMode.empty() && !CResolutionUtils::HasWhitelist() &&
+  if (nativeDV && !stereo && !CResolutionUtils::HasWhitelist() &&
       advanced->m_videoAdjustRefreshOverrides.empty())
     if (const auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
             CServiceBroker::GetWinSystem()))
-      if (const auto resolution = window->PlayerLedResolution(fps))
+      if (const auto resolution = window->PlayerLedResolution(fps, atStartup))
         return *resolution;
 #else
   (void)nativeDV;
+  (void)atStartup;
 #endif
-  return CResolutionUtils::ChooseBestResolution(fps, picture.iWidth, picture.iHeight,
-                                                 !picture.stereoMode.empty());
+  return CResolutionUtils::ChooseBestResolution(fps, width, height, stereo);
 }
-} // namespace
 
 RESOLUTION CRenderManager::GetResolution()
 {
@@ -1036,7 +1034,8 @@ RESOLUTION CRenderManager::GetResolution()
 
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF)
   {
-    res = ChoosePlaybackResolution(m_picture, m_fps, m_nativeDVRate);
+    res = ChoosePlaybackResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
+                                      !m_picture.stereoMode.empty(), m_nativeDVRate);
   }
 
   return res;
@@ -1305,7 +1304,8 @@ void CRenderManager::UpdateResolution()
     {
       if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF && m_fps > 0.0f)
       {
-        const RESOLUTION res = ChoosePlaybackResolution(m_picture, m_fps, m_nativeDVRate);
+        const RESOLUTION res = ChoosePlaybackResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
+                                      !m_picture.stereoMode.empty(), m_nativeDVRate);
 #ifdef HAVE_DVBRIDGE
         // Carry the stream's intent when this later request performs the modeset.
         const auto previous = DVBRIDGE::guiModeChangeResolution;

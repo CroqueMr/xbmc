@@ -60,7 +60,8 @@ public:
   void DestroyDrm() override;
   bool SupportsFencing() override { return true; }
   bool AddProperty(CDRMObject* object, const char* name, uint64_t value);
-  bool FlipPageTransactional(struct gbm_bo* bo, bool restore = false, bool async = false);
+  bool FlipPageTransactional(struct gbm_bo* bo, bool restore = false, bool async = false,
+                             bool* lldvTestRejected = nullptr);
   bool FlipPageWithHDR10Metadata(struct gbm_bo* bo, uint32_t blob);
   bool HasPendingCB1Page() const { return m_cb1Pending; }
   bool HasPendingRequest() const { return m_need_modeset || (m_req && !m_req->Empty()); }
@@ -103,7 +104,7 @@ private:
   bool m_hdr10plusClearRequired{};
   void AcceptHDR10Plus(bool enabled);
   bool DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer,
-                       bool strict = false);
+                       bool strict = false, bool* lldvTestRejected = nullptr);
   void FinishRequest(bool accepted);
   DVBRIDGE::OutputRetry m_dvRetry;
   bool m_dvLinkKnown{false};

@@ -113,7 +113,7 @@ public:
 #ifdef HAVE_DVBRIDGE
   enum class SDRBT2020Support { Available, Display, Driver };
   SDRBT2020Support GetSDRBT2020Support() const;
-  DVBRIDGE::LldvConnectorStatus GetLldvConnectorStatus() const;
+  DVBRIDGE::LldvConnectorStatus GetLldvConnectorStatus(bool snapshot = false) const;
   bool FlipPlayerLedPage(CDVBridgeState& state, const DVBRIDGE::LldvTransport& packed,
                          bool async = false, gbm_bo* carrier = nullptr,
                          std::shared_ptr<void> lease = {});
@@ -270,7 +270,7 @@ private:
   DVBRIDGE::LldvDisplay m_lldvDisplay;
   uint32_t m_lldvEdidConnector{};
   uint64_t m_lldvEdidGeneration{};
-  DVBRIDGE::LldvTransport m_lldvRejected;
+  std::array<unsigned, 10> m_lldvRejectedTimings{};
 #endif
 };
 

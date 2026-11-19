@@ -216,6 +216,7 @@ bool CWinSystemGbm::InitWindowSystem()
     m_lldvDisplay = DVBRIDGE::ReadLldvDisplay(edid.data(), edid.size());
     m_lldvEdidConnector = *connector->GetConnectorId();
     ++m_lldvEdidGeneration;
+    m_lldvRejectedTimings = {};
 #endif
     if (!edid.empty())
     {
@@ -983,6 +984,7 @@ bool CWinSystemGbm::RefreshDisplayInfoForVideo()
       m_lldvDisplay = DVBRIDGE::ReadLldvDisplay(edid.data(), edid.size());
       m_lldvEdidConnector = id;
       ++m_lldvEdidGeneration;
+      m_lldvRejectedTimings = {};
     }
   }
   if (edid == m_displayEdid)
@@ -1663,6 +1665,31 @@ bool CWinSystemGbm::IsHDRDisplay()
 }
 
 #ifdef HAVE_DVBRIDGE
+namespace
+{
+// Five supported CTA timings, each with or without the optional 16:9 flag.
+int LldvTimingIndex(const drmModeModeInfo* mode)
+{
+  if (!mode || mode->hdisplay != 3840 || mode->vdisplay != 2160 || mode->vtotal != 2250 ||
+      mode->vsync_start != 2168 || mode->vsync_end != 2178 || mode->hskew || mode->vscan ||
+      (mode->clock != 297000 && mode->clock != 296703) ||
+      (mode->flags & ~DRM_MODE_FLAG_PIC_AR_16_9) !=
+          (DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC))
+    return -1;
+
+  const int aspect = (mode->flags & DRM_MODE_FLAG_PIC_AR_16_9) ? 5 : 0;
+  const int fractional = mode->clock == 296703 ? 1 : 0;
+  if (mode->htotal == 5500 && mode->hsync_start == 5116 && mode->hsync_end == 5204)
+    return aspect + fractional;
+  if (mode->htotal == 5280 && mode->hsync_start == 4896 && mode->hsync_end == 4984 &&
+      !fractional)
+    return aspect + 2;
+  if (mode->htotal == 4400 && mode->hsync_start == 4016 && mode->hsync_end == 4104)
+    return aspect + 3 + fractional;
+  return -1;
+}
+} // namespace
+
 bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
                                      const DVBRIDGE::LldvTransport& packed, bool async,
                                      gbm_bo* carrier, std::shared_ptr<void> lease)
@@ -1677,6 +1704,7 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
   const auto status = GetLldvConnectorStatus();
   if (!packed.connectorId || packed.connectorId != status.connectorId ||
       packed.edidGeneration != status.edidGeneration || status.display.status != LldvEdidStatus::Ready ||
+      (status.currentRejected & LldvTransportBit(packed)) ||
       (packed.format != LldvFormat::Y422_10 && packed.format != LldvFormat::Y422_12) ||
       (packed.rgb10Scanout && (!status.rgb10Scanout || packed.forced)) ||
       (packed.forced && (packed.format != LldvFormat::Y422_10 || !status.forced42210)) ||
@@ -1714,15 +1742,23 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
     if (!stable)
       drm->AllowModeset();
   }
-  const bool accepted = drm->FlipPageTransactional(ready ? bo : nullptr, false, async && stable);
-  if (ready && !stable)
+  const auto* mode = ready && !stable ? drm->GetSelectedMode() : nullptr;
+  const int timing = LldvTimingIndex(mode);
+  const int clock = mode ? mode->clock : 0;
+  const int htotal = mode ? mode->htotal : 0;
+  bool formatRejected = false;
+  const bool accepted = drm->FlipPageTransactional(ready ? bo : nullptr, false, async && stable,
+      ready && !stable && timing >= 0 ? &formatRejected : nullptr);
+  if (formatRejected)
   {
     std::lock_guard lock(m_lldvEdidMutex);
-    m_lldvRejected = accepted ? LldvTransport{} : packed;
+    if (packed.connectorId == m_lldvEdidConnector && packed.edidGeneration == m_lldvEdidGeneration)
+      m_lldvRejectedTimings[timing] |= LldvTransportBit(packed);
   }
   if (!accepted && !stable)
-    CLog::Log(LOGWARNING, "CB1 LLDV: DRM commit refused connector={} edid_generation={} format={} forced={} staged={}",
-              packed.connectorId, packed.edidGeneration, name, packed.forced, ready);
+    CLog::Log(LOGWARNING, "CB1 LLDV: DRM commit refused connector={} edid_generation={} format={} forced={} staged={} clock={} htotal={} format_rejected={}",
+              packed.connectorId, packed.edidGeneration, name, packed.forced, ready, clock, htotal,
+              formatRejected);
   if (!drm->HasPendingCB1Page()) surface.CompleteTransactionalBuffer(accepted);
   return accepted;
 }
@@ -1739,9 +1775,10 @@ CWinSystemGbm::SDRBT2020Support CWinSystemGbm::GetSDRBT2020Support() const
   return SDRBT2020Support::Available;
 }
 
-DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
+DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus(bool snapshot) const
 {
   DVBRIDGE::LldvConnectorStatus status;
+  decltype(m_lldvRejectedTimings) rejectedTimings{};
   auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
   if (connector && connector->IsConnected())
   {
@@ -1749,10 +1786,10 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
     status.connectorId = *connector->GetConnectorId();
     status.edidGeneration = m_lldvEdidGeneration;
     if (status.connectorId == m_lldvEdidConnector)
+    {
       status.display = m_lldvDisplay;
-    if (status.connectorId == m_lldvRejected.connectorId &&
-        status.edidGeneration == m_lldvRejected.edidGeneration)
-      status.rejected = m_lldvRejected.format;
+      rejectedTimings = m_lldvRejectedTimings;
+    }
     status.sink = status.display.sink;
   }
   if (status.connectorId && connector->SupportsProperty("CB1_LLDV_FORMAT"))
@@ -1770,22 +1807,27 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
     if (native12)
       status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_12);
     status.forced42210 = forced10.has_value();
-    const auto usable = [](const drmModeModeInfo* mode) {
-      return mode && mode->hdisplay == 3840 && mode->vdisplay == 2160 &&
-                           mode->vtotal == 2250 &&
-                           ((mode->htotal == 5500 && mode->hsync_start == 5116 && mode->hsync_end == 5204) ||
-                            (mode->htotal == 5280 && mode->hsync_start == 4896 && mode->hsync_end == 4984 &&
-                             mode->clock == 297000) ||
-                            (mode->htotal == 4400 && mode->hsync_start == 4016 && mode->hsync_end == 4104)) &&
-                           mode->vsync_start == 2168 && mode->vsync_end == 2178 &&
-                           mode->hskew == 0 && mode->vscan == 0 &&
-                           (mode->clock == 297000 || mode->clock == 296703) &&
-                           (mode->flags & ~DRM_MODE_FLAG_PIC_AR_16_9) ==
-                               (DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC);
-    };
-    status.currentTiming = usable(m_DRM->GetSelectedMode());
-    for (int i = 0; i < connector->GetModesCount() && !status.availableTiming; ++i)
-      status.availableTiming = usable(connector->GetModeForIndex(i));
+    const int timing = LldvTimingIndex(m_DRM->GetSelectedMode());
+    status.currentTiming = timing >= 0;
+    if (status.currentTiming)
+      status.currentRejected = rejectedTimings[timing];
+    // A format is refused for mode-switch admission only if every eligible
+    // timing refused it. The exact target is checked before playback starts.
+    unsigned rejectedInEveryMode = status.currentTiming ? status.currentRejected : ~0U;
+    for (int i = 0; i < connector->GetModesCount(); ++i)
+    {
+      const int available = LldvTimingIndex(connector->GetModeForIndex(i));
+      if (available < 0)
+        continue;
+      status.availableTiming = true;
+      rejectedInEveryMode &= rejectedTimings[available];
+      if (snapshot)
+        status.modeRejections.emplace_back(i, rejectedTimings[available]);
+      if (!snapshot && !rejectedInEveryMode)
+        break;
+    }
+    if (status.availableTiming)
+      status.availableRejected = rejectedInEveryMode;
     status.connectorId = *connector->GetConnectorId();
     const auto* atomic = dynamic_cast<const CDRMAtomic*>(m_DRM.get());
     status.timingCommitted = status.currentTiming && atomic && atomic->IsActive() &&

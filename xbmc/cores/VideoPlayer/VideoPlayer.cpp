@@ -4751,6 +4751,12 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   if (hint.flags & AV_DISPOSITION_ATTACHED_PIC)
     return false;
 
+  const auto streamFrameRate = [&hint] {
+    return DVD_TIME_BASE / CDVDCodecUtils::NormalizeFrameduration(
+        (double)DVD_TIME_BASE * hint.fpsscale / (hint.fpsrate * (hint.interlaced ? 2 : 1)));
+  };
+  std::optional<RESOLUTION> playerLedStartupResolution;
+
 #ifdef HAVE_DVBRIDGE
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   hint.preferHybridHDR10Plus = hint.HasHDR10PlusCompatibleDolbyVisionBase() &&
@@ -4760,7 +4766,28 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   {
     auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
         CServiceBroker::GetWinSystem());
-    const auto mode = DVBRIDGE::FrameOutputSettings().Policy().mode;
+    const auto preferences = DVBRIDGE::FrameOutputSettings();
+    const auto mode = preferences.Policy().mode;
+    if (window && !m_HasVideo && !pMenus && !hint.interlaced &&
+        mode == DVBRIDGE_MODE_PLAYER_LED && !preferences.hdr10TransportFallback)
+    {
+      const bool adjustRefresh = m_playerOptions.fullscreen &&
+          window->GetGfxContext().IsFullScreenRoot() &&
+          settings->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF;
+      if (adjustRefresh && hint.fpsrate && hint.fpsscale)
+        playerLedStartupResolution = CRenderManager::ChoosePlaybackResolution(
+            streamFrameRate(), hint.width, hint.height, false, WantsNativePresentation(hint), true);
+
+      if ((!adjustRefresh || playerLedStartupResolution) &&
+          window->PlayerLedResolutionReason(playerLedStartupResolution.value_or(RES_INVALID),
+                                            preferences.lldvFormat) ==
+              DVBRIDGE::LLDV_DRIVER_REJECTED_LABEL)
+      {
+        const auto caps = window->GetDVOutputCapabilities(nullptr, true);
+        if (caps.hdr10 && !caps.HDR10DepthLimited())
+          DVBRIDGE::UsePlayerLedStartupFallback();
+      }
+    }
     if (window && (mode == DVBRIDGE_MODE_HDR10_BASIC || mode == DVBRIDGE_MODE_HDR10_EXPERT) &&
         window->GetDVOutputCapabilities(nullptr, true).HDR10DepthLimited())
     {
@@ -4782,16 +4809,16 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   {
     if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF)
     {
-      const double framerate = DVD_TIME_BASE / CDVDCodecUtils::NormalizeFrameduration(
-                                                   (double)DVD_TIME_BASE * hint.fpsscale /
-                                                   (hint.fpsrate * (hint.interlaced ? 2 : 1)));
+      const double framerate = streamFrameRate();
 
       const bool nativeDV = !hint.preferHybridHDR10Plus && WantsNativePresentation(hint);
       // Disc navigation can reopen video while the GUI is joining this thread.
       // Let the render thread change the mode without a synchronous GUI message.
       if (!pMenus)
       {
-        RESOLUTION res = CResolutionUtils::ChooseBestResolution(static_cast<float>(framerate), hint.width, hint.height, !hint.stereo_mode.empty());
+        const RESOLUTION res = playerLedStartupResolution ? *playerLedStartupResolution :
+            CResolutionUtils::ChooseBestResolution(static_cast<float>(framerate), hint.width,
+                                                   hint.height, !hint.stereo_mode.empty());
 #ifdef HAVE_DVBRIDGE
         using HDRSignal = DVBRIDGE::NativeHDRSignal;
         auto hdrSignal = HDRSignal::None;

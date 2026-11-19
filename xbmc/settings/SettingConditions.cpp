@@ -505,7 +505,7 @@ void CSettingConditions::Initialize()
 
 #ifdef HAVE_DVBRIDGE
 void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& setting,
-                                         std::vector<IntegerSettingOption>& list)
+                                         std::vector<IntegerSettingOption>& list, bool inPlayback)
 {
   // Availability never substitutes or saves a different requested preference.
   const bool menu=setting->GetId()=="dvbridge.playbackchoice";
@@ -533,8 +533,14 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   caps.hdr10=available.hdr10;
   caps.hdr10MaxBpc=available.hdr10MaxBpc;
   caps.hdr10plus=available.hdr10plus;
-  caps.playerLed=available.playerLed;
-  caps.lldvUnavailableLabel=available.lldvUnavailableLabel;
+  caps.playerLed = available.playerLed;
+  caps.lldvUnavailableLabel = available.lldvUnavailableLabel;
+  if (window && menu && inPlayback)
+  {
+    const auto lldv = window->GetDVOutputCapabilities(nullptr, false);
+    caps.playerLed = lldv.playerLed;
+    caps.lldvUnavailableLabel = lldv.lldvUnavailableLabel;
+  }
   if (caps.isDV && preferences.output==DVBRIDGE::OutputMode::Disabled)
   {
     caps.processingKnown=available.processingKnown;
