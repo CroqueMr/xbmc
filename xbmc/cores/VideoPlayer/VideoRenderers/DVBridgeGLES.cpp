@@ -415,7 +415,6 @@ struct CDVBridgeGLES::Context::State
   {
     Layer layer;
     DVBRIDGE::SourceBinding head;
-    double headPts;
     DVBRIDGE::OutputPreferences preferences;
   };
   std::optional<NextHDR10AI> aiNext;
@@ -705,7 +704,7 @@ cb1_ai_status CDVBridgeGLES::Context::BeginHDR10AI(const char* bundle,
       HDR10AI().RecordStatus("analysis-context",CB1_AI_INCOMPATIBLE);
 }
 
-cb1_ai_status CDVBridgeGLES::Context::AnalyseHDR10AI(const Layer& base, double headPts)
+cb1_ai_status CDVBridgeGLES::Context::AnalyseHDR10AI(const Layer& base)
 {
   if (!m_state->gl || Quarantined())
     return HDR10AI().RecordStatus("analysis-context",CB1_AI_INVALID);
@@ -717,7 +716,7 @@ cb1_ai_status CDVBridgeGLES::Context::AnalyseHDR10AI(const Layer& base, double h
   if (!dvbridge_gl_frame_import(&imported,m_state->gl->gpu,base.layout,base.width,base.height,base.planes))
     return HDR10AI().RecordStatus("analysis-import",CB1_AI_INCOMPATIBLE);
   HDR10Color(imported.frame,base);
-  const auto status = HDR10AI().Submit(&imported.frame,base.binding,base.pts,headPts,base.lease);
+  const auto status = HDR10AI().Submit(&imported.frame,base.binding,base.pts,base.lease);
   const bool fenced = FenceHDR10AIUse();
   dvbridge_gl_frame_release(&imported);
   return fenced ? status : HDR10AI().RecordStatus("analysis-fence",CB1_AI_INVALID);
@@ -729,9 +728,9 @@ cb1_ai_status CDVBridgeGLES::BeginHDR10AI(const char* bundle,
 {
   return m_context ? m_context->BeginHDR10AI(bundle,preferences,binding,pts,now) : CB1_AI_INCOMPATIBLE;
 }
-cb1_ai_status CDVBridgeGLES::AnalyseHDR10AI(const Layer& base, double headPts)
+cb1_ai_status CDVBridgeGLES::AnalyseHDR10AI(const Layer& base)
 {
-  return m_context ? m_context->AnalyseHDR10AI(base,headPts) : CB1_AI_INCOMPATIBLE;
+  return m_context ? m_context->AnalyseHDR10AI(base) : CB1_AI_INCOMPATIBLE;
 }
 
 cb1_ai_status CDVBridgeGLES::CollectHDR10AI()
@@ -786,7 +785,7 @@ void CDVBridgeGLES::Context::AdvanceNextHDR10AI(DVBRIDGE::SourceBinding accepted
       !source.Current(accepted,preferences) ||
       next->layer.binding.picture <= source.LastSubmitted())
     return;
-  const auto status = AnalyseHDR10AI(next->layer,next->headPts);
+  const auto status = AnalyseHDR10AI(next->layer);
   // The accepted current output cannot be undone by a future sample failure.
   // Preserve fatal analysis handling at the next queue preparation, without
   // charging a speculative job against the cumulative required-wait budget.
@@ -863,7 +862,7 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
         break;
       }
       if (layer.binding.picture <= source.LastSubmitted()) continue;
-      if (AnalyseHDR10AI(layer,head.pts) != CB1_AI_READY) break;
+      if (AnalyseHDR10AI(layer) != CB1_AI_READY) break;
     }
     if (!covered && end && source.Collect() == CB1_AI_READY &&
         source.LastSubmitted() >= queue.back().binding.picture)
@@ -872,13 +871,13 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
         std::chrono::steady_clock::now() - started).count();
     const bool required = drain && now + elapsed >= presentationDeadline;
     const auto decision=source.Prediction(head.binding,preferences,now+elapsed,result,required);
-    // Capture anticipation without placing it ahead of the current draw.
+    // The first sample at or beyond the sealed horizon belongs to the next
+    // prediction. Its GPU work follows the current draw, including at 23.976 Hz.
     if (decision == Decision::Prepare && !paused && m_state->attached && anticipation &&
-        anticipation->pts <= head.pts + 1.0 + 1e-9 &&
         anticipation->binding.picture > source.LastSubmitted() &&
         source.Collect() == CB1_AI_READY)
     {
-      m_state->aiNext = State::NextHDR10AI{*anticipation,head.binding,head.pts,preferences};
+      m_state->aiNext = State::NextHDR10AI{*anticipation,head.binding,preferences};
     }
     // Collect may dispatch follow-up reductions after the initial import fence.
     if (!FenceHDR10AIUse())

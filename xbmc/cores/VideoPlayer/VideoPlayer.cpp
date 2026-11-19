@@ -1874,6 +1874,12 @@ void CVideoPlayer::Process()
       {
         CloseDemuxer();
 
+#ifdef CB1_HAS_HDR10_AI
+        // CloseStream(audio) can wait while AI is still holding the outgoing
+        // video's last second. Signal the end to the video decoder first.
+        if (m_CurrentVideo.inited && m_renderManager.HDR10AILookahead())
+          m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN));
+#endif
         SetCaching(CACHESTATE_DONE);
         CLog::Log(LOGINFO, "VideoPlayer: next stream, wait for old streams to be finished");
         CloseStream(m_CurrentAudio, true);

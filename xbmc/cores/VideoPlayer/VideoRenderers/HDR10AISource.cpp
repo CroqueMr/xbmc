@@ -126,10 +126,9 @@ cb1_ai_status HDR10AISource::Begin(pl_gpu gpu, const char* bundle,
 }
 
 cb1_ai_status HDR10AISource::Submit(const pl_frame* frame, DVBRIDGE::SourceBinding binding,
-    double pts, double headPts, std::shared_ptr<void> lease)
+    double pts, std::shared_ptr<void> lease)
 {
-  if (!Matches(binding) || m_fallback || !m_context || !std::isfinite(pts) ||
-      !std::isfinite(headPts) || pts < m_origin || pts < headPts || pts > headPts + 1.0 + 1e-9)
+  if (!Matches(binding) || m_fallback || !m_context || !std::isfinite(pts) || pts < m_origin)
     return RecordStatus("analysis-submit",CB1_AI_INVALID);
   const auto collected = Collect();
   if (collected != CB1_AI_READY) return collected;
