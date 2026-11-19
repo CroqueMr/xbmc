@@ -33,6 +33,7 @@
 #include "windowing/WinSystem.h"
 
 #include <iomanip>
+#include <cmath>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -1083,7 +1084,25 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     }
   }
 
-  if ((pPicture->iFlags & DVP_FLAG_DROPPED))
+#ifdef HAVE_DVBRIDGE
+  // Pair first; a native catch-up request must not discard a future picture.
+  bool latePairedPicture = pPicture->doviEnhancement &&
+      (pPicture->iFlags & DVD_CODEC_CTRL_DROP_ANY) && m_bAllowDrop &&
+      m_speed == DVD_PLAYSPEED_NORMAL && !m_paused && m_syncState == ESyncState::SYNC_INSYNC &&
+      pPicture->pts != DVD_NOPTS_VALUE && std::isfinite(pPicture->pts) &&
+      std::isfinite(pPicture->iDuration) && pPicture->iDuration > 0 &&
+      std::isfinite(iPlayingClock) && pPicture->pts + pPicture->iDuration <= iPlayingClock;
+  if (latePairedPicture)
+  {
+    int lateframes, queued, discard;
+    double renderPts;
+    latePairedPicture = m_renderManager.GetStats(lateframes, renderPts, queued, discard) &&
+                        queued > 0;
+  }
+#else
+  constexpr bool latePairedPicture = false;
+#endif
+  if ((pPicture->iFlags & DVP_FLAG_DROPPED) || latePairedPicture)
   {
     m_droppingStats.AddOutputDropGain(pPicture->pts, 1);
     CLog::Log(LOGDEBUG, "{} - dropped in output", __FUNCTION__);

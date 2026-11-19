@@ -91,7 +91,7 @@
           <control type="toggle" />
         </setting>
         <setting id="dvbridge.fastchroma" type="integer" label="40904" help="40905">
-          <requirement>HAVE_DVBRIDGE</requirement><level>2</level><default>2</default>
+          <requirement>HAVE_DVBRIDGE</requirement><visible>false</visible><level>2</level><default>2</default>
           <constraints><options><option label="106">0</option><option label="107">1</option><option label="16316">2</option></options></constraints>
           <control type="list" format="string" />
         </setting>
