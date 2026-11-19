@@ -91,7 +91,8 @@ void ReportDisplayRoute(int fd, CDRMConnector* connector)
   if (changes.Report(DVBRIDGE::DiagnosticNowMs(), snapshot))
   {
     CLog::Log(LOGINFO, "DVBridge route: {}", snapshot);
-    DVBRIDGE::CollectKernelLog();
+    if (DVBRIDGE::DetailedDiagnosticsEnabled())
+      DVBRIDGE::CollectKernelLog();
   }
 }
 #endif
