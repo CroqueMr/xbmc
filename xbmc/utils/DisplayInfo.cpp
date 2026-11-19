@@ -41,6 +41,7 @@ std::unique_ptr<CDisplayInfo> CDisplayInfo::Create(const std::vector<uint8_t>& e
 
 CDisplayInfo::CDisplayInfo(const std::vector<uint8_t>& edid)
 {
+  m_dvCaps = dvbridge_parse_edid(edid.data(), edid.size());
   m_info.reset(di_info_parse_edid(edid.data(), edid.size()));
 }
 
@@ -103,6 +104,27 @@ void CDisplayInfo::Parse()
 
           switch (cta_tag)
           {
+            case DI_CTA_DATA_BLOCK_HDR10PLUS:
+            {
+              if (const auto* hdr = di_cta_data_block_get_hdr10plus(block))
+                m_hdr10plusVersion = hdr->version;
+              break;
+            }
+            case DI_CTA_DATA_BLOCK_DOLBY_VIDEO:
+            {
+              // Report the connected display's capability, not the current output mode.
+              const auto* dv = di_cta_data_block_get_dolby_video(block);
+              m_dolbyVision |= dv != nullptr;
+              // Native-output eligibility uses the same bounded EDID validation
+              // as the kernel. This UI capability remains libdisplay-info's.
+              break;
+            }
+            case DI_CTA_DATA_BLOCK_VIDEO_CAP:
+            {
+              const auto* cap = di_cta_data_block_get_video_cap(block);
+              m_rgbQuantizationSelectable |= cap && cap->selectable_rgb_quantization_range;
+              break;
+            }
             case DI_CTA_DATA_BLOCK_COLORIMETRY:
             {
               m_colorimetry = di_cta_data_block_get_colorimetry(block);

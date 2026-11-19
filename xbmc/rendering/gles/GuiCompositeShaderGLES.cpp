@@ -63,6 +63,8 @@ void CGuiCompositeShaderGLES::OnCompiledAndLinked()
   m_hLutTF = glGetUniformLocation(ProgramHandle(), "u_lutTF");
   m_hProj = glGetUniformLocation(ProgramHandle(), "u_proj");
   m_hOotfGamma = glGetUniformLocation(ProgramHandle(), "u_ootfGamma");
+  m_hInputPQ = glGetUniformLocation(ProgramHandle(), "u_inputPQ");
+  m_hOutputRange = glGetUniformLocation(ProgramHandle(), "u_outputRange");
   glUseProgram(ProgramHandle());
   glUniform1i(m_hSamp, 0);
   glUniform1i(m_hLutDegamma, 1);
@@ -76,6 +78,8 @@ bool CGuiCompositeShaderGLES::OnEnabled()
     glUniformMatrix4fv(m_hProj, 1, GL_FALSE, m_proj);
 
   glUniform1f(m_hOotfGamma, m_ootfGamma);
+  glUniform1i(m_hInputPQ, m_inputPQ);
+  glUniform2f(m_hOutputRange, m_outputScale, m_outputOffset);
 
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(GL_TEXTURE_2D, m_lutDegammaTexId);
@@ -164,12 +168,14 @@ std::vector<float> CGuiCompositeShaderGLES::GeneratePQLUT(float sdrPeak)
   return lut;
 }
 
-bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
+bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer, float sdrGamma)
 {
   if (m_lutDegammaTexId)
     glDeleteTextures(1, &m_lutDegammaTexId);
   if (m_lutTFTexId)
     glDeleteTextures(1, &m_lutTFTexId);
+  m_lutTFTexId = 0;
+  m_lutDegammaTexId = 0;
 
   m_lutDegammaTexId = CreateLUTTexture(GenerateDegammaLUT());
   if (!m_lutDegammaTexId)
@@ -178,7 +184,13 @@ bool CGuiCompositeShaderGLES::CreateLUTs(int colorTransfer)
     return false;
   }
 
-  if (colorTransfer == AVCOL_TRC_SMPTE2084)
+  if (colorTransfer == AVCOL_TRC_GAMMA22)
+  {
+    if (!std::isfinite(sdrGamma) || sdrGamma < 1.8f || sdrGamma > 2.8f) return false;
+    // Negative selects BT.709 SDR in the shared compositor; no PQ/HLG LUT.
+    m_ootfGamma = -sdrGamma;
+  }
+  else if (colorTransfer == AVCOL_TRC_SMPTE2084)
   {
     m_lutTFTexId = CreateLUTTexture(GeneratePQLUT(m_sdrPeak));
     if (!m_lutTFTexId)
