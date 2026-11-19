@@ -111,6 +111,12 @@ float CWinSystemGbmGLESContext::GetDisplayLatency()
   return CWinSystemGbmEGLContext::GetDisplayLatency();
 }
 
+bool CWinSystemGbmGLESContext::CB1AdaptiveScanout() const
+{
+  return m_dvState.Captured() && m_dvSelection.policy.mode == DVBRIDGE_MODE_ENHANCED_DV &&
+      m_dvContext && m_dvContext->AsyncPreparationConfigured();
+}
+
 std::optional<double> CWinSystemGbmGLESContext::CB1PresentationAge() const
 {
   if (!CB1AsyncPlayback()) return std::nullopt;

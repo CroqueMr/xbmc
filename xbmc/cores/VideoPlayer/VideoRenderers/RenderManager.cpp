@@ -1547,6 +1547,7 @@ void CRenderManager::PrepareNextRender()
       m_dvdClock.IsPaused() && !(m_pRenderer && m_pRenderer->VideoBypassesFramebuffer());
 
   bool cb1Async = false;
+  bool adaptive = false;
   std::optional<double> completionAge;
 #ifdef HAVE_DVBRIDGE
   if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
@@ -1557,6 +1558,7 @@ void CRenderManager::PrepareNextRender()
     if (cb1Async)
       if (const auto presented = window->CB1PresentedPicture())
         m_clockSync.m_cb1Latency.Completed(presented->first, presented->second);
+    adaptive = window->CB1AdaptiveScanout() && !isPaused && m_dvdClock.GetClockSpeed() == 1.0;
   }
   m_clockSync.m_cb1LatencyActive = cb1Async;
 #endif
@@ -1636,6 +1638,8 @@ void CRenderManager::PrepareNextRender()
     ++iter;
     // Catch up against the same deadline used to admit this presentation.
     const double latePts = renderPts;
+    // A Kodi render tick can run partway through the current scanout.
+    const double scanoutPts = frameOnScreen - std::max(0.0, completionAge.value_or(0.0));
     while (iter != m_queued.end())
     {
       // the slot for rendering in time is [pts .. (pts +  x * frametime)]
@@ -1646,7 +1650,14 @@ void CRenderManager::PrepareNextRender()
       // refresh phase the pictures sit half a refresh from this boundary, so no
       // hysteresis is needed and a picture of lag is removed at once.
       double x = physicalPhase && completionAge ? 0 : (m_lateframes <= 6 ? 0.98 : 0);
-      if (latePts < m_Queue[*iter].pts + x * frametime)
+      const auto& next = m_Queue[*iter];
+      double duration = frametime;
+#ifdef CB1_HAS_HDR10_AI
+      if (next.duration > 0) duration = next.duration;
+#endif
+      // Preparation lead does not make the next picture late on screen.
+      if ((adaptive && scanoutPts < next.pts + duration) ||
+          latePts < next.pts + x * frametime)
         break;
       idx = *iter;
       ++iter;
