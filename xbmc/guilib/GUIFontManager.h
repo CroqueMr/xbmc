@@ -45,6 +45,7 @@ struct OrigFontInfo
   RESOLUTION_INFO sourceRes;
   bool preserveAspect;
   bool border;
+  bool blur;
 };
 
 struct FontMetadata

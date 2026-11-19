@@ -2052,6 +2052,12 @@ constexpr std::array<InfoMap, 10> weather = {{
 ///     @skinning_v19 **[New Boolean Condition]** \link  System_SupportsCPUUsage `
 ///     System.SupportsCPUUsage`\endlink <p>
 ///   }
+///   \table_row3{   <b>`System.SupportsBlurFont`</b>,
+///                  \anchor System_SupportsBlurFont
+///                  _boolean_,
+///     @return **True** if fonts can take the `blur` style.
+///     <p>
+///   }
 ///   \table_row3{   <b>`System.SupportedHDRTypes`</b>,
 ///                  \anchor System_SupportedHDRTypes
 ///                  _string_,
@@ -2067,7 +2073,7 @@ constexpr std::array<InfoMap, 10> weather = {{
 ///     <p>
 ///   }
 // clang-format off
-constexpr std::array<InfoMap, 75> system_labels = {{
+constexpr std::array<InfoMap, 76> system_labels = {{
     {"hasnetwork",              SYSTEM_ETHERNET_LINK_ACTIVE},
     {"hasmediadvd",             SYSTEM_MEDIA_DVD},
     {"hasmediaaudiocd",         SYSTEM_MEDIA_AUDIO_CD},
@@ -2141,6 +2147,7 @@ constexpr std::array<InfoMap, 75> system_labels = {{
     {"haspvraddon",             SYSTEM_HAS_PVR_ADDON},
     {"addonupdatecount",        SYSTEM_ADDON_UPDATE_COUNT},
     {"supportscpuusage",        SYSTEM_SUPPORTS_CPU_USAGE},
+    {"supportsblurfont",        SYSTEM_SUPPORTS_BLUR_FONT},
     {"supportedhdrtypes",       SYSTEM_SUPPORTED_HDR_TYPES},
     {"isscreensaverinhibited",  SYSTEM_IS_SCREENSAVER_INHIBITED},
 }};

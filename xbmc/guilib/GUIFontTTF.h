@@ -93,7 +93,8 @@ public:
             float height = 20.0f,
             float aspect = 1.0f,
             float lineSpacing = 1.0f,
-            bool border = false);
+            bool border = false,
+            bool blur = false);
 
   void Begin();
   void End();
@@ -174,6 +175,8 @@ protected:
   // Stuff for pre-rendering for speed
   Character* GetCharacter(character_t letter, FT_UInt glyphIndex);
   bool CacheCharacter(FT_UInt glyphIndex, uint32_t style, Character* ch);
+  //! The coverage of a FONT_STYLE_BLUR glyph: its own, blurred, in a margin of 3 * radius
+  static std::vector<uint8_t> BlurGlyph(const FT_Bitmap& bitmap, int radius);
   void RenderCharacter(CGraphicContext& context,
                        float posX,
                        float posY,
@@ -222,6 +225,9 @@ protected:
   unsigned int m_cellBaseLine{0};
   unsigned int m_cellHeight{0};
   unsigned int m_maxFontHeight{0};
+  // FONT_STYLE_BLUR: the box blur's radius, run three times, in pixels; its glyphs grow by
+  // three times it on each side
+  int m_blurRadius{0};
 
   unsigned int m_nestedBeginCount{0}; // speedups
 

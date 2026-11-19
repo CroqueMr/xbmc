@@ -14,6 +14,7 @@
 */
 
 #include "utils/ColorUtils.h"
+#include "utils/Geometry.h"
 
 #include <assert.h>
 #include <math.h>
@@ -56,6 +57,8 @@ constexpr int FONT_STYLE_LIGHT = (1 << 2);
 constexpr int FONT_STYLE_UPPERCASE = (1 << 3);
 constexpr int FONT_STYLE_LOWERCASE = (1 << 4);
 constexpr int FONT_STYLE_CAPITALIZE = (1 << 5);
+//! Glyphs drawn blurred, for text that must not be read yet (spoilers)
+constexpr int FONT_STYLE_BLUR = (1 << 6);
 constexpr int FONT_STYLE_MASK = 0xFF;
 constexpr int FONT_STYLES_COUNT = 7;
 
@@ -172,6 +175,7 @@ public:
   float GetTextHeight(int numLines) const;
   float GetTextBaseLine() const;
   float GetLineHeight() const;
+  CPoint GetRenderPadding() const;
 
   //! get font scale factor (rendered height / original height)
   float GetScaleFactor() const;
