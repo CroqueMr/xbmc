@@ -2924,11 +2924,23 @@ bool CDVBridgeGLES::PreparePlayerLed(const pl_frame& source, const CDVMetadataBu
   params.h = geometry.source_height;
   params.format = format;
   params.sampleable = params.renderable = true;
-  if (m_playerLed && format && pl_tex_recreate(gpu, &m_playerLedSource, &params) &&
-      dvbridge_render_player_led(m_renderer, &policy, &source, metadata.Data(), metadata.Size(),
-          pts, elPts, m_playerLedSource, &m_playerLedPlan) == CB1_MASTER_READY)
-    m_playerLedPicture = dvbridge_fit_player_led(m_renderer, m_playerLedSource,
-                                                 &m_playerLedFitted, geometry);
+  if (m_playerLed && format && pl_tex_recreate(gpu, &m_playerLedSource, &params))
+  {
+    const bool fullRaster = geometry.target_width == geometry.source_width &&
+        geometry.target_height == geometry.source_height &&
+        dvbridge_geometry_source(geometry,crop) && dvbridge_geometry_destination(geometry,dest) &&
+        !crop[0] && !crop[1] && crop[2] == params.w && crop[3] == params.h &&
+        !dest[0] && !dest[1] && dest[2] == params.w && dest[3] == params.h;
+    if (fullRaster && m_nativeOverlayEnabled)
+    {
+      m_guiComposed = dvbridge_render_player_led_gui(m_renderer, &policy, &source, metadata.Data(),
+          metadata.Size(),pts,elPts,m_playerLedSource,&m_nativeOverlay,&m_playerLedPlan) == CB1_MASTER_READY;
+    }
+    if (m_guiComposed ||
+        dvbridge_render_player_led(m_renderer, &policy, &source, metadata.Data(), metadata.Size(),
+          pts, elPts,m_playerLedSource,&m_playerLedPlan) == CB1_MASTER_READY)
+      m_playerLedPicture = dvbridge_fit_player_led(m_renderer,m_playerLedSource,&m_playerLedFitted,geometry);
+  }
   return m_playerLedPicture != nullptr;
 }
 

@@ -3357,8 +3357,14 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   // The TV masks L5 margins. Keep controls/subtitles in letterbox bars visible.
   m_dvBridge->SetOverlayVisible((guiAvailable && GetGUIElementCount()) || m_dvOverlays);
   // Prime the subtitle shader once; empty frames retain the lean native shader.
-  const bool nativeOverlay = !m_hdrConversion && !m_dvBridge->PlayerLed() &&
-      (fullGUI || subtitlesOnly || (overlayFree && !m_dvBridge->NativeOverlayPrimed())) &&
+  // Captures and PQ subtitles still use the separate composition pass.
+  const bool playerLedGui = m_dvBridge->PlayerLed() && !capturing && fullGUI &&
+      !m_dvOverlays && !m_dvPQSubtitleDraws && GetOutputBitDepth() == 8 &&
+      GetGfxContext().GetStereoMode() == RenderStereoMode::OFF &&
+      (!capture || capture->TakeActive(KODI::RENDERING::CAPTURE::CaptureContent::VIDEO).empty());
+  const bool nativeOverlay = !m_hdrConversion &&
+      (m_dvBridge->PlayerLed() ? playerLedGui :
+       (fullGUI || subtitlesOnly || (overlayFree && !m_dvBridge->NativeOverlayPrimed()))) &&
       m_guiFbo.IsValid() && m_guiFboWidth == m_nWidth && m_guiFboHeight == m_nHeight && m_compositeShader;
   const bool nativeSubtitles = m_dvBridge->SetNativeOverlay(
       nativeOverlay ? (pqSubtitles ? m_dvPQSubtitleFbo.Texture() : m_guiFbo.Texture()) : 0,
