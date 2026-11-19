@@ -63,8 +63,12 @@ protected:
   bool InitWindowSystemEGL(EGLint renderableType, EGLint apiType);
   bool ChooseEGLConfig(EGLint renderableType, int bitDepth = 8);
   bool FloatOutputUsable() const;
+  bool HasLldvRgb16Scanout() const override;
+  bool HasLldvRgb10Scanout() const override;
   void CheckFloatOutput(bool accepted);
   bool m_floatOutputBlocked{};
+  bool m_lldvRgb16Visual{};
+  std::vector<uint32_t> m_lldvRgb10Visuals;
   std::unique_ptr<VideoPicture> m_floatOutputPicture;
   virtual bool CreateContext() = 0;
   virtual int VideoOutputBitDepth(const VideoPicture* picture) const;

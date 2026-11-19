@@ -72,6 +72,7 @@ struct VideoProcessingInfo
     std::array<double, 6> primaries{};
     std::array<double, 6> reportedPrimaries{};
     bool forcedTransport{};
+    bool rgbTransport{};
   };
   struct Output
   {

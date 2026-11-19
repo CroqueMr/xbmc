@@ -141,6 +141,8 @@ protected:
   bool OrdinaryShaderLimitedColor();
   bool RequestedLimitedColor() const { return GetColorRange() == ColorRange::LIMITED; }
   virtual bool StageTransportPreferences() { return true; }
+  virtual bool HasLldvRgb16Scanout() const { return false; }
+  virtual bool HasLldvRgb10Scanout() const { return false; }
   virtual std::optional<uint64_t> RestoredConnectorProperty(const char*) const { return {}; }
   std::optional<uint64_t> DefaultMaxBpc() const { return m_defaultMaxBpc; }
   //! The "max bpc" in effect: the choice, or what the connector has. 0 if unknown

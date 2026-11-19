@@ -22,9 +22,9 @@ inline std::optional<StreamSnapshot::Output> PlayerLedOutput(
       connector.display.status != LldvEdidStatus::Ready ||
       !connector.timingCommitted || packed.format != format ||
       packed.forced != connector.activeForced ||
-      packed.rgb10Scanout != connector.activeRgb10Scanout ||
+      packed.rgbScanoutBits != connector.activeRgbScanoutBits ||
       plan.status == DVBRIDGE_CREATIVE_INVALID || plan.status == DVBRIDGE_CREATIVE_UNSUPPORTED ||
-      (format != LldvFormat::Y422_10 && format != LldvFormat::Y422_12) ||
+      !(LldvBit(format) & LLDV_IMPLEMENTED) ||
       (connector.activeForced && format != LldvFormat::Y422_10) ||
       LldvFormatReason(connector.sink, format, connector.driverFormats, connector.currentTiming,
                        connector.activeForced && connector.forced42210) != LldvReason::Ready ||
@@ -66,8 +66,8 @@ inline std::optional<StreamSnapshot::Output> PlayerLedOutput(
   output.panel = plan.policy.tv.panel;
   output.gamut = plan.policy.tv.gamut;
   output.displayBlack = plan.policy.expert_black_nits;
-  output.bits = format == LldvFormat::Y422_10 ? 10 : 12;
-  output.minimumLinkBits = 12;
+  output.bits = LldvUses10Bits(format) ? 10 : 12;
+  output.minimumLinkBits = format == LldvFormat::Rgb10 ? 10 : 12;
   output.creativeKnown = true;
   output.creativeApplied = (plan.applied_levels & ~(l2 | l8)) | (groups ? family : 0);
   output.creativeStatus = plan.status;
@@ -76,7 +76,7 @@ inline std::optional<StreamSnapshot::Output> PlayerLedOutput(
   output.lldv = Trims{{plan.analysis[1], plan.analysis[2]}, groups,
                       plan.cmv40_status == CB1_CMV40_APPEND, plan.policy.lldv_edid_version,
                       connector.display.primaries,
-                      connector.display.reported, connector.activeForced};
+                      connector.display.reported, connector.activeForced, format == LldvFormat::Rgb10};
   return output;
 }
 } // namespace DVBRIDGE

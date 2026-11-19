@@ -27,7 +27,7 @@ CDRMPlane::CDRMPlane(int fd, uint32_t plane) : CDRMObject(fd), m_plane(drmModeGe
                              std::to_string(m_plane->plane_id));
 }
 
-bool CDRMPlane::SupportsFormat(uint32_t format)
+bool CDRMPlane::SupportsFormat(uint32_t format) const
 {
   for (uint32_t i = 0; i < m_plane->count_formats; i++)
     if (m_plane->formats[i] == format)

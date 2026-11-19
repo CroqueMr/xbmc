@@ -205,9 +205,10 @@ uint32_t CDRMUtils::DrmOpaqueFbGetFromBo(struct gbm_bo* bo)
   auto* fb = DrmFbGetFromBo(bo);
   if (!fb)
     return 0;
-  // The CB1 half-float resolve writes alpha=1; NVIDIA exposes no opaque alias.
+  // The CB1 RGBA16 resolves write alpha=1; NVIDIA exposes no opaque alias.
   if (fb->format == DRM_FORMAT_XRGB8888 || fb->format == DRM_FORMAT_XRGB2101010 ||
-      fb->format == DRM_FORMAT_XBGR2101010 || fb->format == DRM_FORMAT_ABGR16161616F)
+      fb->format == DRM_FORMAT_XBGR2101010 || fb->format == DRM_FORMAT_ABGR16161616 ||
+      fb->format == DRM_FORMAT_ABGR16161616F)
     return fb->fb_id;
   if (fb->format != DRM_FORMAT_ARGB8888 && fb->format != DRM_FORMAT_ARGB2101010 &&
       fb->format != DRM_FORMAT_ABGR2101010)
