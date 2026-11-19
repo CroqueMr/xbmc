@@ -12,6 +12,7 @@
 #include "utils/EndianSwap.h"
 
 #include <algorithm>
+#include <cctype>
 #include <functional>
 #include <stdio.h>
 #include <string.h>
@@ -21,7 +22,7 @@
 typedef struct
 {
   uint8_t     eld_ver;
-  uint8_t     baseline_eid_len;
+  uint8_t     baseline_eld_len;
   uint8_t     cea_edid_ver;
   uint8_t     monitor_name_length;
   uint8_t     sad_count;
@@ -42,7 +43,7 @@ typedef struct
   std::string monitor_name;
 } ELDHeader;
 
-#define ELD_VER_CEA_816D         2
+#define ELD_VER_CEA_861D         2
 #define ELD_VER_PARTIAL          31
 
 #define ELD_EDID_VER_NONE        0
@@ -72,14 +73,20 @@ typedef struct
 #define CEA_861_FORMAT_WMAPRO    14
 #define CEA_861_FORMAT_RESERVED2 15
 
-void CAEELDParser::Parse(const uint8_t *data, size_t length, CAEDeviceInfo& info)
+std::optional<AEELDDtsCapabilities> CAEELDParser::Parse(const uint8_t* data,
+                                                       size_t length,
+                                                       CAEDeviceInfo& info)
 {
+  constexpr size_t ELD_FIXED_BYTES = 20;
+  if (length < ELD_FIXED_BYTES)
+    return std::nullopt;
+
   ELDHeader header;
   header.eld_ver = (data[0 ] & 0xF8) >> 3;
-  if (header.eld_ver != ELD_VER_CEA_816D && header.eld_ver != ELD_VER_PARTIAL)
-    return;
+  if (header.eld_ver != ELD_VER_CEA_861D && header.eld_ver != ELD_VER_PARTIAL)
+    return std::nullopt;
 
-  header.baseline_eid_len    =  data[2 ];
+  header.baseline_eld_len    =  data[2 ];
   header.cea_edid_ver        = (data[4 ] & 0xE0) >> 5;
   header.monitor_name_length =  data[4 ] & 0x1F;
   header.sad_count           = (data[5 ] & 0xF0) >> 4;
@@ -101,6 +108,10 @@ void CAEELDParser::Parse(const uint8_t *data, size_t length, CAEDeviceInfo& info
   header.mfg_name[3]         = '\0';
   header.product_code        = Endian_SwapLE16(*((const uint16_t*)(data + 18)));
 
+  const size_t sadStart = ELD_FIXED_BYTES + header.monitor_name_length;
+  if (sadStart > length)
+    return std::nullopt;
+
   switch (header.conn_type)
   {
     case ELD_CONN_TYPE_HDMI: info.m_deviceType = AE_DEVTYPE_HDMI; break;
@@ -110,9 +121,9 @@ void CAEELDParser::Parse(const uint8_t *data, size_t length, CAEDeviceInfo& info
   info.m_displayNameExtra = header.mfg_name;
   if (header.monitor_name_length <= 16)
   {
-    header.monitor_name.assign((const char *)(data + 20), header.monitor_name_length);
+    header.monitor_name.assign((const char*)(data + ELD_FIXED_BYTES), header.monitor_name_length);
     header.monitor_name.erase(std::find_if(header.monitor_name.rbegin(), header.monitor_name.rend(),
-                                           [](char c) { return !std::isspace(c); })
+                                           [](unsigned char c) { return !std::isspace(c); })
                                   .base(),
                               header.monitor_name.end());
     if (!header.monitor_name.empty())
@@ -170,13 +181,26 @@ void CAEELDParser::Parse(const uint8_t *data, size_t length, CAEDeviceInfo& info
       info.m_channels += AE_CH_BROC;
   }
 
-  const uint8_t *sad = data + 20 + header.monitor_name_length;
-  for(uint8_t i = 0; i < header.sad_count; ++i)
+  const size_t sadEnd = sadStart + 3 * header.sad_count;
+  if (sadEnd > length)
+    return std::nullopt;
+
+  // Baseline length excludes the four-byte header and is measured in words.
+  const size_t baselineBytes = 4 + 4 * header.baseline_eld_len;
+  // A filled four-bit SAD count may have lost descriptors from the EDID.
+  bool complete = header.eld_ver == ELD_VER_CEA_861D &&
+                  header.conn_type == ELD_CONN_TYPE_HDMI &&
+                  header.cea_edid_ver >= ELD_EDID_VER_CEA_861 &&
+                  header.cea_edid_ver <= ELD_EDID_VER_CEA_861_BCD && header.monitor_name_length <= 16 &&
+                  header.sad_count > 0 && header.sad_count < 15 && sadEnd <= baselineBytes && baselineBytes <= length;
+  AEELDDtsCapabilities dts{};
+  for (size_t offset = sadStart; offset < sadEnd; offset += 3)
   {
-    uint8_t offset = i * 3;
-    uint8_t formatCode   = (sad[offset + 0] >> 3) & 0xF;
-    //uint8_t channelCount = (sad[offset + 0] & 0x7) + 1;
-    //uint8_t sampleRates  =  sad[offset + 1];
+    const uint8_t formatCode = (data[offset] >> 3) & 0xF;
+    if (formatCode == CEA_861_FORMAT_RESERVED1 || !(data[offset + 1] & 0x7F))
+      complete = false;
+    dts.core |= formatCode == CEA_861_FORMAT_DTS;
+    dts.hd |= formatCode == CEA_861_FORMAT_DTSHD;
 
     AEDataFormat fmt = AE_FMT_INVALID;
     switch (formatCode)
@@ -196,4 +220,8 @@ void CAEELDParser::Parse(const uint8_t *data, size_t length, CAEDeviceInfo& info
     if (std::ranges::find(info.m_dataFormats, fmt) == info.m_dataFormats.end())
       info.m_dataFormats.push_back(fmt);
   }
+
+  if (!complete)
+    return std::nullopt;
+  return dts;
 }

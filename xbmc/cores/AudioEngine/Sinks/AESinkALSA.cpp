@@ -1385,6 +1385,7 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
   CAEDeviceInfo info;
   info.m_deviceName = device;
   info.m_deviceType = AEDeviceTypeFromName(device);
+  AEELDDtsCapabilities dts{true, true};
 
   if (cardNr >= 0)
   {
@@ -1444,7 +1445,7 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
             controlMonitor->Add(strHwName, SND_CTL_ELEM_IFACE_PCM, dev, "ELD");
 #endif
 
-            if (!GetELD(hctl, dev, info, badHDMI))
+            if (!GetELD(hctl, dev, info, badHDMI, dts))
               CLog::Log(LOGDEBUG,
                         "CAESinkALSA - Unable to obtain ELD information for device \"{}\" (not "
                         "supported by device, or kernel older than 3.2)",
@@ -1601,14 +1602,20 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
 
   if (info.m_deviceType == AE_DEVTYPE_HDMI)
   {
-    // we don't trust ELD information and push back our supported formats explicitly
+    // Use complete HDMI ELD for DTS and keep the legacy list for other codecs.
     info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_AC3);
-    info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTSHD);
-    info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTSHD_MA);
-    info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTSHD_CORE);
-    info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTS_1024);
-    info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTS_2048);
-    info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTS_512);
+    if (dts.hd)
+    {
+      info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTSHD);
+      info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTSHD_MA);
+    }
+    if (dts.core)
+    {
+      info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTSHD_CORE);
+      info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTS_1024);
+      info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTS_2048);
+      info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_DTS_512);
+    }
     info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_EAC3);
     info.m_streamTypes.push_back(CAEStreamInfo::STREAM_TYPE_TRUEHD);
 
@@ -1621,7 +1628,11 @@ void CAESinkALSA::EnumerateDevice(AEDeviceInfoList &list, const std::string &dev
   list.push_back(info);
 }
 
-bool CAESinkALSA::GetELD(snd_hctl_t *hctl, int device, CAEDeviceInfo& info, bool& badHDMI)
+bool CAESinkALSA::GetELD(snd_hctl_t* hctl,
+                        int device,
+                        CAEDeviceInfo& info,
+                        bool& badHDMI,
+                        AEELDDtsCapabilities& dts)
 {
   badHDMI = false;
 
@@ -1664,11 +1675,8 @@ bool CAESinkALSA::GetELD(snd_hctl_t *hctl, int device, CAEDeviceInfo& info, bool
   if (!dataLength)
     badHDMI = true;
   else
-    CAEELDParser::Parse(
-      (const uint8_t*)snd_ctl_elem_value_get_bytes(control),
-      dataLength,
-      info
-    );
+    dts = CAEELDParser::Parse(static_cast<const uint8_t*>(snd_ctl_elem_value_get_bytes(control)),
+                             dataLength, info).value_or(dts);
 
   info.m_deviceType = AE_DEVTYPE_HDMI;
   return true;
