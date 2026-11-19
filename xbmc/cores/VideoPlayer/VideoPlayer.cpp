@@ -958,6 +958,7 @@ bool CVideoPlayer::OpenInputStream()
   if (m_pInputStream.use_count() > 1)
     throw std::runtime_error("m_pInputStream reference count is greater than 1");
   m_pInputStream.reset();
+  m_overlayContainer.Clear();
 
   CLog::Log(LOGINFO, "Creating InputStream");
 
@@ -3118,7 +3119,8 @@ void CVideoPlayer::OnExit()
   // video and audio. subtitle player does not run on its own thread, hence waitForBuffers makes
   // no sense here. waitForBuffers is abused to clear overlay container (false clears container)
   // subtitles are added from video player. after video player has finished, overlays have to be cleared.
-  CloseStream(m_CurrentSubtitle, false);  // clear overlay container
+  CloseStream(m_CurrentSubtitle, false);
+  m_overlayContainer.Clear();
 
   CServiceBroker::GetWinSystem()->UnregisterRenderLoop(this);
 

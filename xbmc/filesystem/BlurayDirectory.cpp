@@ -173,7 +173,8 @@ bool GetPlaylistsFromDisc(const CURL& url,
     return false;
 
   // Get information on all playlists
-  CRegExp pl{true, CRegExp::autoUtf8, R"((\d{5}.mpls))"};
+  // Ignore sidecars such as 00000.mpls.hash.
+  CRegExp pl{true, CRegExp::autoUtf8, R"(\A(\d{5})\.mpls\z)"};
   for (const auto& title : allTitles)
   {
     const CURL url3{title->GetPath()};
