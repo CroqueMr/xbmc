@@ -25962,7 +25962,7 @@ msgid "No HDR10+ output"
 msgstr ""
 
 msgctxt "#40925"
-msgid " - Disable L2 trims"
+msgid "Disable L2 trims"
 msgstr ""
 
 msgctxt "#40926"
@@ -26327,7 +26327,7 @@ msgid "Adjust only bitmap subtitles in their authoring domain before composition
 msgstr ""
 
 msgctxt "#40980"
-msgid " - Add CM4.0 metadata"
+msgid "Add CM4.0 metadata"
 msgstr ""
 
 msgctxt "#40981"
@@ -26463,7 +26463,7 @@ msgid "Choose the default playback circuit for original HLG video. Playback-menu
 msgstr ""
 
 msgctxt "#41133"
-msgid "HDR/DV to SDR target"
+msgid " - HDR/DV to SDR target"
 msgstr ""
 
 msgctxt "#41134"
@@ -26515,7 +26515,7 @@ msgid "Automatic"
 msgstr ""
 
 msgctxt "#41203"
-msgid "YCbCr 4:2:2 · 10 useful bits"
+msgid "YCbCr 4:2:2 · 10 bits"
 msgstr ""
 
 msgctxt "#41204"
@@ -26539,7 +26539,7 @@ msgid "YCbCr 4:4:4 · 12 bits"
 msgstr ""
 
 msgctxt "#41209"
-msgid "Display capabilities unavailable or invalid"
+msgid "No valid display data"
 msgstr ""
 
 msgctxt "#41210"
@@ -26547,15 +26547,15 @@ msgid "Not advertised by the display for LLDV"
 msgstr ""
 
 msgctxt "#41211"
-msgid "LLDV format not qualified on this driver"
+msgid "Not qualified by driver"
 msgstr ""
 
 msgctxt "#41212"
-msgid "Unavailable at the current HDMI timing"
+msgid "HDMI mode unsupported"
 msgstr ""
 
 msgctxt "#41213"
-msgid "No compatible LLDV format at this timing"
+msgid "No compatible format"
 msgstr ""
 
 msgctxt "#41214"
@@ -26611,7 +26611,7 @@ msgid "Normal keeps CB1 warnings, errors and key playback and display events. En
 msgstr ""
 
 msgctxt "#41270"
-msgid "SDR output gamut"
+msgid " - SDR output gamut"
 msgstr ""
 
 msgctxt "#41271"
@@ -26671,7 +26671,7 @@ msgid "Invalid LLDV primaries in EDID"
 msgstr ""
 
 msgctxt "#41288"
-msgid "LLDV availability"
+msgid "LLDV"
 msgstr ""
 
 msgctxt "#41289"
@@ -26679,23 +26679,23 @@ msgid "Available"
 msgstr ""
 
 msgctxt "#41290"
-msgid "Dolby Vision EDID"
+msgid "EDID"
 msgstr ""
 
 msgctxt "#41291"
-msgid "Low-Latency only"
+msgid "LLDV only"
 msgstr ""
 
 msgctxt "#41292"
-msgid "Standard and Low-Latency"
+msgid "TV-led + LLDV"
 msgstr ""
 
 msgctxt "#41293"
-msgid "Standard only"
+msgid "TV-led only"
 msgstr ""
 
 msgctxt "#41294"
-msgid "EDID peak / black"
+msgid "Peak / black"
 msgstr ""
 
 msgctxt "#41295"
@@ -26706,16 +26706,64 @@ msgctxt "#41296"
 msgid "Driver transport"
 msgstr ""
 
-msgctxt "#41297"
-msgid "Compatible HDMI mode available after a mode switch"
-msgstr ""
-
 msgctxt "#41298"
-msgid "Driver rejected the last HDMI commit for this format"
+msgid "Driver rejected format"
 msgstr ""
 
 msgctxt "#41299"
 msgid "HDMI timing"
+msgstr ""
+
+msgctxt "#41320"
+msgid "Display details"
+msgstr ""
+
+msgctxt "#41321"
+msgid "LLDV available"
+msgstr ""
+
+msgctxt "#41322"
+msgid "LLDV unavailable"
+msgstr ""
+
+msgctxt "#41323"
+msgid "Dolby Vision EDID"
+msgstr ""
+
+msgctxt "#41324"
+msgid "TV modes"
+msgstr ""
+
+msgctxt "#41325"
+msgid "Peak luminance"
+msgstr ""
+
+msgctxt "#41326"
+msgid "Black level"
+msgstr ""
+
+msgctxt "#41327"
+msgid "Red x/y"
+msgstr ""
+
+msgctxt "#41328"
+msgid "Green x/y"
+msgstr ""
+
+msgctxt "#41329"
+msgid "Blue x/y"
+msgstr ""
+
+msgctxt "#41330"
+msgid "EDID size"
+msgstr ""
+
+msgctxt "#41331"
+msgid "Forced · experimental"
+msgstr ""
+
+msgctxt "#41332"
+msgid "Not advertised by TV"
 msgstr ""
 
 msgctxt "#41300"

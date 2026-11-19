@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <includes>
+	<variable name="CB1SelectFontColor">
+		<value condition="!String.IsEmpty(Window.Property(CB1.LldvStatus))">white</value>
+		<value>grey</value>
+	</variable>
 	<include name="DefaultDialogSelectLayout">
 		<control type="group">
 			<centertop>50%</centertop>
@@ -27,12 +31,15 @@
 				<onup>3</onup>
 				<ondown>3</ondown>
 				<onleft>9001</onleft>
+				<onright condition="!String.IsEmpty(Window.Property(CB1.LldvStatus))">9001</onright>
 				<onright>61</onright>
 				<pagecontrol>61</pagecontrol>
 				<scrolltime>200</scrolltime>
 				<include content="DefaultSimpleListLayout">
 					<param name="width" value="890" />
 					<param name="list_id" value="3" />
+					<param name="fontcolor" value="$VAR[CB1SelectFontColor]" />
+					<param name="notes" value="!String.IsEmpty(Window.Property(CB1.LldvStatus))" />
 				</include>
 			</control>
 			<control type="list" id="6">
@@ -193,10 +200,13 @@
 				<align>right</align>
 				<textcolor>grey</textcolor>
 				<label>$VAR[SelectLabel]</label>
+				<visible>String.IsEmpty(Window.Property(CB1.LldvStatus))</visible>
 			</control>
 			<control type="grouplist" id="9001">
 				<left>920</left>
 				<top>80</top>
+				<onleft condition="!String.IsEmpty(Window.Property(CB1.LldvStatus))">3</onleft>
+				<usecontrolcoords>true</usecontrolcoords>
 				<onleft>61</onleft>
 				<itemgap>dialogbuttons_itemgap</itemgap>
 				<onright>3</onright>
@@ -212,6 +222,20 @@
 					<param name="id" value="7" />
 					<param name="label" value="$LOCALIZE[222]" />
 				</include>
+				<include content="DefaultDialogButton">
+					<param name="id" value="9" />
+					<param name="label" value="$LOCALIZE[41320]" />
+					<param name="visible" value="!String.IsEmpty(Window.Property(CB1.LldvStatus))" />
+				</include>
+				<control type="textbox" id="9010">
+					<top>10</top>
+					<width>300</width>
+					<height>76</height>
+					<align>center</align>
+					<font>font12</font>
+					<label>$INFO[Window.Property(CB1.LldvStatus)]</label>
+					<visible>!String.IsEmpty(Window.Property(CB1.LldvStatus))</visible>
+				</control>
 			</control>
 		</control>
 	</include>

@@ -18,6 +18,9 @@
 #include "resources/ResourcesComponent.h"
 #include "utils/StringUtils.h"
 #ifdef HAVE_DVBRIDGE
+#include "GUIDialogTextViewer.h"
+#include "guilib/GUIComponent.h"
+#include "guilib/GUIWindowManager.h"
 #include "guilib/GUIFont.h"
 #include "guilib/GUIFontManager.h"
 #include "guilib/GUIIncludes.h"
@@ -34,6 +37,10 @@
 #define CONTROL_EXTRA_BUTTON    5
 #define CONTROL_EXTRA_BUTTON2 8
 #define CONTROL_CANCEL_BUTTON   7
+
+#ifdef HAVE_DVBRIDGE
+constexpr int CONTROL_LLDV_DETAILS = 9;
+#endif
 
 CGUIDialogSelect::CGUIDialogSelect() : CGUIDialogSelect(WINDOW_DIALOG_SELECT) {}
 
@@ -154,6 +161,29 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
   case GUI_MSG_CLICKED:
     {
       int iControl = message.GetSenderId();
+#ifdef HAVE_DVBRIDGE
+      if (iControl == CONTROL_LLDV_DETAILS || iControl == CONTROL_EXTRA_BUTTON)
+      {
+        const auto details = GetProperty("CB1.LldvDetails").asString();
+        if (!details.empty())
+        {
+          auto* viewer = CServiceBroker::GetGUI()->GetWindowManager()
+                             .GetWindow<CGUIDialogTextViewer>(WINDOW_DIALOG_TEXT_VIEWER);
+          if (viewer)
+          {
+            viewer->SetHeading(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(41320));
+            viewer->SetText(details);
+            viewer->UseMonoFont(false);
+            for (const char* field : {"CB1.LldvDetailLabels", "CB1.LldvDetailValues"})
+              viewer->SetProperty(field, GetProperty(field));
+            viewer->Open();
+            for (const char* field : {"CB1.LldvDetailLabels", "CB1.LldvDetailValues"})
+              viewer->SetProperty(field, CVariant{});
+          }
+          return true;
+        }
+      }
+#endif
       if (m_viewControl.HasControl(CONTROL_SIMPLE_LIST))
       {
         int iAction = message.GetParam1();

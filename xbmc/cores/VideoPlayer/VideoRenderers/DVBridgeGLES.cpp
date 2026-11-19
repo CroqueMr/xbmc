@@ -715,7 +715,7 @@ bool CDVBridgeGLES::Context::AsyncPreparation(uint64_t stream)
   if (stream && stream != m_state->preparationStream)
   {
     m_state->preparationStream = stream;
-    m_state->asyncPreparation = DVBRIDGE::AsyncPreparationEnabled();
+    m_state->asyncPreparation = true;
   }
   return stream && m_state->asyncPreparation;
 }
@@ -1615,7 +1615,8 @@ struct CDVBridgeGLES::PlayerLedCpu
     const cb1_lldv_cpu_frame input{reinterpret_cast<const float*>(slot.host->data),
         slot.carrier->data, slot.carrier->stride, identity ? nullptr : &matrix.m[0][0],
         slot.policy.tv.peak_nits,
-        slot.frame->transport.format == DVBRIDGE::LldvFormat::Y422_10 ? 10u : 12u, true, true,
+        // The host rows already follow scanout order.
+        slot.frame->transport.format == DVBRIDGE::LldvFormat::Y422_10 ? 10u : 12u, true, false,
         slot.activeRows[0], slot.activeRows[1]};
     const bool packed = cb1_lldv_cpu_submit(worker, &input) && cb1_lldv_cpu_ready(worker, true);
     return slot.carrier->Sync(DMA_BUF_SYNC_END) && packed;

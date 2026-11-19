@@ -411,41 +411,59 @@ void ShowLldvFormatMenu()
   const auto saved = settings->GetInt("dvbridge.lldvformatvalue");
   dialog->Reset();
   dialog->SetHeading(strings.Get(41200));
-  dialog->SetUseDetails(true);
-  int firstFormat = 0;
-  const auto addDetail = [dialog, &firstFormat](const std::string& label, const std::string& value) {
-    CFileItem item(label);
-    item.SetLabel2(value);
-    item.SetProperty("disabled", true);
-    dialog->Add(item);
-    ++firstFormat;
+  // Estuary fits all formats in its simple list and displays the notes inline.
+  const bool estuary = settings->GetString(CSettings::SETTING_LOOKANDFEEL_SKIN) == "skin.estuary";
+  dialog->SetUseDetails(!estuary);
+  dialog->EnableButton(!estuary, 41320);
+
+  const int summary = LldvUnavailableLabel(status, 0, true);
+  std::string summaryText = strings.Get(summary ? 41322 : 41321);
+  if (summary)
+    summaryText += '\n' + strings.Get(summary);
+  dialog->SetProperty("CB1.LldvStatus", summaryText);
+
+  std::string details, labels, values;
+  const auto addDetail = [&](int id, const std::string& value) {
+    const auto label = strings.Get(id);
+    if (!details.empty())
+    {
+      details += '\n';
+      labels += '\n';
+      values += '\n';
+    }
+    details += label + ": " + value;
+    labels += label;
+    values += value;
   };
-  const auto summary = LldvUnavailableLabel(status, saved, true);
-  const auto requested = saved ? LldvFormatPreference(saved) : preferred;
-  addDetail(strings.Get(41288), strings.Get(summary ? summary :
-      status.rejected != LldvFormat::Auto && status.rejected == requested ? 41298 : 41289));
   const auto& display = status.display;
   if (display.sink.length)
-    addDetail(strings.Get(41290), StringUtils::Format("v{} Â· {}", display.sink.version,
-        strings.Get(display.sink.status == DV_EDID_LLDV_ONLY ? 41291 :
-                    dvbridge_lldv_422(display.sink) ? 41292 : 41293)));
+  {
+    addDetail(41323, StringUtils::Format("v{}", display.sink.version));
+    addDetail(41324, strings.Get(display.sink.status == DV_EDID_LLDV_ONLY ? 41291 :
+                                dvbridge_lldv_422(display.sink) ? 41292 : 41293));
+  }
+  else
+    addDetail(41323, strings.Get(40851));
   if (display.status == LldvEdidStatus::Incomplete)
-    addDetail(strings.Get(41281), StringUtils::Format("{} / {} bytes", display.received, display.expected));
+    addDetail(41330, StringUtils::Format("{} / {} bytes", display.received, display.expected));
   if (display.peak > 0)
   {
-    addDetail(strings.Get(41294), StringUtils::Format("{:.0f} / {:.4f} nits", display.peak, display.black));
-    addDetail(strings.Get(41295), StringUtils::Format("R {:.4f},{:.4f}  G {:.4f},{:.4f}  B {:.4f},{:.4f}",
-        display.reported[0], display.reported[1], display.reported[2], display.reported[3],
-        display.reported[4], display.reported[5]));
+    addDetail(41325, StringUtils::Format("{:.0f} nits", display.peak));
+    addDetail(41326, StringUtils::Format("{:g} nits", display.black));
+    for (unsigned i = 0; i < 3; ++i)
+      addDetail(41327 + i, StringUtils::Format("{:.4f}, {:.4f}",
+                                             display.reported[i * 2], display.reported[i * 2 + 1]));
   }
-  addDetail(strings.Get(41296), strings.Get((status.driverFormats || status.forced42210) ? 41289 : 41211));
-  addDetail(strings.Get(41299), strings.Get(status.currentTiming ? 41289 : status.availableTiming ? 41297 : 41212));
+  dialog->SetProperty("CB1.LldvDetails", details);
+  dialog->SetProperty("CB1.LldvDetailLabels", labels);
+  dialog->SetProperty("CB1.LldvDetailValues", values);
   for (int i = 0; i <= static_cast<int>(LldvFormat::Y444_12); ++i)
   {
     const auto format = static_cast<LldvFormat>(i);
     const int reason = LldvUnavailableLabel(status, i, true);
     const bool disabled = reason != 0;
-    const auto label = strings.Get(LldvFormatLabel(format, requiresForcing(format)));
+    const bool forced = requiresForcing(format);
+    const auto label = strings.Get(LldvFormatLabel(format, !estuary && forced));
     CFileItem item(disabled ? "[COLOR grey]" + label + "[/COLOR]" : label);
     item.SetProperty("disabled", disabled);
     if (disabled)
@@ -454,17 +472,29 @@ void ShowLldvFormatMenu()
       item.SetLabel2(strings.Get(41298));
     else if (i == 0)
       item.SetLabel2(preferred == LldvFormat::Auto ? strings.Get(41213)
-          : strings.Get(LldvFormatLabel(preferred, requiresForcing(preferred))));
+          : strings.Get(LldvFormatLabel(preferred, !estuary && requiresForcing(preferred))));
     else if (format == status.active)
       item.SetLabel2(strings.Get(status.activeForced && !requiresForcing(format) ? 41218 : 41214));
     else
       item.SetLabel2(strings.Get(format == LldvFormat::Y422_10 ? 41216 : 41215));
+    if (estuary)
+    {
+      if (disabled)
+        item.SetProperty("CB1.LldvFocusNote", strings.Get(reason == 41210 ? 41332 : reason));
+      else if (format != LldvFormat::Auto && format == status.rejected)
+        item.SetProperty("CB1.LldvFocusNote", item.GetLabel2());
+      else if (i == 0 || forced)
+        item.SetProperty("CB1.LldvNote", i == 0 ? item.GetLabel2() : strings.Get(41331));
+    }
     dialog->Add(item);
   }
-  dialog->SetSelected(firstFormat + saved);
+  dialog->SetSelected(saved);
   dialog->Open();
+  for (const char* key : {"CB1.LldvStatus", "CB1.LldvDetails", "CB1.LldvDetailLabels",
+                          "CB1.LldvDetailValues"})
+    dialog->SetProperty(key, CVariant{});
   const auto current = ReadLldvConnector();
-  const int choice = dialog->GetSelectedItem() - firstFormat;
+  const int choice = dialog->GetSelectedItem();
   if (dialog->IsConfirmed() && choice >= 0 && choice <= static_cast<int>(LldvFormat::Y444_12) &&
       current.connectorId == status.connectorId && current.edidGeneration == status.edidGeneration &&
       !LldvUnavailableLabel(current, choice, true) && settings->SetInt("dvbridge.lldvformatvalue", choice))

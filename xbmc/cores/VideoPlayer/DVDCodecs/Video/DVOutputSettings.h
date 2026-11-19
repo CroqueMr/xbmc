@@ -322,12 +322,6 @@ inline bool PlaybackMenuEnabled()
 {
   return true;
 }
-inline bool AsyncPreparationEnabled()
-{
-  const auto component = CServiceBroker::GetSettingsComponent();
-  const auto settings = component ? component->GetSettings() : nullptr;
-  return settings && settings->GetBool("dvbridge.asyncpreparation");
-}
 inline bool FELHardwareUpscalingEnabled()
 {
   return true;

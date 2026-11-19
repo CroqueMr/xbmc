@@ -424,7 +424,8 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.MinimumLinkBits", active && data.output.minimumLinkBits ?
         StringUtils::Format("{}-bit",data.output.minimumLinkBits) : "");
     SetProperty("DV.Transport", active ? CDVPlaybackInfo::Transport(data.output.format) : "");
-    SetProperty("DV.SignalIntent", lldv ? "LLDV / YCbCr 4:2:2" : active & CDVPlaybackInfo::HDMI ?
+    SetProperty("DV.HdmiFormat", lldv ? "YCbCr 4:2:2" : "");
+    SetProperty("DV.SignalIntent", lldv ? "LLDV" : active & CDVPlaybackInfo::HDMI ?
         (data.output.iptTransport ? "TV-Led / IPT-PQc2 tunnel" : "TV-Led / YCbCr tunnel") :
         active & CDVPlaybackInfo::HDR10PLUS ? "PQ / BT.2020 / HDR10+" :
         hdr10 ? "PQ / BT.2020" : "");
@@ -454,7 +455,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.OutputStage", transaction ?
         std::string(data.transaction.stage) : "");
     SetProperty("DV.ReferenceWarning", data.referenceWarning ? "Consider Reference" : "");
-    SetProperty("DV.TVProfile", lldv ? StringUtils::Format("EDID v{} · {:.0f} nits",
+    SetProperty("DV.TVProfile", lldv ? StringUtils::Format("EDID v{} / {:.0f} nits",
         data.output.lldv->edidVersion, data.output.target) : active && data.output.effective==8 ?
         StringUtils::Format("{} / {:g} nits / {:g}",
             data.output.gamut == 3 ? "BT.2020" : "BT.709", data.output.target, data.output.sdrGamma) :
@@ -475,10 +476,6 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         const auto& display = *data.output.lldv;
         const auto j = i * 2;
         value = StringUtils::Format("{:.4f}, {:.4f}", display.primaries[j], display.primaries[j + 1]);
-        if (display.reportedPrimaries[j] != display.primaries[j] ||
-            display.reportedPrimaries[j + 1] != display.primaries[j + 1])
-          value = StringUtils::Format("{:.4f}, {:.4f} â†’ {}", display.reportedPrimaries[j],
-                                      display.reportedPrimaries[j + 1], value);
       }
       SetProperty(keys[i], value);
     }
