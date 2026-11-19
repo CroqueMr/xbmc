@@ -390,6 +390,9 @@ void CWinSystemGbmGLESContext::PublishVideoSource(
 
 void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 {
+  if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+      drm && drm->IsSDRRestorePending())
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
 #ifdef HAVE_DVBRIDGE
   // Yield to the pending scanout instead of repeatedly redrawing the GUI.
   if (!CompleteDVBridgePage(8)) return;
@@ -408,6 +411,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
   if (m_dvOrdinaryFrame)
   {
     if (!rendered || !m_eglContext.TrySwapBuffers()) return;
+    if (m_dvStopPending && !StageOrdinaryDVOutput(nullptr)) return;
     auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
     auto& surface = m_GBM->GetDevice().GetSurface();
     auto* bo = surface.LockTransactionalBuffer();
@@ -420,7 +424,8 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     if (!submitted)
     {
       DVBRIDGE::PlaybackNotification::OrdinaryOutputAccepted(false);
-      RejectDVOutputSurface(); return;
+      if (!m_dvStopPending) RejectDVOutputSurface();
+      return;
     }
     if (!CompleteDVOutputSurface(true)) return;
     PublishVideoSource(true, m_videoSourceSideData);
@@ -1321,6 +1326,8 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
     {
       auto policy = preferences.Policy();
       policy.mode = static_cast<dvbridge_mode>(mode);
+      if (mode != DVBRIDGE_MODE_ENHANCED_DV)
+        policy.adaptive = DVBRIDGE_ADAPTIVE_A;
       policy.tv = {preferences.peak, static_cast<dvbridge_panel>(preferences.panel),
           static_cast<dvbridge_gamut>(preferences.gamut)};
       pl_color_space nominal{};
@@ -1957,11 +1964,17 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
 
 bool CWinSystemGbmGLESContext::StageOrdinaryDVOutput(const VideoPicture* picture)
 {
+  if (m_dvStopPending)
+  {
+    m_dvOrdinaryFrame = true;
+    SetGuiCompositing(0);
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  }
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   if (!drm || (m_dvState.Captured() && !m_dvState.Stage(*drm,true)) ||
       (m_hdrDeepColorPrevious && !drm->AddProperty(drm->GetConnector(),
           "DVBRIDGE_HDR10_DEEP_COLOR",*m_hdrDeepColorPrevious)))
-  { RejectDVOutputSurface(); return false; }
+  { if (!m_dvStopPending) RejectDVOutputSurface(); return false; }
   SetColorimetry(picture);
   const bool hdr = SetHDR(picture);
   SetGuiCompositing(hdr && picture ? picture->color_transfer : 0);
@@ -2557,7 +2570,13 @@ bool CWinSystemGbmGLESContext::StopDVBridgePlayback()
   if (HasPendingDVOutputSurface() && !m_dvOrdinaryFrame && !RejectDVOutputSurface())
     return false;
   if (!SetVideoOutput(nullptr)) return false;
-  if (!m_dvOrdinaryFrame) m_dvStopPending = false;
+  if (!m_dvOrdinaryFrame)
+  {
+    SetGuiCompositing(0);
+    SetColorimetry(nullptr);
+    SetHDR(nullptr);
+    m_dvStopPending = false;
+  }
   return true;
 }
 

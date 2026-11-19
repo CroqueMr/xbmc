@@ -25855,7 +25855,7 @@ msgid "Basic uses source metadata. Expert requires a TV profile. HDR10+ sends pi
 msgstr ""
 
 msgctxt "#40922"
-msgid "HDR10+ conversion (experimental)"
+msgid "HDR10+ conversion"
 msgstr ""
 
 msgctxt "#40923"

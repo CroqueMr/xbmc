@@ -33,6 +33,17 @@ public:
   ~CDRMAtomic() override;
   void FlipPage(struct gbm_bo* bo, bool rendered, bool videoLayer, bool async) override;
   bool LastPageAccepted() const { return m_lastPageAccepted; }
+  bool IsSDRRestorePending() const { return m_sdrRestorePending; }
+  void SetSDRRestorePending(bool pending)
+  {
+    m_sdrRestorePending = pending;
+    if (!pending)
+    {
+      m_sdrRestoreFailed = false;
+      m_sdrRestoreColorspace.reset();
+      if (m_req) m_req->sdrRestore = false;
+    }
+  }
   void StageHDR10Plus(std::optional<std::array<uint8_t, 31>> packet, uint64_t generation);
   bool HDR10PlusActive() const { return m_hdr10plusActive; }
   bool TestFramebuffer(struct gbm_bo* bo);
@@ -72,6 +83,9 @@ public:
   static bool SupportsAtomicModesetting();
 
 private:
+  bool PrepareSDRRestore(int& flags);
+  bool m_sdrRestorePending{}, m_sdrRestoreFailed{};
+  std::optional<uint64_t> m_sdrRestoreColorspace;
   bool PrepareHDR10Plus(int& flags, bool& frameMetadata);
   bool RemoveRejectedHDR10Plus(int& flags);
   int TestAtomicFrame(int& flags, bool frameMetadata);
@@ -129,6 +143,7 @@ private:
     std::optional<uint64_t> requestedDV;
     CDRMPropertyBlob hdr10plusBlob;
     std::optional<bool> hdr10plus;
+    bool sdrRestore{};
     void LogAtomicRequest();
     void LogDVProperties();
 

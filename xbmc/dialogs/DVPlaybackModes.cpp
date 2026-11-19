@@ -120,7 +120,7 @@ bool CDVPlaybackModes::ShowMenu()
     dialog->SetUseDetails(true);
     for(const auto& option : options)
     {
-      CFileItem item(strings.Get(choices[option.value].label));
+      CFileItem item(option.label);
       item.SetLabel2(option.label2);
       for(const auto& [name,value] : option.properties) item.SetProperty(name,value);
       dialog->Add(item);

@@ -16,10 +16,6 @@
 #include "input/actions/ActionIDs.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
-#ifdef HAVE_DVBRIDGE
-#include "DVPlaybackMenuLayout.h"
-#include "guilib/GUIImage.h"
-#endif
 #include "utils/StringUtils.h"
 
 #include <memory>
@@ -366,25 +362,6 @@ void CGUIDialogSelect::OnWindowLoaded()
 
 void CGUIDialogSelect::OnInitWindow()
 {
-#ifdef HAVE_DVBRIDGE
-  if (GetProperty("CB1.PlaybackModes").asBoolean())
-  {
-    auto* background = dynamic_cast<CGUIImage*>(GetControl(9101));
-    if (auto* group = GetControl(9100); group && background &&
-        background->GetFileName() == "special://xbmc/media/cb1-panel.png")
-    {
-      const float rowsHeight = DVBRIDGE::PlaybackMenuRowsHeight(m_vecList->Size());
-      const float height = 112.0f + rowsHeight;
-      group->SetPosition(group->GetXPosition(), GetCoordsRes().iHeight - 40.0f - height);
-      group->SetHeight(height);
-      background->SetHeight(height);
-      for (int id : {CONTROL_SIMPLE_LIST, CONTROL_DETAILED_LIST})
-        if (auto* list = GetControl(id)) list->SetHeight(rowsHeight);
-      if (auto* help = GetControl(9102))
-        help->SetPosition(help->GetXPosition(), 70.0f + rowsHeight);
-    }
-  }
-#endif
   m_viewControl.SetItems(*m_vecList);
   m_selectedItems.clear();
   for(int i = 0 ; i < m_vecList->Size(); i++)
