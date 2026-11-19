@@ -33,6 +33,7 @@ struct ReadbackBuffer
   //! signed linesize; negative when the rows are bottom-up
   int stride{0};
   AVPixelFormat format{AV_PIX_FMT_NONE};
+  bool colorEncodingVerified{true};
 };
 
 //! Read a width x height region of the bound read framebuffer at (x, y) in GL

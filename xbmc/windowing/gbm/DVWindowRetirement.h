@@ -17,6 +17,7 @@ public:
   {
     std::shared_ptr<void> gbm, drm, vaapi, fence, properties;
     std::function<bool()> completeDisplay;
+    std::function<void()> releaseDisplayBuffers;
   };
   static bool Occupied() { return m_retained != nullptr; }
   static bool Keep(std::shared_ptr<CDVBridgeGLES::Context> context,
@@ -58,7 +59,8 @@ public:
       held.m_resources.vaapi.reset();
       held.m_resources.fence.reset();
     }
-    const bool destroyed = CEGLContextUtils::DestroyRetiredContext(held.m_egl);
+    const bool destroyed = CEGLContextUtils::DestroyRetiredContext(
+        held.m_egl, held.m_resources.releaseDisplayBuffers);
     if (!destroyed)
     {
       held.m_quarantined = true;

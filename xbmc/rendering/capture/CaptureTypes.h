@@ -79,6 +79,7 @@ struct CaptureResult
   //! source coding of the bytes, handed straight to swscale by the consumer
   AVPixelFormat format{AV_PIX_FMT_NONE};
   ImageColorMetadata color;
+  bool colorEncodingVerified{true};
   //! which tap produced this result; stamped at delivery so a BOTH consumer
   //! knows whether it holds the video-only or the composite capture
   CaptureContent content{CaptureContent::COMPOSITE};

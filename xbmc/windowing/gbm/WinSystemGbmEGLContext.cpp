@@ -116,7 +116,8 @@ bool CWinSystemGbmEGLContext::ChooseEGLConfig(EGLint renderableType, int bitDept
 
   for (const auto& format : candidates)
   {
-    if (m_eglContext.ChooseConfig(renderableType, format.drm, false, format.alpha))
+    if (m_eglContext.ChooseConfig(renderableType, format.drm, false, format.alpha, false,
+                                  false, UsesNvidiaGbm()))
       return true;
   }
 
@@ -241,6 +242,7 @@ CWinSystemGbmEGLContext::~CWinSystemGbmEGLContext()
     // final fence covers their commands before the matching context can retire.
     m_nativeDVRetirement->FenceLastUse();
     m_GBM->GetDevice().UseDVOutputLifetime();
+    const bool nvidia = UsesNvidiaGbm();
     CDVWindowRetirement::Resources resources;
     resources.gbm = std::shared_ptr<CGBMUtils>(std::move(m_GBM));
     resources.drm = std::move(m_DRM);
@@ -260,14 +262,55 @@ CWinSystemGbmEGLContext::~CWinSystemGbmEGLContext()
       };
     }
     const auto egl = m_eglContext.RetainForRetirement();
+    if (nvidia)
+    {
+      auto* gbm = static_cast<CGBMUtils*>(resources.gbm.get());
+      resources.releaseDisplayBuffers = [gbm] {
+        gbm->ReleaseSurfaceBuffers(true);
+        gbm->ReleaseSurfaceBuffers();
+      };
+    }
     CDVWindowRetirement::Keep(std::move(m_nativeDVRetirement),egl,std::move(resources));
+    return;
   }
 #endif
+  // The GBM base is destroyed before the EGL base. Finalize while both are alive.
+  if (UsesNvidiaGbm() && !DestroyNvidiaWindowSystem())
+  {
+    CLog::LogF(LOGERROR, "Failed to retire the NVIDIA EGL window");
+    // There is no caller to retry during destruction. Try the remaining
+    // EGL cleanup here, while the native windows and their device still exist.
+    m_GBM->ReleaseSurfaceBuffers(true);
+    m_GBM->ReleaseSurfaceBuffers();
+    m_eglContext.Destroy();
+  }
+}
+
+bool CWinSystemGbmEGLContext::UsesNvidiaGbm() const
+{
+  return m_GBM && m_DRM && m_DRM->HasQuirk(QUIRK_NVIDIA_EGL_GBM);
+}
+
+bool CWinSystemGbmEGLContext::DestroyOutputSurface()
+{
+  if (UsesNvidiaGbm())
+    return m_eglContext.DestroySurfaceAfterRelease([this] { m_GBM->ReleaseSurfaceBuffers(); });
+  m_eglContext.DestroySurface();
+  return true;
+}
+
+bool CWinSystemGbmEGLContext::DestroyNvidiaWindowSystem()
+{
+  return m_eglContext.DestroyAfterRelease([this] {
+    m_GBM->ReleaseSurfaceBuffers(true);
+    m_GBM->ReleaseSurfaceBuffers();
+  });
 }
 
 bool CWinSystemGbmEGLContext::DestroyWindow()
 {
-  m_eglContext.DestroySurface();
+  if (!DestroyOutputSurface())
+    return false;
 
   CLog::Log(LOGDEBUG, "CWinSystemGbmEGLContext::{} - deinitialized GBM", __FUNCTION__);
   return true;
@@ -346,6 +389,7 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
 
   // Pick an EGL config matching the target bit depth, then rebuild
   // the surface only if that pick changed the native visual ID.
+  const auto currentConfig = m_eglContext.GetEGLConfig();
   uint32_t currentFormat = m_eglContext.GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
 
   bool separateScanout = false;
@@ -364,7 +408,11 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
 
   if (format != currentFormat)
   {
-    if (!m_dvOutputSurface) m_eglContext.DestroySurface();
+    if (!m_dvOutputSurface && !DestroyOutputSurface())
+    {
+      m_eglContext.RestoreEGLConfig(currentConfig);
+      return false;
+    }
 
     auto modifierList = OutputModifiers(format);
     auto* modifiers = &modifierList;
@@ -452,8 +500,14 @@ void CWinSystemGbmEGLContext::CheckFloatOutput(bool accepted)
 bool CWinSystemGbmEGLContext::CompleteDVOutputSurface(bool submitted)
 {
   if (!m_dvSurfacePending) return true;
-  // Refused rebinding leaves both matching drawable/surface owners retained.
-  if (!m_eglContext.CompleteOutputSurface(submitted)) return false;
+  // NVIDIA's GBM release callback still uses the EGL drawable's stream.
+  // Rebind first on rollback, then release the discarded drawable's buffers
+  // before EGL destroys it. GBM keeps the native window alive until after EGL.
+  std::function<void()> releaseBuffers;
+  if (UsesNvidiaGbm())
+    releaseBuffers = [this, submitted] { m_GBM->ReleaseSurfaceBuffers(submitted); };
+  if (!m_eglContext.CompleteOutputSurface(submitted, releaseBuffers))
+    return false;
   m_GBM->GetDevice().CompleteOutputSurface(submitted);
   if (!submitted && m_priorOutputPlane)
   {
@@ -473,7 +527,13 @@ bool CWinSystemGbmEGLContext::DestroyWindowSystem()
 {
   CDVDFactoryCodec::ClearHWAccels();
   VIDEOPLAYER::CRendererFactory::ClearRenderer();
-  m_eglContext.Destroy();
+  if (UsesNvidiaGbm())
+  {
+    if (!DestroyNvidiaWindowSystem())
+      return false;
+  }
+  else
+    m_eglContext.Destroy();
 
   return CWinSystemGbm::DestroyWindowSystem();
 }

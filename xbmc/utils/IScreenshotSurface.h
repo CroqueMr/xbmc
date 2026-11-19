@@ -38,6 +38,7 @@ public:
   int GetStride() const { return m_stride; }
   //! source coding of the delivered bytes, handed to the consumer's swscale
   AVPixelFormat GetFormat() const { return m_format; }
+  bool IsColorEncodingVerified() const { return m_colorEncodingVerified; }
   unsigned char* GetBuffer() const { return m_buffer; }
 
   //! \brief Transfer buffer ownership to the caller.
@@ -53,5 +54,6 @@ protected:
   int m_height{0};
   int m_stride{0};
   AVPixelFormat m_format{AV_PIX_FMT_NONE};
+  bool m_colorEncodingVerified{true};
   unsigned char* m_buffer{nullptr};
 };

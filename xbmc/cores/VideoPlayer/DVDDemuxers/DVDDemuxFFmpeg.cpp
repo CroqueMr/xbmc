@@ -3514,10 +3514,11 @@ int CDVDDemuxFFmpeg::ReadBlurayDovi(AVPacket* packet)
     result = av_read_frame(m_pFormatContext, packet);
     if (result < 0)
     {
-      if (result == AVERROR_EOF && take(true) == 0)
-        return 0;
-      if (result == AVERROR_EOF && m_blurayDovi->Pending())
-        CLog::Log(LOGWARNING, "DV Blu-ray: incomplete layer pair at end of stream");
+      if (result != AVERROR_EOF)
+        return result;
+      result = take(true);
+      if (result < 0 && result != AVERROR_EOF)
+        CLog::Log(LOGERROR, "DV Blu-ray: draining the layer pair failed ({})", result);
       return result;
     }
     if (packet->stream_index != m_blurayBase && packet->stream_index != m_blurayEnhancement)

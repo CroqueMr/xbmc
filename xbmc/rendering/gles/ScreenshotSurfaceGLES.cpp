@@ -60,6 +60,7 @@ bool CScreenshotSurfaceGLES::Read(const ScreenshotContext& ctx)
   m_height = static_cast<int>(buffer.height);
   m_stride = buffer.stride;
   m_format = buffer.format;
+  m_colorEncodingVerified = buffer.colorEncodingVerified;
   m_buffer = reinterpret_cast<unsigned char*>(buffer.pixels.release());
   return m_buffer != nullptr;
 }
