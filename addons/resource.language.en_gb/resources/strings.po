@@ -25862,6 +25862,14 @@ msgctxt "#40923"
 msgid "HDR10+ output requires a supported HDMI driver and display."
 msgstr ""
 
+msgctxt "#40925"
+msgid "Disable L2 trims"
+msgstr ""
+
+msgctxt "#40926"
+msgid "Standard and Master Reference only. L8 trims remain active."
+msgstr ""
+
 msgctxt "#40822"
 msgid "HDR10 Reference Basic"
 msgstr ""

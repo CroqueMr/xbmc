@@ -17,7 +17,11 @@
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "utils/StringUtils.h"
+#ifdef HAVE_DVBRIDGE
+#include "windowing/GraphicContext.h"
+#endif
 
+#include <algorithm>
 #include <memory>
 
 #define CONTROL_HEADING         1
@@ -96,6 +100,17 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
 
   case GUI_MSG_WINDOW_INIT:
     {
+#ifdef HAVE_DVBRIDGE
+      const bool playback = GetProperty("CB1.PlaybackModes").asBoolean();
+      const std::string file = playback ?
+          "special://xbmc/media/cb1/DialogPlaybackModes.xml" : "DialogSelect.xml";
+      if (GetProperty("xmlfile").asString() != file)
+      {
+        FreeResources(true);
+        SetProperty("xmlfile", file);
+      }
+      if (playback) SetCoordsRes(RESOLUTION_INFO(1920, 1080));
+#endif
       m_bButtonPressed = false;
       m_bButton2Pressed = false;
       m_bConfirmed = false;
@@ -362,6 +377,24 @@ void CGUIDialogSelect::OnWindowLoaded()
 
 void CGUIDialogSelect::OnInitWindow()
 {
+#ifdef HAVE_DVBRIDGE
+  if (GetProperty("CB1.PlaybackModes").asBoolean())
+  {
+    const int maxRows = std::max(1, (GetCoordsRes().iHeight - 80 - 112) / 50);
+    const float rowsHeight = 50.0f * std::clamp(m_vecList->Size(), 1, maxRows);
+    const float height = 112.0f + rowsHeight;
+    if (auto* group = GetControl(9100))
+    {
+      group->SetPosition(group->GetXPosition(), GetCoordsRes().iHeight - 40.0f - height);
+      group->SetHeight(height);
+    }
+    if (auto* background = GetControl(9101)) background->SetHeight(height);
+    for (int id : {CONTROL_SIMPLE_LIST, CONTROL_DETAILED_LIST})
+      if (auto* list = GetControl(id)) list->SetHeight(rowsHeight);
+    if (auto* help = GetControl(9102))
+      help->SetPosition(help->GetXPosition(), 70.0f + rowsHeight);
+  }
+#endif
   m_viewControl.SetItems(*m_vecList);
   m_selectedItems.clear();
   for(int i = 0 ; i < m_vecList->Size(); i++)
