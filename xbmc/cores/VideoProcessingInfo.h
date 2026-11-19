@@ -68,6 +68,10 @@ struct VideoProcessingInfo
     std::array<unsigned, 2> scenePQ{}; // effective max/avg after L3
     unsigned trimGroups{};
     bool cm4Appended{};
+    unsigned edidVersion{};
+    std::array<double, 6> primaries{};
+    std::array<double, 6> reportedPrimaries{};
+    bool forcedTransport{};
   };
   struct Output
   {
@@ -101,6 +105,7 @@ struct VideoProcessingInfo
     std::optional<PlayerLed> lldv{};
   } output;
   std::optional<VideoOutputType> outputType;
+  int nativeHDR10PlusFallbackLabel{};
   uint64_t informationGeneration{};
   bool referenceWarning{};
   unsigned profile{}, level{}, major{}, minor{}, compatibility{};

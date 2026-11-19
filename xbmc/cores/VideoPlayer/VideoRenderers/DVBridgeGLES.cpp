@@ -27,6 +27,7 @@ extern "C"
 #include "dvbridge_cache.h"
 #include "cb1_hdr10plus_dovi.h"
 #include "cb1_lldv_cpu.h"
+#include "cb1_hdr10_expert.h"
 }
 
 #include <EGL/egl.h>
@@ -204,7 +205,7 @@ ESCALINGMETHOD OutputScalingMethod(const CDVBridgeGLES::Layer& layer,
                 geometry.placement[2] - geometry.placement[0],
                 geometry.placement[3] - geometry.placement[1]))
     return layer.scalingMethod;
-  const int method = Get(mode != DVBRIDGE_MODE_SDR, layer.scalingMethod);
+  const int method = Get(geometry.source_width, geometry.source_height, layer.scalingMethod);
   if (mode != DVBRIDGE_MODE_MASTER_REFERENCE &&
       (method == VS_SCALINGMETHOD_FSR1_RCAS || UsesShaderHooks(method)))
     return layer.scalingMethod;
@@ -714,7 +715,7 @@ bool CDVBridgeGLES::Context::AsyncPreparation(uint64_t stream)
   if (stream && stream != m_state->preparationStream)
   {
     m_state->preparationStream = stream;
-    m_state->asyncPreparation = DVBRIDGE::AsyncPreparationEnabled();
+    m_state->asyncPreparation = true;
   }
   return stream && m_state->asyncPreparation;
 }
@@ -1606,16 +1607,16 @@ struct CDVBridgeGLES::PlayerLedCpu
   bool Write(const Slot& slot)
   {
     if (!slot.carrier->Sync(DMA_BUF_SYNC_START)) return false;
-    const auto gamut = slot.policy.tv.gamut;
-    const bool identity = gamut == DVBRIDGE_GAMUT_BT2020;
-    const auto primaries = gamut == DVBRIDGE_GAMUT_BT709 ? PL_COLOR_PRIM_BT_709 : PL_COLOR_PRIM_DISPLAY_P3;
+    const auto primaries = cb1_display_primaries(&slot.policy);
+    const bool identity = !slot.policy.lldv_edid_version && slot.policy.tv.gamut == DVBRIDGE_GAMUT_BT2020;
     const auto matrix = identity ? pl_matrix3x3_identity : pl_get_color_mapping_matrix(
-        pl_raw_primaries_get(primaries), pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020),
+        &primaries, pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020),
         PL_INTENT_RELATIVE_COLORIMETRIC);
     const cb1_lldv_cpu_frame input{reinterpret_cast<const float*>(slot.host->data),
         slot.carrier->data, slot.carrier->stride, identity ? nullptr : &matrix.m[0][0],
         slot.policy.tv.peak_nits,
-        slot.frame->transport.format == DVBRIDGE::LldvFormat::Y422_10 ? 10u : 12u, true, true,
+        // The host rows already follow scanout order.
+        slot.frame->transport.format == DVBRIDGE::LldvFormat::Y422_10 ? 10u : 12u, true, false,
         slot.activeRows[0], slot.activeRows[1]};
     const bool packed = cb1_lldv_cpu_submit(worker, &input) && cb1_lldv_cpu_ready(worker, true);
     return slot.carrier->Sync(DMA_BUF_SYNC_END) && packed;
@@ -1775,7 +1776,8 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int frame
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
       ((sdr && hdr10 && red >= 8 && green >= 8 && blue >= 8 && red <= 16 && green <= 16 && blue <= 16) ||
        (!sdr && hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
-       (!sdr && !hdr10 && red == 8 && green == 8 && blue == 8)) &&
+       (!sdr && !hdr10 && red == green && green == blue &&
+        (red == 8 || (m_playerLed && red == 10)))) &&
       samples <= 1 && encoding == GL_LINEAR)
     candidate = pl_opengl_wrap(m_gl->gpu, &output);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
@@ -2032,7 +2034,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     return FrameStatus::Unsupported;
   // Capture the proven observation key before geometry or refresh rekeys work.
   dvbridge_renderer_set_l2_trims_disabled(m_renderer, preferences.L2TrimsDisabled(policy.mode));
-  const auto cmv40 = preferences.CMv40Options(policy.mode);
+  auto cmv40 = preferences.CMv40Options(policy.mode);
+  if (policy.mode == DVBRIDGE_MODE_PLAYER_LED) cmv40.tv_peak = policy.tv.peak_nits;
   dvbridge_renderer_set_cmv40(m_renderer, &cmv40);
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
       policy.mode);
@@ -2047,9 +2050,11 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
       scalingMethod == m_spatialMethod;
   if ((m_geometryKnown && !sameGeometry) ||
-      (policy.mode == DVBRIDGE_MODE_SDR && policy.sdr.gamut != m_sdrGamut))
+      (policy.mode == DVBRIDGE_MODE_SDR && policy.sdr.gamut != m_sdrGamut) ||
+      policy.lldv_edid_generation != m_lldvEdidGeneration)
     m_geometryRevision = DVBRIDGE::NextRevisionAfter(std::max({preferences.revision,base.binding.revision,m_geometryRevision}));
   if (policy.mode == DVBRIDGE_MODE_SDR) m_sdrGamut = policy.sdr.gamut;
+  m_lldvEdidGeneration = policy.lldv_edid_generation;
   m_sourceGeometry = geometry;
   m_geometryKnown = true;
   uint64_t revision = std::max({preferences.revision,base.binding.revision,m_geometryRevision});
@@ -3046,6 +3051,17 @@ bool CDVBridgeGLES::PackPlayerLed(DVBRIDGE::LldvTransport transport)
       (transport.format != DVBRIDGE::LldvFormat::Y422_10 &&
        transport.format != DVBRIDGE::LldvFormat::Y422_12))
     return Failure("player-led-pack-target");
+
+  if (transport.rgb10Scanout)
+  {
+    m_packed = m_outputBits == 10 && dvbridge_resolve_player_led_rgb10(
+        m_renderer, &m_playerLedPolicy, m_playerLedPicture, m_scanout, true) &&
+        m_context->FenceLastUse();
+    if (!m_packed) return Failure("player-led-rgb10");
+    m_playerLedTransport = transport;
+    m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,m_asyncEligible};
+    return true;
+  }
 
   const auto gpu = m_gl->gpu;
   const int w = m_scanout->params.w, h = m_scanout->params.h;

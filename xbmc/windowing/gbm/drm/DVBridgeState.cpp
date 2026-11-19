@@ -222,14 +222,14 @@ bool CDVBridgeState::Stage(CDRMAtomic& drm, bool restore, std::optional<uint64_t
   return StageTransport(drm, restore, 0, broadcastRange);
 }
 
-bool CDVBridgeState::StagePlayerLed(CDRMAtomic& drm, uint64_t format)
+bool CDVBridgeState::StagePlayerLed(CDRMAtomic& drm, uint64_t format, uint64_t bpc)
 {
   return format && m_backend != Backend::NONE && Before("CB1_LLDV_FORMAT") &&
-         StageTransport(drm, false, format);
+         StageTransport(drm, false, format, {}, bpc);
 }
 
 bool CDVBridgeState::StageTransport(CDRMAtomic& drm, bool restore, uint64_t playerLedFormat,
-                                   std::optional<uint64_t> broadcastRange)
+                                   std::optional<uint64_t> broadcastRange, uint64_t playerLedBpc)
 {
   if (!Captured() || m_owner != &drm || m_changes.front().object != drm.GetConnector())
     return false;
@@ -241,6 +241,8 @@ bool CDVBridgeState::StageTransport(CDRMAtomic& drm, bool restore, uint64_t play
       value = *broadcastRange;
     if (playerLedFormat && change.name == "CB1_LLDV_FORMAT")
       value = playerLedFormat;
+    else if (playerLedFormat && change.name == "max bpc")
+      value = playerLedBpc;
     else if (playerLedFormat && (change.name == "DVBRIDGE_DV_STANDARD_LAB" ||
                                 change.name == "NV_HDMI_VSIF_METADATA"))
       value = 0;

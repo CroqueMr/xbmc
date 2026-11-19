@@ -19,7 +19,11 @@
 namespace DVBRIDGE
 {
 enum class OutputMode : int { Standard = 0, HDR10 = 1, Disabled = 2, EnhancedDV = 3, MasterReference = 4, AdaptiveB = 5, SDR = 6, PlayerLed = 7 };
-enum class HDR10SourceMode : int { Native = 0, ReferenceDV = 1, EnhancedDV = 2, HDR10PlusDV = 3, SDR = 4 };
+enum class HDR10SourceMode : int
+{
+  Native = 0, ReferenceDV = 1, EnhancedDV = 2, HDR10PlusDV = 3, SDR = 4, HDR10PlusPassthrough = 5
+};
+
 enum class HLGSourceMode : int { Native = 0, ReferenceDV = 1, SDR = 2 };
 
 // Decoder ingress sees the last complete frame-boundary preference snapshot.
@@ -83,6 +87,15 @@ struct OutputPreferences
     }
   }
 
+  HDR10SourceMode HDR10Mode(bool hdr10Plus) const
+  {
+    if (!hdr10Plus)
+      return hdr10Source;
+    // Passthrough uses Kodi's native renderer. HDMI signalling uses the saved selector.
+    return hdr10PlusSource == HDR10SourceMode::HDR10PlusPassthrough ?
+        HDR10SourceMode::Native : hdr10PlusSource;
+  }
+
   bool SameValues(const OutputPreferences& other) const
   {
     return output == other.output && hdr10Source == other.hdr10Source &&
@@ -98,7 +111,7 @@ struct OutputPreferences
         cmv40Headroom == other.cmv40Headroom &&
         felUpscaling == other.felUpscaling &&
         processingOptimizations == other.processingOptimizations &&
-        ((output!=OutputMode::PlayerLed && (output!=OutputMode::HDR10 || method!=1)) ||
+        ((output!=OutputMode::HDR10 || method!=1) ||
          (expertPeak == other.expertPeak && expertBlack == other.expertBlack && expertGamut == other.expertGamut)) &&
         (output!=OutputMode::PlayerLed || lldvFormat==other.lldvFormat) &&
         std::bit_cast<uint64_t>(peak) == std::bit_cast<uint64_t>(other.peak);
@@ -114,8 +127,7 @@ struct OutputPreferences
           std::isfinite(sdrGamma) && sdrGamma>=1.8 && sdrGamma<=2.8 &&
           std::isfinite(sdrBlack) && sdrBlack>=0 && sdrBlack<=5 && sdrBlack<sdrPeak;
     }
-    return mode==DVBRIDGE_MODE_HDR10_EXPERT || mode==DVBRIDGE_MODE_PLAYER_LED ?
-        ExpertProfileValid() : ProfileValid();
+    return mode==DVBRIDGE_MODE_HDR10_EXPERT ? ExpertProfileValid() : ProfileValid();
   }
   bool L2TrimsDisabled(dvbridge_mode mode, bool hdr10AI = false) const
   {
@@ -128,7 +140,7 @@ struct OutputPreferences
     if (hdr10AI || (mode != DVBRIDGE_MODE_STANDARD && mode != DVBRIDGE_MODE_MASTER_REFERENCE &&
                     mode != DVBRIDGE_MODE_PLAYER_LED)) return {};
     return {static_cast<cb1_cmv40_mode>(cmv40Mode), static_cast<unsigned>(cmv40Trigger),
-        static_cast<unsigned>(cmv40Headroom), mode==DVBRIDGE_MODE_PLAYER_LED ? expertPeak : peak};
+        static_cast<unsigned>(cmv40Headroom), peak};
   }
   dvbridge_policy Policy() const
   {
@@ -156,7 +168,7 @@ struct OutputPreferences
     }
     // Basic/native paths never consume calibration. Keep invalid user values
     // in this snapshot, rather than silently completing the stored profile.
-    if (result.mode == DVBRIDGE_MODE_HDR10_EXPERT || result.mode == DVBRIDGE_MODE_PLAYER_LED)
+    if (result.mode == DVBRIDGE_MODE_HDR10_EXPERT)
     {
       result.tv={expertPeak,DVBRIDGE_PANEL_OLED,static_cast<dvbridge_gamut>(expertGamut)};
       result.expert_black_nits=expertBlack;
@@ -164,10 +176,6 @@ struct OutputPreferences
     else if (result.mode == DVBRIDGE_MODE_ENHANCED_DV)
       result.tv = {peak, static_cast<dvbridge_panel>(panel), static_cast<dvbridge_gamut>(gamut)};
     return result;
-  }
-  HDR10SourceMode HDR10Mode(bool hdr10Plus) const
-  {
-    return hdr10Plus ? hdr10PlusSource : hdr10Source;
   }
   dvbridge_policy HDR10Policy(bool hdr10Plus = false) const
   {
@@ -233,7 +241,8 @@ inline OutputSelectors ReadDefaultOutputSelectors()
       static_cast<HDR10SourceMode>(hdr10) : HDR10SourceMode::Native;
   const int plus=settings->GetInt("dvbridge.hdr10plussource");
   result.hdr10PlusSource=plus==3 ? HDR10SourceMode::HDR10PlusDV :
-      plus==4 ? HDR10SourceMode::SDR : HDR10SourceMode::Native;
+      plus==4 ? HDR10SourceMode::SDR :
+      plus==5 ? HDR10SourceMode::HDR10PlusPassthrough : HDR10SourceMode::Native;
   const int hlg=settings->GetInt("dvbridge.hlgsource");
   if (hlg==1 || hlg==2) result.hlgSource=static_cast<HLGSourceMode>(hlg);
   return result;
@@ -299,7 +308,7 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = 
   hdr10PlusPlaybackMode.store(next.hdr10PlusSource);
   hlgPlaybackMode.store(next.HLGMode());
   // Resolve only the returned copy; alternating inputs must not churn revisions.
-  if (hdr10Plus) next.hdr10Source = next.hdr10PlusSource;
+  if (hdr10Plus) next.hdr10Source = next.HDR10Mode(true);
   if (hlg) next.hdr10Source = next.HLGMode();
   return next;
 }
@@ -322,12 +331,6 @@ inline bool EnhancedInfoEnabled()
 inline bool PlaybackMenuEnabled()
 {
   return true;
-}
-inline bool AsyncPreparationEnabled()
-{
-  const auto component = CServiceBroker::GetSettingsComponent();
-  const auto settings = component ? component->GetSettings() : nullptr;
-  return settings && settings->GetBool("dvbridge.asyncpreparation");
 }
 inline bool FELHardwareUpscalingEnabled()
 {

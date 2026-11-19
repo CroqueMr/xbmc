@@ -630,8 +630,8 @@ public:
   {
     using namespace KODI::VIDEO::UPSCALER;
     const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-    Set(SDR, settings->GetInt(SDR));
-    Set(HDR, settings->GetInt(HDR));
+    Set(AT_LEAST_1080P, settings->GetInt(AT_LEAST_1080P));
+    Set(BELOW_1080P, settings->GetInt(BELOW_1080P));
   }
 
   void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override
@@ -640,10 +640,10 @@ public:
         std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
   }
 
-  int Get(bool highDynamicRange, int kodi) const
+  int Get(bool atLeast1080p, int kodi) const
   {
     using namespace KODI::VIDEO::UPSCALER;
-    const int method = (highDynamicRange ? hdr : sdr).load(std::memory_order_relaxed);
+    const int method = (atLeast1080p ? atLeast1080pMethod : below1080pMethod).load(std::memory_order_relaxed);
     return Select(method, kodi);
   }
 
@@ -651,19 +651,19 @@ private:
   void Set(const std::string& id, int method)
   {
     using namespace KODI::VIDEO::UPSCALER;
-    auto& preference = id == HDR ? hdr : sdr;
+    auto& preference = id == AT_LEAST_1080P ? atLeast1080pMethod : below1080pMethod;
     preference.store(Label(method) ? method : KODI_DEFAULT, std::memory_order_relaxed);
   }
 
-  std::atomic<int> sdr{KODI::VIDEO::UPSCALER::KODI_DEFAULT};
-  std::atomic<int> hdr{KODI::VIDEO::UPSCALER::KODI_DEFAULT};
+  std::atomic<int> below1080pMethod{KODI::VIDEO::UPSCALER::KODI_DEFAULT};
+  std::atomic<int> atLeast1080pMethod{KODI::VIDEO::UPSCALER::KODI_DEFAULT};
 };
 UpscalerPreferences upscalerPreferences;
 } // namespace
 
-int KODI::VIDEO::UPSCALER::Get(bool hdr, int kodi)
+int KODI::VIDEO::UPSCALER::Get(unsigned int sourceWidth, unsigned int sourceHeight, int kodi)
 {
-  return upscalerPreferences.Get(hdr, kodi);
+  return upscalerPreferences.Get(IsAtLeast1080p(sourceWidth, sourceHeight), kodi);
 }
 #endif
 
@@ -726,7 +726,7 @@ void CSettings::InitializeISettingCallbacks()
 {
 #ifdef HAVE_DVBRIDGE
   GetSettingsManager()->RegisterCallback(&upscalerPreferences,
-      {KODI::VIDEO::UPSCALER::SDR, KODI::VIDEO::UPSCALER::HDR});
+      {KODI::VIDEO::UPSCALER::AT_LEAST_1080P, KODI::VIDEO::UPSCALER::BELOW_1080P});
   GetSettingsManager()->RegisterCallback(&CDVPlaybackModes::GetInstance(),
       {"dvbridge.configureprofile","dvbridge.expertblack","dvbridge.expertblackcustom",
        "dvbridge.playback", "dvbridge.lldvformat", "dvbridge.sdrgamut"});

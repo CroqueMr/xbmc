@@ -61,7 +61,7 @@ public:
       m_ordinaryFrame=false;
       if (!notify) return;
     }
-    Emit("Kodi default");
+    Emit("Kodi : Default");
   }
   template<class Output> static void NativeOutputAccepted(const Output& output)
   {

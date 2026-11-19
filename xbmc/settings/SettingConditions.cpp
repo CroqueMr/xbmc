@@ -514,7 +514,12 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   const bool hlgSource=hlgMenu || setting->GetId()=="dvbridge.hlgsource";
   const bool hdr10PlusMenu=setting->GetId()=="dvbridge.hdr10plusplaybackchoice";
   const bool hdr10Menu=hdr10PlusMenu || setting->GetId()=="dvbridge.hdr10playbackchoice";
-  const auto preferences=DVBRIDGE::FrameOutputSettings();
+  auto preferences = DVBRIDGE::FrameOutputSettings();
+  if (!hdr10Menu && !hlgMenu && !menu)
+  {
+    std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
+    DVBRIDGE::ReadDefaultOutputSelectors().Apply(preferences);
+  }
   const auto data=DVBRIDGE::StreamTelemetry::Read();
   auto caps=data.transaction.capabilities;
   auto* window=dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
@@ -528,7 +533,11 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   caps.hdr10=available.hdr10;
   caps.hdr10MaxBpc=available.hdr10MaxBpc;
   caps.hdr10plus=available.hdr10plus;
-  if (!menu || !caps.sourceKnown) caps.playerLed=available.playerLed;
+  if (!menu || !caps.sourceKnown || available.lldvUnavailableLabel)
+  {
+    caps.playerLed=available.playerLed;
+    caps.lldvUnavailableLabel=available.lldvUnavailableLabel;
+  }
   if (caps.isDV && preferences.output==DVBRIDGE::OutputMode::Disabled)
   {
     caps.processingKnown=available.processingKnown;
@@ -542,15 +551,22 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   // A preference can be deferred while paused; only the renderer admits a frame.
   const bool pendingHDR10Plus=nativeHDR10Plus && !caps.sourceKnown && !data.transaction.identity.Valid();
   const auto& processing=(hdr10Source || hlgSource) && !caps.sourceKnown ? caps.hdr10Processing : caps.processing;
-  constexpr int menuModes[]{1,5,
+  constexpr int menuModes[]{5,1,
       4,0,2,3,6,7,8};
 #ifdef CB1_HAS_HDR10_AI
   constexpr int hdr10MenuModes[]{1,4,0,7};
-  constexpr int hdr10PlusMenuModes[]{1,0,7};
+  constexpr int hdr10PlusMenuModes[]{1,0,0,7};
 #else
   constexpr int hdr10MenuModes[]{0};
-  constexpr int hdr10PlusMenuModes[]{0};
+  constexpr int hdr10PlusMenuModes[]{0,0};
 #endif
+#ifdef CB1_HAS_HDR10_AI
+  constexpr int nativeHDR10PlusMenuIndex = 1;
+#else
+  constexpr int nativeHDR10PlusMenuIndex = 0;
+#endif
+  const int nativeHDR10PlusChoice = hdr10PlusMenu ? nativeHDR10PlusMenuIndex :
+      static_cast<int>(DVBRIDGE::HDR10SourceMode::HDR10PlusPassthrough);
   for(auto& option : list)
   {
     const int mode=hlgSource ? (option.value==2 ? DVBRIDGE_MODE_SDR :
@@ -562,7 +578,9 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
         (option.value==0 ? 1 : option.value==1 ? 2 : option.value==3 || option.value==5 ? 4 : option.value==4 ? 5 : option.value==6 ? 7 : option.value==7 ? 8 : 0);
     auto reason=DVBRIDGE::OutputReason::None;
     const bool guided = hdr10PlusSource && (hdr10PlusMenu ? option.value==0 : option.value==3);
-    if (mode)
+    if (hdr10PlusSource && option.value == nativeHDR10PlusChoice && !caps.hdr10plus)
+      reason=DVBRIDGE::OutputReason::NoHDR10PlusTransport;
+    else if (mode)
     {
       const bool dv=mode==1 || mode==4 || mode==5;
       if (guided && hdr10Menu && !(pendingHDR10Plus || (caps.sourceKnown && caps.isHDR10Plus)))
@@ -581,13 +599,15 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
       else if (!processing[mode].usable)
         reason=processing[mode].reason==DVBRIDGE::OutputReason::None ?
             DVBRIDGE::OutputReason::NoGPUProcessing : processing[mode].reason;
-      else if ((mode==3 || mode==4 || mode==7 || mode==8) && !preferences.ProfileValid(static_cast<dvbridge_mode>(mode)))
+      else if ((mode==3 || mode==4 || mode==7) && !preferences.ProfileValid(static_cast<dvbridge_mode>(mode)))
         reason=mode==7 ? DVBRIDGE::OutputReason::SDRTargetInvalid : DVBRIDGE::OutputReason::TVProfileRequired;
     }
     int reasonId=CDVPlaybackInfo::ReasonLabel(reason);
+    if (reason==DVBRIDGE::OutputReason::NoPlayerLedTransport && caps.lldvUnavailableLabel)
+      reasonId=caps.lldvUnavailableLabel;
     if (reason==DVBRIDGE::OutputReason::TVProfileRequired)
     {
-      const bool expert=mode==3 || mode==8;
+      const bool expert=mode==3;
       const double peak=expert?preferences.expertPeak:preferences.peak;
       const int gamut=expert?preferences.expertGamut:preferences.gamut;
       reasonId=!std::isfinite(peak) || peak<(expert?50:0.000001) || peak>10000 ? 40911 :

@@ -844,8 +844,13 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
           if (base->doviSourcePts == AV_NOPTS_VALUE)
             return VC_FATAL;
           AVFrame* enhancement = nullptr;
-          int result = dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts,
-                                         &enhancement);
+          const auto& metadata = base->doviMetadata;
+          const bool exactDiscPicture = (m_hints.codecOptions & CODEC_BLURAY_NAVIGATION) &&
+              m_dvLayerEpoch && metadata.Binding() == base->doviSourceBinding;
+          const int result = exactDiscPicture ?
+              dvbridge_fel_take_mel(m_dvFel.get(), base->doviSourcePts, &enhancement,
+                                   metadata.Data(), metadata.Size()) :
+              dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts, &enhancement);
           if (result == 2)
           {
             m_dvPending.pop_front();
@@ -865,32 +870,35 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
             av_frame_free(&enhancement);
             return VC_FATAL;
           }
-          ReportDVStartup(4, "el-decoded");
-#ifdef HAVE_LIBVA
-          if (base->iFlags & DVP_FLAG_DROPPED)
+          if (result == 1)
           {
-            // Preroll bypasses the renderer's normal EL completion check. Consume
-            // its decode report before retiring the image, as Kodi does for BL.
-            const auto* frames = enhancement->hw_frames_ctx ?
-                reinterpret_cast<const AVHWFramesContext*>(enhancement->hw_frames_ctx->data) : nullptr;
-            const auto* device = frames ?
-                reinterpret_cast<const AVVAAPIDeviceContext*>(frames->device_ctx->hwctx) : nullptr;
-            if (!device || vaSyncSurface(device->display,
-                static_cast<VASurfaceID>(reinterpret_cast<uintptr_t>(enhancement->data[3]))) != VA_STATUS_SUCCESS)
+            ReportDVStartup(4, "el-decoded");
+#ifdef HAVE_LIBVA
+            if (base->iFlags & DVP_FLAG_DROPPED)
             {
-              CLog::Log(LOGERROR, "DV FEL: discarded picture decode did not complete at {}",
-                        base->doviSourcePts);
-              av_frame_free(&enhancement);
-              return VC_FATAL;
+              // Preroll bypasses the renderer's normal EL completion check. Consume
+              // its decode report before retiring the image, as Kodi does for BL.
+              const auto* frames = enhancement->hw_frames_ctx ?
+                  reinterpret_cast<const AVHWFramesContext*>(enhancement->hw_frames_ctx->data) : nullptr;
+              const auto* device = frames ?
+                  reinterpret_cast<const AVVAAPIDeviceContext*>(frames->device_ctx->hwctx) : nullptr;
+              if (!device || vaSyncSurface(device->display,
+                  static_cast<VASurfaceID>(reinterpret_cast<uintptr_t>(enhancement->data[3]))) != VA_STATUS_SUCCESS)
+              {
+                CLog::Log(LOGERROR, "DV FEL: discarded picture decode did not complete at {}",
+                          base->doviSourcePts);
+                av_frame_free(&enhancement);
+                return VC_FATAL;
+              }
             }
-          }
 #endif
-          base->doviEnhancement = {enhancement, [](AVFrame* f) { av_frame_free(&f); }};
-          // The pairing owner consumed the exact EL from this stream/reset epoch.
-          base->doviEnhancementBinding = base->doviMetadata.Binding();
+            base->doviEnhancement = {enhancement, [](AVFrame* f) { av_frame_free(&f); }};
+            // The pairing owner consumed the exact EL from this stream/reset epoch.
+            base->doviEnhancementBinding = base->doviMetadata.Binding();
+          }
           pVideoPicture->CopyRef(*base);
           m_dvPending.pop_front();
-          ReportDVStartup(8, "fel-paired");
+          ReportDVStartup(8, result == 3 ? "mel-metadata-only" : "fel-paired");
           return VC_PICTURE;
         }
         return VC_NONE;

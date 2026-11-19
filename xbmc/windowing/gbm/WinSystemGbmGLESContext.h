@@ -60,9 +60,11 @@ public:
   }
 #ifdef HAVE_DVBRIDGE
   bool BeginRender() override;
+  void BindNativePascalHDRFramebuffer();
   int GetOutputBitDepth() const override
   {
-    return m_pascalHDRActive ? 10 : CWinSystemGbmEGLContext::GetOutputBitDepth();
+    return m_pascalHDRMode != PascalHDRMode::None ? 10 :
+                                                  CWinSystemGbmEGLContext::GetOutputBitDepth();
   }
   bool Hide() override;
   bool Show(bool raise = true) override;
@@ -219,7 +221,7 @@ private:
   bool FinishPlayerLedFrame(const CDVBridgeGLES::PlayerLedFrame& frame, double pts);
   std::optional<CDVBridgeGLES::PlayerLedFrame> m_playerLedPage;
   double m_playerLedPagePts{};
-  void StageNativeHDR10Plus(bool overlay);
+  int StageNativeHDR10Plus();
   std::string m_hdr10plusReason;
   uint64_t m_dvProfileLoggedRevision{},m_dvProfileLoggedStream{};
 #endif
@@ -297,6 +299,7 @@ private:
   bool m_dvAvailableNativeDV{}, m_dvAvailableHDR10{};
   std::atomic<uint64_t> m_hdr10MaxBpc{0};
   DVBRIDGE::LldvConnectorStatus m_dvLldvStatus{};
+  XbmcThreads::EndTime<> m_lldvEdidRefresh;
   DVBRIDGE::SourceBinding m_dvImportBinding{};
   dvbridge_geometry m_dvImportGeometry{};
   bool m_dvImportUsable{};
@@ -319,12 +322,19 @@ private:
   bool m_cb1FramePending{};
   bool m_dvEndPending{};
   bool m_dvStopPending{};
-  bool PrepareHDR10Scanout() override;
-  bool RetainHDR10ScanoutOnTransition() const override { return m_priorPascalHDRActive; }
+  enum class PascalHDRMode { None, Conversion, Native };
+  void SelectPascalHDRMode(PascalHDRMode mode);
+  bool PrepareHDR10Scanout(const VideoPicture* picture) override;
+  bool RetainHDR10ScanoutOnTransition() const override
+  {
+    return m_priorPascalHDRMode != PascalHDRMode::None;
+  }
   unsigned int HDR10Framebuffer() const;
+  std::shared_ptr<gbm_bo> BlitNativePascalHDRFrame();
+  bool StageNativePascalHDR10();
   std::unique_ptr<CPascalHDR10Scanout> m_pascalHDRScanout;
-  bool m_pascalHDRActive{};
-  bool m_priorPascalHDRActive{};
+  PascalHDRMode m_pascalHDRMode{PascalHDRMode::None};
+  PascalHDRMode m_priorPascalHDRMode{PascalHDRMode::None};
   bool m_hdrConversion = false;
   bool m_sdrConversion = false;
   bool m_dvPriorSDRConversion = false;

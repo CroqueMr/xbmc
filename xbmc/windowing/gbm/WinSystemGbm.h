@@ -78,6 +78,7 @@ public:
   bool SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays) override;
 
   void FlipPage(bool rendered, bool videoLayer, bool async);
+  bool FlipPage(bool rendered, bool videoLayer, bool async, const std::shared_ptr<gbm_bo>& carrier);
 #ifdef HAVE_DVBRIDGE
   bool FlipDVBridgePage(CDVBridgeState& state, bool restore, bool async = false,
                         bool retainSignal = false, struct gbm_bo* bo = nullptr);
@@ -263,6 +264,15 @@ private:
 
   std::unique_ptr<UTILS::CDisplayInfo> m_info;
   std::vector<uint8_t> m_displayEdid;
+#ifdef HAVE_DVBRIDGE
+  mutable std::mutex m_lldvEdidMutex;
+  std::vector<uint8_t> m_lldvEdid;
+  DVBRIDGE::LldvDisplay m_lldvDisplay;
+  bool m_lldvAmdDriverDisabled{};
+  uint32_t m_lldvEdidConnector{};
+  uint64_t m_lldvEdidGeneration{};
+  DVBRIDGE::LldvTransport m_lldvRejected;
+#endif
 };
 
 } // namespace GBM

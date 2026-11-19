@@ -19,6 +19,7 @@ extern "C"
 
 #define CODEC_FORCE_SOFTWARE 0x01
 #define CODEC_ALLOW_FALLBACK 0x02
+#define CODEC_BLURAY_NAVIGATION 0x04
 
 class CDemuxStream;
 struct DemuxCryptoSession;
