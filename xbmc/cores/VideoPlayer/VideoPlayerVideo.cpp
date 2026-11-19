@@ -1039,7 +1039,7 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   DVBRIDGE::StreamTelemetry::SourceBits(pPicture->colorBits,pPicture->pixelFormat,pPicture->doviSourceInfo,
       {static_cast<int>(pPicture->color_primaries),static_cast<int>(pPicture->color_transfer),
        pPicture->colorPrimariesGuessed,pPicture->color_range==1,pPicture->strDVELType});
-  if (DVBRIDGE::DiagnosticsEnabled() && CDVPlaybackInfo::presented.load())
+  if (DVBRIDGE::DiagnosticsEnabled())
   {
     ++m_diagnosticPictures;
     const auto now = DVBRIDGE::DiagnosticNowMs();

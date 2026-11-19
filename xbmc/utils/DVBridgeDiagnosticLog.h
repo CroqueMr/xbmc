@@ -78,6 +78,19 @@ bool DiagnosticLog(int level, fmt::format_string<Args...> format, Args&&... args
   catch (...) { return false; } // Diagnostics cannot escape into a C callback or playback.
 }
 
+// Summary owns the periodic and reset-coalescing bounds for these counters.
+template<class... Args>
+bool DiagnosticRendererCounterLog(int level, fmt::format_string<Args...> format, Args&&... args) noexcept
+{
+  if (!DiagnosticsEnabled()) return false;
+  try
+  {
+    std::lock_guard lock(diagnosticMutex);
+    return WriteDiagnosticLocked(DiagnosticEvent::RendererCounter, level, format, std::forward<Args>(args)...);
+  }
+  catch (...) { return false; }
+}
+
 inline void DiagnosticReserveProgress() noexcept
 {
   if (!DiagnosticsEnabled()) return;

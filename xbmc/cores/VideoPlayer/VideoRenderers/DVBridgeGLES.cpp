@@ -979,6 +979,7 @@ void CDVBridgeGLES::BeginDiagnosticStream(uint64_t stream)
 {
   if (!stream || stream == m_diagnosticStream) return;
   if (m_diagnosticStream) Summary("stream-end");
+  m_lastResetReported.reset();
   m_diagnosticStream = stream;
   m_failures.Reset();
   m_prepares = m_directFrames = m_presentations = m_failedPresentations = 0;
@@ -1028,22 +1029,30 @@ void CDVBridgeGLES::PreparedAudit()
 
 void CDVBridgeGLES::Summary(const char* event)
 {
+  if (!DVBRIDGE::DiagnosticsEnabled()) return;
+  const bool reset = std::string_view(event) == "reset";
+  // Reset mutates GPU/resource state, not this persistent work/counter identity.
+  const ResetDiagnosticSnapshot resetSnapshot{m_diagnosticStream,m_pendingBinding.stream,
+      m_pendingBinding.revision,m_requested.revision,int(m_effectiveMode),m_advanced,
+      m_prepares,m_directFrames,m_presentations,m_failedPresentations,m_failures.Count(),
+      m_rawELImports,m_rawELHits};
+  if (reset && m_lastResetReported == resetSnapshot) return;
   if (m_advanced)
   {
-    if (!DVBRIDGE::DiagnosticsEnabled() ||
-        (std::string_view(event) == "summary" && m_lastReported == m_presentations)) return;
-    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge advanced renderer {}: presented={} presentation_failures={} stage_failures={} counter_stream={}",
+    if (std::string_view(event) == "summary" && m_lastReported == m_presentations) return;
+    const bool emitted = DVBRIDGE::DiagnosticRendererCounterLog(LOGINFO,"DVBridge advanced renderer {}: presented={} presentation_failures={} stage_failures={} counter_stream={}",
         event,m_presentations,m_failedPresentations,m_failures.Count(),m_diagnosticStream);
+    if (reset && emitted) m_lastResetReported = resetSnapshot;
     m_lastReported = m_presentations;
     return;
   }
-  if (!DVBRIDGE::DiagnosticsEnabled() ||
-      (std::string_view(event) == "summary" && m_lastReported == m_prepares))
+  if (std::string_view(event) == "summary" && m_lastReported == m_prepares)
     return;
-  DVBRIDGE::DiagnosticLog(LOGINFO,
+  const bool emitted = DVBRIDGE::DiagnosticRendererCounterLog(LOGINFO,
       "DVBridge renderer {}: prepared={} direct={} composed={} presented={} presentation_failures={} stage_failures={} raw_el_imports={} raw_el_hits={} counter_stream={}",
       event, m_prepares, m_directFrames, m_prepares - m_directFrames,
       m_presentations, m_failedPresentations, m_failures.Count(),m_rawELImports,m_rawELHits,m_diagnosticStream);
+  if (reset && emitted) m_lastResetReported = resetSnapshot;
   m_lastReported = m_prepares;
 }
 
