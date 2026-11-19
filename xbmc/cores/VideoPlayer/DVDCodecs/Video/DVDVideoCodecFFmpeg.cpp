@@ -741,7 +741,7 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   avpkt->size = packet.iSize;
   bool discard = packet.videoDecodeOnly;
 #ifdef HAVE_DVBRIDGE
-  const bool decodeOnly = discard || (hybridLayer && layer.valid && !layer.presentable);
+  const bool decodeOnly = discard || (layer.valid && !layer.presentable);
   if ((m_dvFel && packet.videoWindowed) || (hybridLayer && (packet.videoWindowed || decodeOnly)))
     avpkt->opaque = decodeOnly ? &decodeOnlyDVPacket : &presentableDVPacket;
   discard = !m_dvFel && decodeOnly;
