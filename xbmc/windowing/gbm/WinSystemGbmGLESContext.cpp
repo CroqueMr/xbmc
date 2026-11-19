@@ -1863,12 +1863,8 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
   }
 }
 
-bool CWinSystemGbmGLESContext::SupportsDVOutputTiming(RESOLUTION resolution) const
+bool CWinSystemGbmGLESContext::SupportsDVOutputTiming(const RESOLUTION_INFO& mode) const
 {
-  if (resolution < RES_DESKTOP)
-    return false;
-
-  const auto mode = CDisplaySettings::GetInstance().GetResolutionInfoCopy(resolution);
   if (mode.dwFlags & D3DPRESENTFLAG_MODEMASK)
     return false;
 
@@ -1888,13 +1884,12 @@ bool CWinSystemGbmGLESContext::SupportsDVOutputTiming(RESOLUTION resolution) con
 
 RESOLUTION CWinSystemGbmGLESContext::ChooseHDR10FallbackResolution(RESOLUTION chosen) const
 {
-  const auto advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
-  if (SupportsDVOutputTiming(chosen) || CResolutionUtils::HasWhitelist() ||
-      !advanced->m_videoAdjustRefreshOverrides.empty())
-    return chosen;
-
   const auto& display = CDisplaySettings::GetInstance();
   const auto original = display.GetResolutionInfoCopy(chosen);
+  const auto advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  if (SupportsDVOutputTiming(original) || CResolutionUtils::HasWhitelist() ||
+      !advanced->m_videoAdjustRefreshOverrides.empty())
+    return chosen;
   std::vector<RESOLUTION> candidates;
   GetGfxContext().GetAllowedResolutions(candidates);
   RESOLUTION best = chosen;
@@ -1903,7 +1898,7 @@ RESOLUTION CWinSystemGbmGLESContext::ChooseHDR10FallbackResolution(RESOLUTION ch
   {
     const auto mode = display.GetResolutionInfoCopy(candidate);
     if (std::abs(mode.fRefreshRate - original.fRefreshRate) < 0.01f &&
-        SupportsDVOutputTiming(candidate))
+        SupportsDVOutputTiming(mode))
     {
       const int area = mode.iScreenWidth * mode.iScreenHeight;
       if (area > bestArea)
@@ -1963,7 +1958,7 @@ std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedResolution(double f
   std::optional<RESOLUTION> rejected;
   for (size_t index = RES_DESKTOP; index < settings.ResolutionInfoSize(); ++index)
   {
-    const auto& mode = settings.GetResolutionInfo(index);
+    const auto mode = settings.GetResolutionInfoCopy(static_cast<RESOLUTION>(index));
     if (mode.iWidth == 3840 && mode.iHeight == 2160 &&
         mode.iScreenWidth == 3840 && mode.iScreenHeight == 2160 &&
         std::abs(mode.fRefreshRate - wanted) < 0.01 &&
@@ -1981,24 +1976,43 @@ std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedResolution(double f
 
 int CWinSystemGbmGLESContext::PlayerLedResolutionReason(RESOLUTION resolution, int preference) const
 {
+  const auto id = CDisplaySettings::GetInstance().GetResolutionInfoCopy(resolution).strId;
+  int modeIndex = -1;
+  const auto end = id.data() + id.size();
+  const auto parsed = std::from_chars(id.data(), end, modeIndex);
+  const bool validIndex = parsed.ec == std::errc{} && parsed.ptr == end && modeIndex >= 0;
+
   std::lock_guard lock(m_dvCapabilityMutex);
   if (resolution == RES_INVALID)
     return DVBRIDGE::LldvUnavailableLabel(m_dvLldvStatus, preference, false);
 
-  const auto& id = CDisplaySettings::GetInstance().GetResolutionInfo(resolution).strId;
-  int modeIndex = -1;
-  const auto end = id.data() + id.size();
-  const auto parsed = std::from_chars(id.data(), end, modeIndex);
-  if (parsed.ec != std::errc{} || parsed.ptr != end || modeIndex < 0)
-    return 41212;
   const auto& modes = m_dvLldvStatus.modeRejections;
-  const auto mode = std::ranges::find(modes, modeIndex, &std::pair<int, unsigned>::first);
-  if (mode == modes.end())
-    return 41212;
+  const auto mode = validIndex ? std::ranges::find(modes, modeIndex, &std::pair<int, unsigned>::first)
+                               : modes.end();
   auto target = m_dvLldvStatus;
-  target.currentTiming = true;
-  target.currentRejected = mode->second;
+  target.currentTiming = mode != modes.end();
+  target.currentRejected = target.currentTiming ? mode->second : 0;
   return DVBRIDGE::LldvUnavailableLabel(target, preference, false);
+}
+
+std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedStartupHDR10Resolution(
+    RESOLUTION resolution, int preference) const
+{
+  constexpr int timingUnavailable = 41212;
+  const int reason = PlayerLedResolutionReason(resolution, preference);
+  if (reason != DVBRIDGE::LLDV_DRIVER_REJECTED_LABEL && reason != timingUnavailable)
+    return std::nullopt;
+
+  const bool allowModeSwitch = resolution != RES_INVALID;
+  const auto target = allowModeSwitch ? ChooseHDR10FallbackResolution(resolution) : RES_INVALID;
+  if (allowModeSwitch &&
+      !SupportsDVOutputTiming(CDisplaySettings::GetInstance().GetResolutionInfoCopy(target)))
+    return std::nullopt;
+
+  const auto caps = GetDVOutputCapabilities(nullptr, allowModeSwitch);
+  if (!caps.hdr10 || caps.HDR10DepthLimited())
+    return std::nullopt;
+  return target;
 }
 
 bool CWinSystemGbmGLESContext::CompleteDVModeSwitch(const VideoPicture& picture)

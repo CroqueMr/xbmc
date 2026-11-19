@@ -1007,7 +1007,8 @@ double DVOutputTimingRate(const drmModeModeInfo* mode)
   if (!mode || !mode->hdisplay || (mode->hdisplay & 1) || !mode->vdisplay ||
       mode->hdisplay > 3840 || mode->vdisplay > 2160 ||
       uint64_t(mode->hdisplay) * mode->vdisplay < 5 * 3072u ||
-      (mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN)))
+      mode->vscan > 1 ||
+      (mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN | DRM_MODE_FLAG_3D_MASK)))
     return 0.0;
   const double rate = mode->htotal && mode->vtotal
                           ? mode->clock * 1000.0 / mode->htotal / mode->vtotal
@@ -1039,7 +1040,7 @@ std::vector<CWinSystemGbm::DVOutputTiming> CWinSystemGbm::GetDVOutputTimings() c
   {
     const auto* mode = connector->GetModeForIndex(index);
     const double refresh = DVOutputTimingRate(mode);
-    if (refresh > 0.0 && !(mode->flags & DRM_MODE_FLAG_3D_MASK) && mode->vscan <= 1)
+    if (refresh > 0.0)
       timings.push_back({index, mode->hdisplay, mode->vdisplay, refresh});
   }
   return timings;
