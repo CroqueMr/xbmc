@@ -3,6 +3,7 @@
 #ifdef HAVE_DVBRIDGE
 #include "FileItem.h"
 #include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "cores/VideoPlayer/Interface/StreamInfo.h"
@@ -34,6 +35,7 @@
 #endif
 #include "utils/log.h"
 #include "threads/IRunnable.h"
+#include <algorithm>
 #include <cstdio>
 
 namespace
@@ -201,24 +203,77 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
         int(nativeSource), source.sourceKnown, source.isDV, source.isHDR10, source.isHDR10Plus, source.processingKnown,
         int(preferences.output), int(preferences.hdr10Source));
     dialog->Reset();
-    dialog->SetHeading(settingsMenu ? strings.Get(40811) :
-        StringUtils::Format(strings.Get(40876), hlgSource ? "HLG" : hdr10PlusSource ? "HDR10+" : hdr10Source ? "HDR10" : "Dolby Vision"));
+    dialog->SetHeading(strings.Get(settingsMenu ? 40811 : 40876));
+    bool cb1Active = false;
+    if (!settingsMenu)
+    {
+      const auto video = CServiceBroker::GetDataCacheCore().GetVideoProcessingInfo();
+      cb1Active = video.output.flags != 0;
+      dialog->SetProperty("CB1.SwitchInput", hlgSource ? "HLG" : hdr10PlusSource ? "HDR10+" : hdr10Source ? "HDR10" : "Dolby Vision");
+      const char* output = nullptr;
+      if (video.outputType)
+      {
+        switch (*video.outputType)
+        {
+          case VideoOutputType::DolbyVision:
+            output = video.output.lldv ? "Dolby Vision LLDV Reference" :
+                (video.output.flags & CDVPlaybackInfo::HDMI) ? "Dolby Vision · TV-Led" : "Dolby Vision";
+            break;
+          case VideoOutputType::HDR10: output = "HDR10"; break;
+          case VideoOutputType::HDR10Plus: output = "HDR10+"; break;
+          case VideoOutputType::HLG: output = "HLG"; break;
+          case VideoOutputType::SDR: output = "SDR"; break;
+        }
+      }
+      dialog->SetProperty("CB1.SwitchOutput", output ? output : strings.Get(40877));
+    }
+    bool recommendMaster = false;
+#ifdef HAVE_GBM
+    if (!settingsMenu && nativeSource == StreamHdrType::HDR_TYPE_DOLBYVISION)
+    {
+      const auto* window =
+          dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
+      recommendMaster = window && window->GetLldvConnectorStatus().sink.status == DV_EDID_STANDARD &&
+          std::ranges::any_of(options, [choices](const auto& option) {
+            return choices[option.value].output ==
+                       static_cast<int>(DVBRIDGE::OutputMode::MasterReference) &&
+                   std::ranges::none_of(option.properties, [](const auto& property) {
+                     return property.first == "disabled" && property.second.asBoolean();
+                   });
+          });
+    }
+#endif
     dialog->SetUseDetails(!settingsMenu);
     for(const auto& option : options)
     {
       DVBRIDGE::DiagnosticLog(LOGINFO, "Playback mode option: value={} label={} reason={}",
           option.value, option.label, option.label2);
-      CFileItem item(option.label);
+      const auto& choice = choices[option.value];
+      const int label = choice.label;
+      const int quickSwitchLabel = (label == 40868 || label == 40914) ? 40880 : label;
+      CFileItem item(settingsMenu ? option.label : strings.Get(quickSwitchLabel));
       item.SetLabel2(option.label2);
       for(const auto& [name,value] : option.properties) item.SetProperty(name,value);
-      item.SetProperty("CB1.TextColor", item.GetProperty("disabled").asBoolean() ?
-                                      "FFA0A0A0" : "FFF0F0F0");
+      const bool disabled = item.GetProperty("disabled").asBoolean();
+      const bool active = !settingsMenu && option.value == current;
+      item.SetProperty("CB1.TextColor", disabled ? "FFBEC7CB" :
+                                      active && cb1Active ? "FF65E18D" : "FFF2F5F6");
+      if (!settingsMenu)
+      {
+        item.SetProperty("CB1.SwitchStatus", disabled ? strings.Get(40851) :
+                                            active ? strings.Get(40878) : std::string{});
+        if (recommendMaster && !disabled && option.label2.empty() &&
+            choice.output == static_cast<int>(DVBRIDGE::OutputMode::PlayerLed))
+          item.SetLabel2(strings.Get(40881));
+      }
       dialog->Add(item);
     }
     dialog->SetSelected(current);
     if (!settingsMenu) dialog->SetProperty("CB1.PlaybackModes",true);
     dialog->Open();
     dialog->SetProperty("CB1.PlaybackModes", CVariant{});
+    dialog->SetProperty("CB1.SwitchInput", CVariant{});
+    dialog->SetProperty("CB1.SwitchOutput", CVariant{});
     if (!dialog->IsConfirmed()) return true;
     const int selected=dialog->GetSelectedItem();
     if (selected<0 || selected>=count) return true;

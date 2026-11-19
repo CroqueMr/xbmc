@@ -26127,7 +26127,27 @@ msgid "Choose the default playback circuit for HDR10 sources. New files use this
 msgstr ""
 
 msgctxt "#40876"
-msgid "Playback modes | Source: {0}"
+msgid "Quick Switch"
+msgstr ""
+
+msgctxt "#40877"
+msgid "Pending"
+msgstr ""
+
+msgctxt "#40878"
+msgid "Selected"
+msgstr ""
+
+msgctxt "#40879"
+msgid "Output"
+msgstr ""
+
+msgctxt "#40880"
+msgid "Dolby Vision Adaptive HDR"
+msgstr ""
+
+msgctxt "#40881"
+msgid "Master Reference is recommended over LLDV."
 msgstr ""
 
 msgctxt "#40907"
