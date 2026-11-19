@@ -89,6 +89,13 @@ void CGBMUtils::CGBMDevice::CompleteOutputSurface(bool presented)
   m_priorSurface.reset();
 }
 
+void CGBMUtils::CGBMDevice::ReleaseSurfaceBuffers(bool prior)
+{
+  auto& surface = prior ? m_priorSurface : m_surface;
+  if (surface && surface.get_deleter().releaseBuffers)
+    surface->ReleaseBuffers();
+}
+
 CGBMUtils::CGBMDevice::CGBMSurface::CGBMSurface(gbm_surface* surface) : m_surface(surface)
 {
 }
@@ -172,6 +179,14 @@ void CGBMUtils::CGBMDevice::CGBMSurface::EndTransactionalMode()
   // Transfer the restored scanout to the ordinary queue without unlocking it.
   if (!m_pendingBuffer && m_scanoutBuffer)
     m_buffers.push(std::move(m_scanoutBuffer));
+}
+
+void CGBMUtils::CGBMDevice::CGBMSurface::ReleaseBuffers()
+{
+  m_pendingBuffer.reset();
+  m_scanoutBuffer.reset();
+  while (!m_buffers.empty())
+    m_buffers.pop();
 }
 
 CGBMUtils::CGBMDevice::CGBMSurface::CGBMSurfaceBuffer::~CGBMSurfaceBuffer()

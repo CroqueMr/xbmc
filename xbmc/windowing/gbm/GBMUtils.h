@@ -76,6 +76,7 @@ public:
       return CreateSurface(width, height, format, modifiers, count, true);
     }
     void CompleteOutputSurface(bool presented);
+    void ReleaseSurfaceBuffers(bool prior);
     bool HasOutputSurfaceTransition() const { return bool(m_priorSurface); }
     void UseDVOutputLifetime()
     {
@@ -151,6 +152,7 @@ public:
       gbm_bo* AdoptTransactionalBuffer(gbm_bo* buffer, std::shared_ptr<void> lease);
       void CompleteTransactionalBuffer(bool presented);
       void EndTransactionalMode();
+      void ReleaseBuffers();
 
     private:
       gbm_surface* m_surface{nullptr};
@@ -193,6 +195,11 @@ public:
    * @return CGBMDevice* A pointer to the CGBMDevice object
    */
   CGBMUtils::CGBMDevice& GetDevice() const { return *m_device; }
+  void ReleaseSurfaceBuffers(bool prior = false)
+  {
+    if (m_device)
+      m_device->ReleaseSurfaceBuffers(prior);
+  }
 
 private:
   struct CGBMDeviceDeleter

@@ -272,7 +272,7 @@ bool CEGLContextUtils::InitializeDisplay(EGLint renderingApi)
 }
 
 bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool hdr, int alpha,
-                                   bool floating, bool probe)
+                                   bool floating, bool probe, bool preserveSurface)
 {
   EGLint numMatched{0};
 
@@ -322,7 +322,7 @@ bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool
     if (!hdr)
     {
       CEGLUtils::Log(LOGERROR, errorMsg);
-      if (!m_outputSurfaceTransaction && !floating)
+      if (!m_outputSurfaceTransaction && !floating && !preserveSurface)
         Destroy();
     }
     else
@@ -567,7 +567,8 @@ bool CEGLContextUtils::BindPriorOutputSurface()
   return eglMakeCurrent(m_eglDisplay,m_priorSurface,m_priorSurface,m_eglContext) == EGL_TRUE;
 }
 
-bool CEGLContextUtils::CompleteOutputSurface(bool presented)
+bool CEGLContextUtils::CompleteOutputSurface(bool presented,
+                                             const std::function<void()>& releaseBuffers)
 {
   if (!m_outputSurfaceTransaction)
     return true;
@@ -575,9 +576,13 @@ bool CEGLContextUtils::CompleteOutputSurface(bool presented)
   {
     if (m_eglSurface == EGL_NO_SURFACE)
       return false;
-    if (m_priorSurface != m_eglSurface &&
-        eglDestroySurface(m_eglDisplay, m_priorSurface) != EGL_TRUE)
-      return false;
+    if (m_priorSurface != m_eglSurface)
+    {
+      if (releaseBuffers)
+        releaseBuffers();
+      if (eglDestroySurface(m_eglDisplay, m_priorSurface) != EGL_TRUE)
+        return false;
+    }
   }
   else
   {
@@ -585,9 +590,13 @@ bool CEGLContextUtils::CompleteOutputSurface(bool presented)
     if (!BindPriorOutputSurface())
       return false;
     const auto rejected = m_eglSurface;
-    if (rejected != EGL_NO_SURFACE && rejected != m_priorSurface &&
-        eglDestroySurface(m_eglDisplay, rejected) != EGL_TRUE)
-      return false;
+    if (rejected != EGL_NO_SURFACE && rejected != m_priorSurface)
+    {
+      if (releaseBuffers)
+        releaseBuffers();
+      if (eglDestroySurface(m_eglDisplay, rejected) != EGL_TRUE)
+        return false;
+    }
     m_eglSurface = m_priorSurface;
     m_eglConfig = m_priorConfig;
     m_eglHDRConfig = m_priorHDRConfig;
@@ -610,10 +619,17 @@ CEGLContextUtils::RetainedContext CEGLContextUtils::RetainForRetirement()
   return state;
 }
 
-bool CEGLContextUtils::DestroyRetiredContext(RetainedContext& state)
+bool CEGLContextUtils::DestroyRetiredContext(RetainedContext& state,
+                                             const std::function<void()>& releaseBuffers)
 {
   if (state.display == EGL_NO_DISPLAY) return true;
   if (!eglMakeCurrent(state.display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT)) return false;
+  if (releaseBuffers)
+  {
+    releaseBuffers();
+    if (state.priorSurface == state.surface)
+      state.priorSurface = EGL_NO_SURFACE;
+  }
   for (auto* surface : {&state.priorSurface,&state.surface})
     if (*surface != EGL_NO_SURFACE)
     {
@@ -629,6 +645,19 @@ bool CEGLContextUtils::DestroyRetiredContext(RetainedContext& state)
   if (!eglTerminate(state.display)) return false;
   state.display = EGL_NO_DISPLAY;
   return true;
+}
+
+bool CEGLContextUtils::DestroyAfterRelease(const std::function<void()>& releaseBuffers)
+{
+  RetainedContext state{m_eglDisplay, m_eglContext, m_eglUploadContext, m_eglSurface, m_priorSurface};
+  const bool destroyed = DestroyRetiredContext(state, releaseBuffers);
+  m_eglDisplay = state.display;
+  m_eglContext = state.context;
+  m_eglUploadContext = state.uploadContext;
+  m_eglSurface = state.surface;
+  m_priorSurface = state.priorSurface;
+  m_outputSurfaceTransaction = m_priorSurface != EGL_NO_SURFACE;
+  return destroyed;
 }
 
 void CEGLContextUtils::Destroy()
@@ -669,6 +698,22 @@ void CEGLContextUtils::DestroySurface()
   }
 }
 
+
+bool CEGLContextUtils::DestroySurfaceAfterRelease(const std::function<void()>& releaseBuffers)
+{
+  if (m_eglSurface == EGL_NO_SURFACE)
+    return true;
+  if (eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT) != EGL_TRUE)
+    return false;
+  releaseBuffers();
+  if (eglDestroySurface(m_eglDisplay, m_eglSurface) != EGL_TRUE)
+  {
+    BindContext();
+    return false;
+  }
+  m_eglSurface = EGL_NO_SURFACE;
+  return true;
+}
 
 bool CEGLContextUtils::SetVSync(bool enable)
 {

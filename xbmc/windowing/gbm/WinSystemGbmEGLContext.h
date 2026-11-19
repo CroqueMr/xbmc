@@ -79,6 +79,9 @@ protected:
   bool CompleteDVOutputSurface(bool submitted);
   virtual bool RejectDVOutputSurface() { return CompleteDVOutputSurface(false); }
   bool HasPendingDVOutputSurface() const { return m_dvSurfacePending; }
+  bool UsesNvidiaGbm() const;
+  bool DestroyOutputSurface();
+  bool DestroyNvidiaWindowSystem();
 
   EGLint m_renderableType{0};
   bool m_dvOutputSurface{}, m_dvSurfacePending{};
