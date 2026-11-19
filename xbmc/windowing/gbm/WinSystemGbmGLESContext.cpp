@@ -1173,10 +1173,6 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
       glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
     }
     CRenderSystemGLES::SetViewPort(viewport);
-    const auto& context = GetGfxContext();
-    // libplacebo can leave scissor testing disabled after a raster pass.
-    glEnable(GL_SCISSOR_TEST);
-    CRenderSystemGLES::SetScissors(context.StereoCorrection(context.GetScissors()));
     if (report)
     {
       GLint after[4]{};
@@ -1189,6 +1185,13 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
     }
   }
 #endif
+  if (guiWillRender)
+  {
+    // Video rendering and output recovery can leave the GL scissor disabled.
+    const auto& context = GetGfxContext();
+    glEnable(GL_SCISSOR_TEST);
+    CRenderSystemGLES::SetScissors(context.StereoCorrection(context.GetScissors()));
+  }
   if (!m_guiCompositing)
     return false;
 
