@@ -4806,7 +4806,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
           else if (unknown)
           {
             const auto preferences = DVBRIDGE::FrameOutputSettings();
-            if (preferences.hdr10Source == native && preferences.hdr10PlusSource == native &&
+            if (preferences.hdr10Source == native && preferences.HDR10Mode(true) == native &&
                 preferences.HLGMode() == native)
               hdrSignal = HDRSignal::Unknown;
           }

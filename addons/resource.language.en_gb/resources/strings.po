@@ -25907,7 +25907,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40812"
-msgid "Dolby Vision Reference"
+msgid "Dolby Vision : Reference"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25917,7 +25917,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40814"
-msgid "Kodi default"
+msgid "Kodi : Default"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25942,7 +25942,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40819"
-msgid "Dolby Vision Adaptive HDR Mapping"
+msgid "Dolby Vision : Adaptive HDR Mapping"
 msgstr ""
 
 msgctxt "#40820"
@@ -25954,11 +25954,11 @@ msgid "HDR10 Rendering uses source metadata. LLDV Reference – HDR10 Output map
 msgstr ""
 
 msgctxt "#40922"
-msgid "HDR10+ Rendering"
+msgid "HDR10+ : Conversion"
 msgstr ""
 
 msgctxt "#40923"
-msgid "No HDR10+ output"
+msgid "No HDR10+ via HDMI"
 msgstr ""
 
 msgctxt "#40925"
@@ -25970,11 +25970,11 @@ msgid "Reference and Master Reference only. L8 trims remain active."
 msgstr ""
 
 msgctxt "#40822"
-msgid "HDR10 Rendering"
+msgid "HDR10 : Rendering"
 msgstr ""
 
 msgctxt "#40823"
-msgid "LLDV Reference – HDR10 Output"
+msgid "HDR10 : LLDV Reference conversion"
 msgstr ""
 
 msgctxt "#40829"
@@ -26111,15 +26111,15 @@ msgid "HDR10 default playback"
 msgstr ""
 
 msgctxt "#40866"
-msgid "Kodi default"
+msgid "Kodi : Default"
 msgstr ""
 
 msgctxt "#40867"
-msgid "Dolby Vision Rendering"
+msgid "Dolby Vision : Rendering"
 msgstr ""
 
 msgctxt "#40868"
-msgid "Dolby Vision Adaptive HDR Mapping"
+msgid "Dolby Vision : Adaptive HDR Mapping"
 msgstr ""
 
 msgctxt "#40870"
@@ -26179,11 +26179,11 @@ msgid "VAAPI"
 msgstr ""
 
 msgctxt "#40913"
-msgid "Dolby Vision Master Reference"
+msgid "Dolby Vision : Master Reference"
 msgstr ""
 
 msgctxt "#40914"
-msgid "Dolby Vision Adaptive HDR Mapping"
+msgid "Dolby Vision : Adaptive HDR Mapping"
 msgstr ""
 
 msgctxt "#40915"
@@ -26227,11 +26227,11 @@ msgid "Choose the default playback circuit for HDR10+ sources. New files use thi
 msgstr ""
 
 msgctxt "#41014"
-msgid "Kodi default"
+msgid "HDR10+ : Native"
 msgstr ""
 
 msgctxt "#40970"
-msgid "Dolby Vision Rendering"
+msgid "Dolby Vision : Rendering"
 msgstr ""
 
 msgctxt "#40940"
@@ -26379,7 +26379,7 @@ msgid "10000 nits"
 msgstr ""
 
 msgctxt "#40993"
-msgid " - CM4.0 Auto 2 headroom (%)"
+msgid "CM4.0 Auto 2 headroom (%)"
 msgstr ""
 
 msgctxt "#40994"
@@ -26451,7 +26451,7 @@ msgid "Ignore Level 5 margins only for files already cropped without matching me
 msgstr ""
 
 msgctxt "#41130"
-msgid "SDR Rendering"
+msgid "SDR : Conversion"
 msgstr ""
 
 msgctxt "#41131"
@@ -26579,7 +26579,7 @@ msgid "Active · forced · experimental"
 msgstr ""
 
 msgctxt "#41221"
-msgid "Dolby Vision LLDV Reference"
+msgid "Dolby Vision : LLDV Reference"
 msgstr ""
 
 msgctxt "#41222"
@@ -26828,4 +26828,12 @@ msgstr ""
 
 msgctxt "#41309"
 msgid "FSR 1 (EASU + RCAS)"
+msgstr ""
+
+msgctxt "#41310"
+msgid "HDR10 : Native"
+msgstr ""
+
+msgctxt "#41311"
+msgid "HLG : Native"
 msgstr ""

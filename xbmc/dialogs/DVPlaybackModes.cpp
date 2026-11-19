@@ -166,14 +166,14 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
                          nativeSource==StreamHdrType::HDR_TYPE_HDR10PLUS;
   const bool hlgSource=nativeSource==StreamHdrType::HDR_TYPE_HLG;
   if (!hdr10Source && !hlgSource && nativeSource!=StreamHdrType::HDR_TYPE_DOLBYVISION) return false;
-  constexpr Choice hlgChoices[]={{1,0,40867},{0,0,40866},{2,0,41130}};
+  constexpr Choice hlgChoices[]={{1,0,40867},{0,0,41311},{2,0,41130}};
   const auto source=DVBRIDGE::StreamTelemetry::Read().transaction.capabilities;
 #ifdef CB1_HAS_HDR10_AI
-  constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,40866},{4,0,41130}};
-  constexpr Choice hdr10PlusChoices[]={{3,0,40970},{0,0,41014},{4,0,41130}};
+  constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,41310},{4,0,41130}};
+  constexpr Choice hdr10PlusChoices[]={{3,0,40970},{5,0,41014},{0,0,40866},{4,0,41130}};
 #else
-  constexpr Choice hdr10Choices[]={{0,0,40866}};
-  constexpr Choice hdr10PlusChoices[]={{0,0,41014}};
+  constexpr Choice hdr10Choices[]={{0,0,41310}};
+  constexpr Choice hdr10PlusChoices[]={{5,0,41014},{0,0,40866}};
 #endif
   const Choice* choices=hlgSource ? hlgChoices : hdr10PlusSource ? hdr10PlusChoices : hdr10Source ? hdr10Choices : dvChoices;
   const int count=hlgSource ? std::size(hlgChoices) : hdr10PlusSource ? std::size(hdr10PlusChoices) : hdr10Source ? std::size(hdr10Choices) : std::size(dvChoices);
@@ -193,7 +193,9 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
     {
       options.emplace_back(strings.Get(choices[i].label),i);
       const auto& choice=choices[i];
-      if (hlgSource ? (int(preferences.hlgSource)==choice.output) : hdr10Source ? (int(preferences.hdr10Source)==choice.output) :
+      if (hlgSource ? (int(preferences.hlgSource)==choice.output) :
+          hdr10PlusSource ? (int(preferences.hdr10PlusSource)==choice.output) :
+          hdr10Source ? (int(preferences.hdr10Source)==choice.output) :
           (int(preferences.output)==choice.output &&
           (choice.output!=1 || preferences.method==choice.method))) current=i;
     }
@@ -216,7 +218,7 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
         switch (*video.outputType)
         {
           case VideoOutputType::DolbyVision:
-            output = video.output.lldv ? "Dolby Vision LLDV Reference" :
+            output = video.output.lldv ? strings.Get(41221).c_str() :
                 (video.output.flags & CDVPlaybackInfo::HDMI) ? "Dolby Vision · TV-Led" : "Dolby Vision";
             break;
           case VideoOutputType::HDR10: output = "HDR10"; break;
@@ -249,9 +251,7 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
       DVBRIDGE::DiagnosticLog(LOGINFO, "Playback mode option: value={} label={} reason={}",
           option.value, option.label, option.label2);
       const auto& choice = choices[option.value];
-      const int label = choice.label;
-      const int quickSwitchLabel = (label == 40868 || label == 40914) ? 40880 : label;
-      CFileItem item(settingsMenu ? option.label : strings.Get(quickSwitchLabel));
+      CFileItem item(settingsMenu ? option.label : strings.Get(choice.label));
       item.SetLabel2(option.label2);
       for(const auto& [name,value] : option.properties) item.SetProperty(name,value);
       const bool disabled = item.GetProperty("disabled").asBoolean();

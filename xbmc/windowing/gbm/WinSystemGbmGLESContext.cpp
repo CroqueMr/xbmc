@@ -1077,7 +1077,10 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus()
   std::optional<std::array<uint8_t, CB1_HDR10PLUS_VSIF_BYTES>> packet;
   const auto& source = m_videoSourceSideData;
   const uint64_t generation = CServiceBroker::GetDataCacheCore().GetVideoProcessingGeneration();
-  const auto* metadata = source && source->Generation() == generation ? source->HDR10Plus() : nullptr;
+  const bool passthrough =
+      DVBRIDGE::hdr10PlusPlaybackMode.load() == DVBRIDGE::HDR10SourceMode::HDR10PlusPassthrough;
+  const auto* metadata = passthrough && source && source->Generation() == generation ?
+      source->HDR10Plus() : nullptr;
   const char* reason = "no-source-metadata";
   if (metadata)
   {

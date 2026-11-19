@@ -367,7 +367,9 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.FEL", active ? (active & CDVPlaybackInfo::FEL ? "Full FEL" : "No FEL") : "");
     SetProperty("DV.FELUpscaling", active & CDVPlaybackInfo::FEL ?
         (data.output.felUpscaling == 2 ? "Reference GPU" : data.output.felUpscaling == 0 ? "VAAPI" : data.output.felUpscaling == 1 ? "Bilinear GPU" : "") : "");
-    SetProperty("DV.Mode", active ? VideoProcessingInfoGUI::Mode(data) : "Kodi default");
+    const auto actualMode = VideoProcessingInfoGUI::Mode(data,
+        CServiceBroker::GetDataCacheCore().HasVideoHDR10PlusSource());
+    SetProperty("DV.Mode", actualMode.empty() ? "Kodi : Default" : actualMode);
     const int upscaler = CServiceBroker::GetDataCacheCore().GetVideoUpscaler();
     const int upscalerLabel = upscaler < 0 ? 0 : KODI::VIDEO::UPSCALER::Label(upscaler);
     SetProperty("DV.VideoUpscaler", upscalerLabel ?
@@ -383,7 +385,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.PartialBlocks", hdr10 && data.output.effective==3 && metadata ?
         std::string(data.blocks[1] ? "L1 max/avg" : "")+
         (data.blocks[3] ? (data.blocks[1] ? "; L3 max/avg" : "L3 max/avg") : "") : "");
-    SetProperty("DV.ActivePolicy", active ? std::string(CDVPlaybackInfo::RequestedPolicy(data.output.effective)) : "Kodi default");
+    SetProperty("DV.ActivePolicy", actualMode.empty() ? "Kodi : Default" : actualMode);
     if (active && data.output.hdr10AI)
     {
       const auto& localizer=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();

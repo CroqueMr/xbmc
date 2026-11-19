@@ -19,9 +19,19 @@ struct VideoProcessingInfoGUI
       return info.output.flags & CDVPlaybackInfo::CM4 ? "CM2.9 (CM4 added)" : "CM2.9 (CM4 not added)";
     return "CM2.9";
   }
-  static std::string Mode(const VideoProcessingInfo& info)
+  static std::string Mode(const VideoProcessingInfo& info, bool hdr10PlusSource = false)
   {
-    if (!info.output.flags) return "";
+    if (!info.output.flags)
+    {
+      const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
+      if (info.outputType == VideoOutputType::HDR10Plus)
+        return strings.Get(41014);
+      if (info.outputType == VideoOutputType::HDR10)
+        return hdr10PlusSource ? strings.Get(40866) : strings.Get(41310);
+      if (info.outputType == VideoOutputType::HLG)
+        return strings.Get(41311);
+      return "";
+    }
     if (CDVPlaybackInfo::IsHDR10PlusDV(info.output)) return CDVPlaybackInfo::Mode(info.output);
     if (info.output.hdr10AI)
       return CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(
