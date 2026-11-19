@@ -11,6 +11,7 @@
 #include <optional>
 #endif
 #ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/VideoRenderers/UpscalerSettings.h"
 #include "dialogs/DVPlaybackModes.h"
 #endif
 
@@ -619,9 +620,57 @@ void CSettings::UninitializeConditions()
   CSettingConditions::Deinitialize();
 }
 
+#ifdef HAVE_DVBRIDGE
+namespace
+{
+class UpscalerPreferences final : public ISettingsHandler, public ISettingCallback
+{
+public:
+  void OnSettingsLoaded() override
+  {
+    using namespace KODI::VIDEO::UPSCALER;
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    Set(SDR, settings->GetInt(SDR));
+    Set(HDR, settings->GetInt(HDR));
+  }
+
+  void OnSettingChanged(const std::shared_ptr<const CSetting>& setting) override
+  {
+    Set(setting->GetId(),
+        std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
+  }
+
+  int Get(bool highDynamicRange, int kodi) const
+  {
+    using namespace KODI::VIDEO::UPSCALER;
+    const int method = (highDynamicRange ? hdr : sdr).load(std::memory_order_relaxed);
+    return Select(method, kodi);
+  }
+
+private:
+  void Set(const std::string& id, int method)
+  {
+    using namespace KODI::VIDEO::UPSCALER;
+    auto& preference = id == HDR ? hdr : sdr;
+    preference.store(Label(method) ? method : KODI_DEFAULT, std::memory_order_relaxed);
+  }
+
+  std::atomic<int> sdr{KODI::VIDEO::UPSCALER::KODI_DEFAULT};
+  std::atomic<int> hdr{KODI::VIDEO::UPSCALER::KODI_DEFAULT};
+};
+UpscalerPreferences upscalerPreferences;
+} // namespace
+
+int KODI::VIDEO::UPSCALER::Get(bool hdr, int kodi)
+{
+  return upscalerPreferences.Get(hdr, kodi);
+}
+#endif
+
 void CSettings::InitializeISettingsHandlers()
 {
 #ifdef HAVE_DVBRIDGE
+  GetSettingsManager()->RegisterSettingsHandler(&upscalerPreferences);
   GetSettingsManager()->RegisterSettingsHandler(&CDVPlaybackModes::GetInstance());
 #endif
   // register ISettingsHandler implementations
@@ -640,6 +689,7 @@ void CSettings::UninitializeISettingsHandlers()
 {
 #ifdef HAVE_DVBRIDGE
   GetSettingsManager()->UnregisterSettingsHandler(&CDVPlaybackModes::GetInstance());
+  GetSettingsManager()->UnregisterSettingsHandler(&upscalerPreferences);
 #endif
   // unregister ISettingsHandler implementations
   GetSettingsManager()->UnregisterSettingsHandler(&CMediaSettings::GetInstance());
@@ -675,6 +725,8 @@ void CSettings::UninitializeISubSettings()
 void CSettings::InitializeISettingCallbacks()
 {
 #ifdef HAVE_DVBRIDGE
+  GetSettingsManager()->RegisterCallback(&upscalerPreferences,
+      {KODI::VIDEO::UPSCALER::SDR, KODI::VIDEO::UPSCALER::HDR});
   GetSettingsManager()->RegisterCallback(&CDVPlaybackModes::GetInstance(),
       {"dvbridge.configureprofile","dvbridge.expertblack","dvbridge.expertblackcustom",
        "dvbridge.playback", "dvbridge.lldvformat", "dvbridge.sdrgamut"});
@@ -743,6 +795,7 @@ void CSettings::UninitializeISettingCallbacks()
 {
 #ifdef HAVE_DVBRIDGE
   GetSettingsManager()->UnregisterCallback(&CDVPlaybackModes::GetInstance());
+  GetSettingsManager()->UnregisterCallback(&upscalerPreferences);
 #endif
   GetSettingsManager()->UnregisterCallback(&CMediaSettings::GetInstance());
   GetSettingsManager()->UnregisterCallback(&CDisplaySettings::GetInstance());

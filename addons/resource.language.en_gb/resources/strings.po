@@ -26701,3 +26701,23 @@ msgstr ""
 msgctxt "#41300"
 msgid "EDID target gamut exceeds BT.2020"
 msgstr ""
+
+msgctxt "#41301"
+msgid "Kodi default"
+msgstr ""
+
+msgctxt "#41302"
+msgid "SDR upscaler"
+msgstr ""
+
+msgctxt "#41303"
+msgid "HDR and Dolby Vision upscaler"
+msgstr ""
+
+msgctxt "#41304"
+msgid "Select the filter used to enlarge video for this output. Kodi default keeps the existing video scaling settings."
+msgstr ""
+
+msgctxt "#41305"
+msgid "Upscaler"
+msgstr ""

@@ -15,6 +15,7 @@
 #include "application/ApplicationPlayer.h"
 #include "dialogs/GUIDialogYesNo.h"
 #ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/VideoRenderers/UpscalerSettings.h"
 #include "dialogs/DVPlaybackModes.h"
 #endif
 #include "guilib/GUIComponent.h"
@@ -93,6 +94,14 @@ void CGUIDialogVideoSettings::OnSettingChanged(const std::shared_ptr<const CSett
     vs.m_ScalingMethod = static_cast<ESCALINGMETHOD>(std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
     appPlayer->SetVideoSettings(vs);
   }
+#ifdef HAVE_DVBRIDGE
+  else if (settingId == KODI::VIDEO::UPSCALER::SDR || settingId == KODI::VIDEO::UPSCALER::HDR)
+  {
+    const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+    settings->SetInt(settingId, std::static_pointer_cast<const CSettingInt>(setting)->GetValue());
+    settings->Save();
+  }
+#endif
   else if (settingId == SETTING_VIDEO_STREAM)
   {
     m_videoStream = std::static_pointer_cast<const CSettingInt>(setting)->GetValue();
@@ -403,6 +412,18 @@ void CGUIDialogVideoSettings::InitializeSettings()
   entries.emplace_back(16319, VS_SCALINGMETHOD_DXVA_HARDWARE);
   entries.emplace_back(16316, VS_SCALINGMETHOD_AUTO);
 
+#ifdef HAVE_DVBRIDGE
+  using namespace KODI::VIDEO::UPSCALER;
+  TranslatableIntegerSettingOptions upscalers{{41301, KODI_DEFAULT}};
+  for (const auto& entry : entries)
+  {
+    if (Label(entry.value))
+      upscalers.push_back(entry);
+  }
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  AddSpinner(groupVideo, SDR, 41302, SettingLevel::Basic, settings->GetInt(SDR), upscalers);
+  AddSpinner(groupVideo, HDR, 41303, SettingLevel::Basic, settings->GetInt(HDR), upscalers);
+#else
   /* remove unsupported methods */
   for(TranslatableIntegerSettingOptions::iterator it = entries.begin(); it != entries.end(); )
   {
@@ -413,6 +434,8 @@ void CGUIDialogVideoSettings::InitializeSettings()
   }
 
   AddSpinner(groupVideo, SETTING_VIDEO_SCALINGMETHOD, 16300, SettingLevel::Basic, static_cast<int>(videoSettings.m_ScalingMethod), entries);
+
+#endif
 
   AddVideoStreams(groupVideoStream, SETTING_VIDEO_STREAM);
 

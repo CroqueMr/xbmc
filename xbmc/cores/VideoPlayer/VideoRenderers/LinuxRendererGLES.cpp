@@ -35,7 +35,9 @@
 #include "windowing/WinSystem.h"
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoSourceSideData.h"
+#include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
+#include "UpscalerSettings.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
 #endif
 
@@ -219,6 +221,9 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
   m_bConfigured = true;
   m_scalingMethodGui = VS_SCALINGMETHOD_MAX;
   m_scalingMethod = m_videoSettings.m_ScalingMethod;
+#ifdef HAVE_DVBRIDGE
+  m_reportedUpscaler = -2;
+#endif
 
   // Ensure that textures are recreated and rendering starts only after the 1st
   // frame is loaded after every call to Configure().
@@ -344,6 +349,7 @@ void CLinuxRendererGLES::AddVideoPicture(const VideoPicture &picture, int index)
   buf.loaded = false;
   buf.doviMetadata = picture.doviMetadata;
 #ifdef HAVE_DVBRIDGE
+  buf.informationGeneration = picture.sourceSideData ? picture.sourceSideData->Generation() : 0;
   buf.doviEnhancement = picture.doviEnhancement;
   buf.doviEnhancementBinding = picture.doviEnhancementBinding;
   if (picture.doviSourceBinding.Valid() || picture.doviMetadata.Data())
@@ -867,7 +873,11 @@ void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsig
 
 ESCALINGMETHOD CLinuxRendererGLES::SelectScalingMethod() const
 {
-  auto method = m_videoSettings.m_ScalingMethod;
+  return ResolveScalingMethod(m_videoSettings.m_ScalingMethod);
+}
+
+ESCALINGMETHOD CLinuxRendererGLES::ResolveScalingMethod(ESCALINGMETHOD method) const
+{
   if(!Supports(method))
   {
     CLog::Log(LOGWARNING,
@@ -896,6 +906,17 @@ ESCALINGMETHOD CLinuxRendererGLES::SelectScalingMethod() const
   return method;
 }
 
+#ifdef HAVE_DVBRIDGE
+ESCALINGMETHOD CLinuxRendererGLES::AutoUpscalingOverride() const
+{
+  using namespace KODI::VIDEO::UPSCALER;
+  if (Get(false, KODI_DEFAULT) == VS_SCALINGMETHOD_AUTO ||
+      Get(true, KODI_DEFAULT) == VS_SCALINGMETHOD_AUTO)
+    return ResolveScalingMethod(VS_SCALINGMETHOD_AUTO);
+  return VS_SCALINGMETHOD_LINEAR;
+}
+#endif
+
 void CLinuxRendererGLES::UpdateVideoFilter()
 {
   CRect srcRect;
@@ -912,7 +933,18 @@ void CLinuxRendererGLES::UpdateVideoFilter()
 
   // TODO: GL also checks nonLinStretchChanged and cmsChanged in the early exit
   // and the reload check below. Add when non-linear stretch and CMS are ported to GLES.
-  if (m_scalingMethodGui == m_videoSettings.m_ScalingMethod &&
+  auto requested = m_videoSettings.m_ScalingMethod;
+#ifdef HAVE_DVBRIDGE
+  if (!m_dvRequested && KODI::VIDEO::UPSCALER::Enlarges(
+          srcRect.Width(), srcRect.Height(), dstRect.Width(), dstRect.Height()))
+  {
+    const auto override = static_cast<ESCALINGMETHOD>(
+        KODI::VIDEO::UPSCALER::Get(m_passthroughHDR, requested));
+    if (override == requested || Supports(override))
+      requested = override;
+  }
+#endif
+  if (m_scalingMethodGui == requested &&
       viewRect.Height() == m_lastViewRect.Height() && viewRect.Width() == m_lastViewRect.Width() &&
       srcRect.Height() == m_lastSourceRect.Height() && srcRect.Width() == m_lastSourceRect.Width())
   {
@@ -920,12 +952,12 @@ void CLinuxRendererGLES::UpdateVideoFilter()
   }
 
   // Viewport-only change doesn't need shader reload -- only method changes do
-  if (m_scalingMethod != m_videoSettings.m_ScalingMethod)
+  if (m_scalingMethod != requested)
     m_reloadShaders = true;
 
   const ESCALINGMETHOD previousMethod = m_scalingMethod;
-  m_scalingMethodGui = m_videoSettings.m_ScalingMethod;
-  m_scalingMethod = SelectScalingMethod();
+  m_scalingMethodGui = requested;
+  m_scalingMethod = ResolveScalingMethod(requested);
   m_lastViewRect = viewRect;
   m_lastSourceRect = srcRect;
 
@@ -1074,6 +1106,7 @@ void CLinuxRendererGLES::UpdateVideoFilter()
   }
 
   CLog::Log(LOGERROR, "GLES: Falling back to bilinear due to failure to init scaler");
+  m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
   if (m_pVideoFilterShader)
   {
     delete m_pVideoFilterShader;
@@ -1167,6 +1200,7 @@ void CLinuxRendererGLES::LoadShaders(int field)
             else
             {
               CLog::Log(LOGERROR, "GLES: Error enabling YUV2RGB GLSL shader");
+              m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
               delete m_pYUVProgShader;
               m_pYUVProgShader = nullptr;
             }
@@ -1380,6 +1414,7 @@ bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& lay
   }
   layer.width=m_sourceWidth; layer.height=m_sourceHeight;
   layer.scalingMethod=SelectScalingMethod();
+  layer.autoScalingMethod=AutoUpscalingOverride();
   layer.pts=hdr10 ? source.pts / DVD_TIME_BASE : buffer.doviPts;
   layer.binding=hdr10 ? source.doviSourceBinding : buffer.doviMetadata.Binding();
   if (!std::isfinite(layer.pts) || (hdr10 && (source.pts==DVD_NOPTS_VALUE ||
@@ -1487,6 +1522,7 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
   }
   if (m_dvRequested)
   {
+    m_reportedUpscaler = -2;
     const bool rendered = m_currentField == FIELD_FULL && RenderDVBridge(index);
     AfterRenderHook(index);
     if (rendered)
@@ -1495,6 +1531,9 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
           m_buffers[index].doviMetadata.Binding());
     return rendered;
   }
+#endif
+#ifdef HAVE_DVBRIDGE
+  int upscaler = -1;
 #endif
   if (RenderHook(index))
   {
@@ -1522,6 +1561,13 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
     default:
       break;
     }
+#ifdef HAVE_DVBRIDGE
+    if (KODI::VIDEO::UPSCALER::Enlarges(m_sourceRect.Width(), m_sourceRect.Height(),
+                                       m_destRect.Width(), m_destRect.Height()))
+      upscaler = m_currentField != FIELD_FULL && m_renderQuality != RQ_MULTIPASS &&
+                 m_scalingMethod != VS_SCALINGMETHOD_NEAREST
+                     ? VS_SCALINGMETHOD_LINEAR : m_scalingMethod;
+#endif
   }
   else
   {
@@ -1530,8 +1576,17 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 
   AfterRenderHook(index);
 #ifdef HAVE_DVBRIDGE
+  const auto generation =
+      m_buffers[index].videoBuffer ? m_buffers[index].videoBuffer->PlaybackGeneration() : 0;
+  const auto informationGeneration = m_buffers[index].informationGeneration;
+  if (informationGeneration != m_reportedUpscalerGeneration || m_reportedUpscaler != upscaler)
+  {
+    CServiceBroker::GetDataCacheCore().SetVideoUpscaler(upscaler, informationGeneration);
+    m_reportedUpscalerGeneration = informationGeneration;
+    m_reportedUpscaler = upscaler;
+  }
   DVBRIDGE::PlaybackNotification::RenderedOrdinary(
-      m_buffers[index].videoBuffer ? m_buffers[index].videoBuffer->PlaybackGeneration() : 0);
+      generation);
 #endif
   return true;
 }

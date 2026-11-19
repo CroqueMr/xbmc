@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "DVBridgeGLES.h"
+#include "UpscalerSettings.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlayerLedOutput.h"
 #include "VideoShaders/VideoFilterShaderGLES.h"
 #include "utils/DVBridgeDiagnosticLog.h"
@@ -190,6 +191,24 @@ std::string SDRPreparationAudit(const pl_frame& source,const pl_frame* enhanceme
 }
 catch (...) { return {}; } // Observation cannot change preparation or fence/release results.
 
+namespace
+{
+ESCALINGMETHOD OutputScalingMethod(const CDVBridgeGLES::Layer& layer,
+                                   const dvbridge_geometry& geometry,
+                                   dvbridge_mode mode)
+{
+  using namespace KODI::VIDEO::UPSCALER;
+  if (!Enlarges(geometry.crop[2] - geometry.crop[0], geometry.crop[3] - geometry.crop[1],
+                geometry.placement[2] - geometry.placement[0],
+                geometry.placement[3] - geometry.placement[1]))
+    return layer.scalingMethod;
+  const int method = Get(mode != DVBRIDGE_MODE_SDR, layer.scalingMethod);
+  if (method == VS_SCALINGMETHOD_AUTO)
+    return layer.autoScalingMethod;
+  return static_cast<ESCALINGMETHOD>(method);
+}
+} // namespace
+
 /* Native spatial interpolation only. Colour processing and transport stay in CB1. */
 class DVNativeScaler
 {
@@ -203,7 +222,13 @@ public:
     glDeleteVertexArrays(1, &m_vao);
   }
 
-  void SetMethod(ESCALINGMETHOD method, bool exact = true) { m_method = method; m_exact = exact; }
+  void SetMethod(ESCALINGMETHOD method, bool exact = true)
+  {
+    m_method = method;
+    m_exact = exact;
+    m_upscaler = -1;
+  }
+  int Upscaler() const { return m_upscaler; }
 
   static bool Fit(void* priv, const pl_frame* image, const pl_frame* target, pl_frame* fitted)
   {
@@ -347,9 +372,14 @@ private:
     fitted.planes[0].texture = m_texture;
     fitted.planes[0].flipped = false;
     fitted.crop = target.crop;
+    if (KODI::VIDEO::UPSCALER::Enlarges(
+            image.crop.x1 - image.crop.x0, image.crop.y1 - image.crop.y0,
+            target.crop.x1 - target.crop.x0, target.crop.y1 - target.crop.y0))
+      m_upscaler = m_method;
     return true;
   }
 
+  int m_upscaler{-1};
   bool m_exact{true};
   pl_gpu m_gpu{};
   pl_tex m_texture{};
@@ -565,6 +595,11 @@ void CDVBridgeGLES::Context::SetSpatialMethod(ESCALINGMETHOD method, bool exact)
 {
   if (m_state->spatial) m_state->spatial->SetMethod(method, exact);
 }
+int CDVBridgeGLES::Context::Upscaler() const
+{
+  return m_state->spatial ? m_state->spatial->Upscaler() : -1;
+}
+
 pl_opengl CDVBridgeGLES::Context::GL() const { return m_state->gl; }
 pl_log CDVBridgeGLES::Context::Log() const { return m_state->log; }
 void CDVBridgeGLES::Context::Retain(std::shared_ptr<void> base, std::shared_ptr<void> enhancement)
@@ -903,6 +938,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   if (m_dvPolicyActive && dvbridge_render_dv_policy_poll(m_renderer) == DVBRIDGE_DV_FAILED)
     return FrameStatus::Failed;
   const bool asyncSetting = m_context->AsyncPreparation(base.binding.stream);
+  const auto scalingMethod = OutputScalingMethod(base, geometry, policy.mode);
   const bool sameGeometry = m_geometryKnown &&
       geometry.source_width == m_sourceGeometry.source_width &&
       geometry.source_height == m_sourceGeometry.source_height &&
@@ -912,7 +948,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
       geometry.target_height == m_sourceGeometry.target_height &&
       std::equal(std::begin(geometry.crop), std::end(geometry.crop), std::begin(m_sourceGeometry.crop)) &&
       std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
-      base.scalingMethod == m_spatialMethod;
+      scalingMethod == m_spatialMethod;
   if (m_aiFrame && m_aiOutputAccepted && !m_pending && m_hasCommitted && base.binding == m_committedBinding &&
       m_pendingBinding == m_committedBinding &&
       prediction.id.revision == m_committedRevision && policy.mode == m_committedMode &&
@@ -962,7 +998,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   if (!dvbridge_gl_frame_import(&imported,m_gl->gpu,base.layout,base.width,base.height,base.planes))
     return FrameStatus::Unsupported;
   HDR10Color(imported.frame,base);
-  m_spatialMethod = base.scalingMethod;
+  m_spatialMethod = scalingMethod;
   m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
   m_context->Retain(base.lease);
   policy.revision = prediction.id.revision;
@@ -1844,6 +1880,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   { Failure("renderer-unavailable"); m_asyncEligible = false; return FrameStatus::Failed; }
   const bool asyncSetting = m_playerLed || m_context->AsyncPreparation(base.binding.stream);
   auto policy = selected ? *selected : preferences.Policy();
+  const auto scalingMethod = OutputScalingMethod(base, geometry, policy.mode);
   if (policy.mode == DVBRIDGE_MODE_HDR10PLUS && !m_hdr10plusSubmits)
     DVBRIDGE::DiagnosticReserveProgress();
   if (policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && !allowPacked)
@@ -1872,7 +1909,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       geometry.target_height == m_sourceGeometry.target_height &&
       std::equal(std::begin(geometry.crop), std::end(geometry.crop), std::begin(m_sourceGeometry.crop)) &&
       std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
-      base.scalingMethod == m_spatialMethod;
+      scalingMethod == m_spatialMethod;
   if ((m_geometryKnown && !sameGeometry) ||
       (policy.mode == DVBRIDGE_MODE_SDR && policy.sdr.gamut != m_sdrGamut) ||
       policy.lldv_edid_generation != m_lldvEdidGeneration)
@@ -1965,7 +2002,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_pendingOverlayRevision = m_nativeOverlayRevision;
   m_pendingOverlayVisible = m_overlayVisible;
   m_requested = preferences;
-  m_spatialMethod = base.scalingMethod;
+  m_spatialMethod = scalingMethod;
   m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE ||
       policy.mode == DVBRIDGE_MODE_PLAYER_LED);
   policy.revision = revision;
@@ -2960,6 +2997,8 @@ bool CDVBridgeGLES::ConfirmPlayerLed(const PlayerLedFrame& frame,
   m_committedOverlayRevision = frame.overlayRevision;
   m_committedPacked = frame.withoutGui;
   output->l2TrimsDisabled = frame.l2Disabled;
+  CServiceBroker::GetDataCacheCore().SetVideoUpscaler(frame.submission.upscaler,
+                                                      frame.source.informationGeneration);
   DVBRIDGE::StreamTelemetry::NativePresented(frame.source, frame.metadata, *output, frame.decoded);
   return true;
 }
@@ -3141,6 +3180,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
 #endif
   m_committedBinding = m_pendingBinding;
   m_committedMode = m_effectiveMode;
+  CServiceBroker::GetDataCacheCore().SetVideoUpscaler(submission.upscaler,
+                                                      submission.informationGeneration);
   m_committedRevision = m_pendingIdentity.revision;
   m_committedOverlayRevision = m_pendingOverlayRevision;
   m_committedPacked = !m_guiComposed;
