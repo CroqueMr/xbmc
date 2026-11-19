@@ -26439,7 +26439,7 @@ msgid "HLG default playback"
 msgstr ""
 
 msgctxt "#41132"
-msgid "Choose the default playback circuit for original HLG video. New files use this default. Playback-menu choices apply only to the current file. Kodi default uses native Kodi playback."
+msgid "Choose the default playback circuit for original HLG video. Playback-menu choices apply only to the current file. Kodi default uses native HLG playback. SDR Rendering uses the configured HDR/DV to SDR target."
 msgstr ""
 
 msgctxt "#41133"

@@ -112,7 +112,7 @@ bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::La
         frame->frame.color.hdr.scene_avg=10000*av_q2d(statistics.average_maxrgb);
       }
     }
-    if (hdrInputUsed)
+    if (hdrInputUsed && !layer.hlg)
     {
       // Attest the same nominal input selection the SDR tone mapper consumes.
       const auto& hdr=frame->frame.color.hdr;
@@ -1879,13 +1879,16 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_sourceGeometry = geometry;
   m_geometryKnown = true;
   uint64_t revision = std::max({preferences.revision,base.binding.revision,m_geometryRevision});
-  bool masterOverlayRefresh = false;
+  bool asyncOverlayRefresh = false;
   if (!m_pending && m_hasCommitted && base.binding == m_committedBinding &&
       revision == m_committedRevision && (!allowPacked || !m_committedPacked ||
           m_nativeOverlayRevision != m_committedOverlayRevision))
   {
-    masterOverlayRefresh = policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE &&
-        sameGeometry && allowPacked && m_committedPacked;
+    // The SDR GUI is blended into the resolved film target. Rebuilding that
+    // target for the same picture needs a new identity, but keeps the scanout.
+    asyncOverlayRefresh = sameGeometry && allowPacked &&
+        ((policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && m_committedPacked) ||
+         (policy.mode == DVBRIDGE_MODE_SDR && !m_committedPacked));
     // Explicit refresh of an equal-PTS source is a new processing transaction.
     revision = m_geometryRevision = DVBRIDGE::NextRevisionAfter(revision);
     if (!revision) return FrameStatus::Failed;
@@ -1920,7 +1923,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       (m_directUsable || policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE) &&
       m_committedMode == policy.mode && base.binding.stream == m_committedBinding.stream &&
       base.binding.revision == m_committedBinding.revision &&
-      (revision == m_committedRevision || masterOverlayRefresh);
+      (revision == m_committedRevision || asyncOverlayRefresh);
   if (m_dvPolicyActive)
   {
     const auto status = eligible && allowPacked ?
@@ -1953,6 +1956,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_live = true;
 #ifdef CB1_HAS_HDR10_AI
   m_aiFrame = m_aiOutputAccepted = false;
+  m_sourceHLG = base.hlg;
 #endif
   m_guiComposed = false;
   m_pendingOverlayRevision = m_nativeOverlayRevision;
@@ -1978,8 +1982,10 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_pendingSDRHDRInputUsed = 0;
   m_pendingSDRHDRInputValues = {};
   m_pendingIdentity = {base.binding.stream,base.binding.picture,revision};
+  const auto requested = !base.sourceInfo.profile && policy.mode == DVBRIDGE_MODE_SDR ?
+      preferences.HDR10Policy() : preferences.Policy();
   DVBRIDGE::StreamTelemetry::NativeRequest({base.binding.stream,base.binding.picture,revision},
-      DVBRIDGE::PolicyCode(preferences.Policy()),DVBRIDGE::PolicyCode(policy),
+      DVBRIDGE::PolicyCode(requested),DVBRIDGE::PolicyCode(policy),
       admissionIdentity.Valid() ? admissionIdentity :
           DVBRIDGE::SourceBinding{base.binding.stream,base.binding.picture,preferences.revision});
   if (m_auditStream!=base.binding.stream || m_auditSource!=base.binding.revision ||
@@ -2001,7 +2007,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     m_auditRequestedSerial=m_auditSerial;
     DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={} l2_trims_disabled={} method={} tv_peak={} tv_panel={} tv_gamut={} tv_profile_valid={} encoded_active_area={}",
         base.binding.stream,base.binding.picture,base.binding.revision,revision,
-        int(preferences.Policy().mode),int(policy.mode),!m_fallback,m_fallback,preferences.L2TrimsDisabled(policy.mode),
+        int(requested.mode),int(policy.mode),!m_fallback,m_fallback,preferences.L2TrimsDisabled(policy.mode),
         preferences.method,preferences.peak,preferences.panel,preferences.gamut,preferences.ProfileValid(),geometry.ignore_l5);
     const auto admission=DVBRIDGE::StreamTelemetry::Read().transaction;
     DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge output admission: generation={} source_known={} gpu_known={} native_dv={} hdr10={} requested={} effective={} reason={}",
@@ -3181,6 +3187,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
     output.flags |= CDVPlaybackInfo::SDR;
 #ifdef CB1_HAS_HDR10_AI
     output.sdrHDRSource=m_pendingSourceInfo.profile==0;
+    output.sdrHLGSource=output.sdrHDRSource && m_sourceHLG;
 #endif
     output.level6=false; output.iptTransport=false;
   }
