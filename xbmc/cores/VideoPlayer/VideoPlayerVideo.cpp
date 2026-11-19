@@ -7,6 +7,12 @@
  */
 
 #include "VideoPlayerVideo.h"
+#ifdef HAVE_DVBRIDGE
+#include "DVDCodecs/Video/DVStreamTelemetry.h"
+#include "DVDCodecs/Video/DVPlaybackInfo.h"
+#include "utils/DVBridgeDiagnosticState.h"
+#include "utils/StringUtils.h"
+#endif
 
 #include "DVDCodecs/DVDCodecUtils.h"
 #include "DVDCodecs/DVDFactoryCodec.h"
@@ -167,6 +173,12 @@ bool CVideoPlayerVideo::OpenStream(CDVDStreamInfo hint)
 
 void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVideoCodec> codec)
 {
+#ifdef HAVE_DVBRIDGE
+  m_diagnosticRender.Reset();
+  m_diagnosticTime = m_diagnosticPictures = 0;
+  m_diagnosticDropped = m_diagnosticSkipped = 0;
+  m_diagnosticTransitions = 0;
+#endif
   CLog::Log(LOGDEBUG, "CVideoPlayerVideo::OpenStream - open stream with codec: {}",
             avcodec_get_name(hint.codec));
 
@@ -350,6 +362,15 @@ void CVideoPlayerVideo::Process()
     MsgQueueReturnCode ret = GetMessage(pMsg, timeout, iPriority);
 
     onlyPrioMsgs = false;
+
+#ifdef HAVE_DVBRIDGE
+    if (pMsg && (pMsg->IsType(CDVDMsg::GENERAL_RESYNC) ||
+                 pMsg->IsType(CDVDMsg::GENERAL_RESET) ||
+                 pMsg->IsType(CDVDMsg::GENERAL_FLUSH) ||
+                 pMsg->IsType(CDVDMsg::GENERAL_PAUSE) ||
+                 pMsg->IsType(CDVDMsg::PLAYER_SETSPEED)))
+      ++m_diagnosticTransitions;
+#endif
 
     if (MSGQ_IS_ERROR(ret))
     {
@@ -859,6 +880,39 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
 
 CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPicture* pPicture)
 {
+#ifdef HAVE_DVBRIDGE
+  DVBRIDGE::StreamTelemetry::SourceBits(pPicture->colorBits, pPicture->pixelFormat);
+  if (DVBRIDGE::DiagnosticsEnabled() && CDVPlaybackInfo::presented.load())
+  {
+    ++m_diagnosticPictures;
+    const auto now = DVBRIDGE::DiagnosticNowMs();
+    if (!m_diagnosticTime || now - m_diagnosticTime >= 10000)
+    {
+      const auto gpu = m_diagnosticRender.Sample(60000000000ULL);
+      const auto elapsed = m_diagnosticTime ? now - m_diagnosticTime : 0;
+      const int skipped = m_renderManager.GetSkippedFrames();
+      const bool reset = m_iDroppedFrames < m_diagnosticDropped || skipped < m_diagnosticSkipped;
+      // Native counters are aggregated, not a decoder-versus-renderer attribution.
+      CLog::Log(LOGINFO, "DVBridge playback health: interval_ms={} output_attempts={} source_fps={:.3f} speed={} stalled={} pts_s={:.3f} drop_total={} skip_total={} drop_delta={} skip_delta={} counters_reset={} video_queue_pct={} video_queue_s={:.3f} bitrate_mbps={:.2f} render_avg_pct={} transitions={} pts_valid={} (speed 1000=normal; attempts are not display flips)",
+          elapsed, m_diagnosticPictures, m_fFrameRate, m_speed, m_stalled.load(),
+          pPicture->pts == DVD_NOPTS_VALUE ? 0.0 : pPicture->pts / DVD_TIME_BASE,
+          m_iDroppedFrames, skipped,
+          reset ? 0 : m_iDroppedFrames - m_diagnosticDropped,
+          reset ? 0 : skipped - m_diagnosticSkipped, reset,
+          m_processInfo.GetLevelVQ(), m_messageQueue.GetTimeSize(),
+          GetVideoBitrate() / 1000000.0, gpu ? StringUtils::Format("{:.1f}", *gpu) : "unavailable",
+          m_diagnosticTransitions,
+          pPicture->pts != DVD_NOPTS_VALUE);
+      m_diagnosticTime = now;
+      m_diagnosticPictures = 0;
+      m_diagnosticDropped = m_iDroppedFrames;
+      m_diagnosticSkipped = skipped;
+      m_diagnosticTransitions = 0;
+    }
+  }
+  if (DVBRIDGE::StreamTelemetry::observing.load(std::memory_order_relaxed))
+    DVBRIDGE::StreamTelemetry::Counters(m_iDroppedFrames, m_renderManager.GetSkippedFrames());
+#endif
   m_bAbortOutput = false;
 
   if (m_processInfo.GetVideoStereoMode() != pPicture->stereoMode)

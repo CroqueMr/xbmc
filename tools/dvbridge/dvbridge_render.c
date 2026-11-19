@@ -2,6 +2,7 @@
 /* Reconstruct video at full precision, then pack the HDMI transport with frame-matched metadata. */
 #include "dvbridge_render.h"
 #include "dvbridge_placebo.h"
+#include <libavutil/dovi_meta.h>
 #include <libplacebo/shaders/custom.h>
 #include <libplacebo/opengl.h>
 #include <GLES3/gl31.h>
@@ -16,6 +17,7 @@ struct dvbridge_renderer {
     struct dvbridge_candidate *pending;
     bool ready;
     bool packed, fragment_quad;
+    struct pl_color_space reconstructed_color;
 };
 
 struct active_mask {
@@ -176,7 +178,7 @@ void dvbridge_renderer_destroy(struct dvbridge_renderer *r)
 
 static bool render(struct dvbridge_renderer *r, const struct pl_frame *source,
                         const void *metadata, size_t bytes, double pts, double el_pts,
-                        struct dvbridge_geometry geometry, pl_tex packed, bool flip)
+                        struct dvbridge_geometry geometry, pl_tex packed, bool flip, bool hdr10)
 {
     if (!r)
         return false;
@@ -224,6 +226,22 @@ static bool render(struct dvbridge_renderer *r, const struct pl_frame *source,
         .crop = {geometry.x, geometry.y, geometry.x + geometry.width, geometry.y + geometry.height},
     };
     struct pl_render_params params = pl_render_default_params;
+    struct pl_color_map_params color_map = pl_color_map_default_params;
+    if (hdr10) {
+        if (!dvbridge_hdr10_target(&target.color, metadata, bytes))
+            return false;
+        const AVDOVIDmData *l1 = av_dovi_find_level(metadata, 1);
+        if (l1 && l1->l1.min_pq <= l1->l1.avg_pq &&
+            l1->l1.avg_pq <= l1->l1.max_pq && l1->l1.max_pq <= 4095 && l1->l1.max_pq) {
+            color_map.metadata = PL_HDR_METADATA_CIE_Y;
+        } else {
+            image.color.hdr.max_pq_y = image.color.hdr.avg_pq_y = 0;
+            color_map.metadata = PL_HDR_METADATA_HDR10;
+        }
+        color_map.inverse_tone_mapping = false;
+        params.color_map_params = &color_map;
+    }
+    r->reconstructed_color = target.color;
     params.min_fbo_precision = 32;
     params.peak_detect_params = NULL;
     params.dither_params = NULL;
@@ -266,7 +284,14 @@ bool dvbridge_render_rgb(struct dvbridge_renderer *r, const struct pl_frame *sou
                         const void *metadata, size_t bytes, double pts, double el_pts,
                         struct dvbridge_geometry geometry)
 {
-    return render(r, source, metadata, bytes, pts, el_pts, geometry, NULL, false);
+    return render(r, source, metadata, bytes, pts, el_pts, geometry, NULL, false, false);
+}
+
+bool dvbridge_render_hdr10_rgb(struct dvbridge_renderer *r, const struct pl_frame *source,
+                              const void *metadata, size_t bytes, double pts, double el_pts,
+                              struct dvbridge_geometry geometry)
+{
+    return render(r, source, metadata, bytes, pts, el_pts, geometry, NULL, false, true);
 }
 
 bool dvbridge_render_packed(struct dvbridge_renderer *r, const struct pl_frame *source,
@@ -300,7 +325,7 @@ bool dvbridge_render_packed(struct dvbridge_renderer *r, const struct pl_frame *
         glDisable(caps[i]);
     }
     glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-    bool ok = render(r, source, metadata, bytes, pts, el_pts, geometry, target, flip);
+    bool ok = render(r, source, metadata, bytes, pts, el_pts, geometry, target, flip, false);
     ok = glGetError() == GL_NO_ERROR && ok;
     glColorMask(mask[0], mask[1], mask[2], mask[3]);
     for (unsigned i=0; i<sizeof(caps)/sizeof(*caps); ++i) {
@@ -314,6 +339,37 @@ bool dvbridge_render_packed(struct dvbridge_renderer *r, const struct pl_frame *
 pl_tex dvbridge_render_texture(const struct dvbridge_renderer *r)
 {
     return r && r->ready && !r->packed ? r->rgb : NULL;
+}
+
+bool dvbridge_render_hdr10(struct dvbridge_renderer *r, pl_tex output,
+                          bool flip, bool limited, unsigned bits)
+{
+    if (!r || !r->ready || r->packed || !output || bits < 10 || bits > 16 ||
+        output->params.w != 3840 || output->params.h != 2160)
+        return false;
+    struct pl_frame source = {
+        .num_planes = 1,
+        .planes = {{.texture = r->rgb, .components = 4, .component_mapping = {0, 1, 2, 3}}},
+        .repr = pl_color_repr_rgb,
+        .color = r->reconstructed_color,
+    };
+    struct pl_frame target = source;
+    target.planes[0].texture = output;
+    target.planes[0].flipped = flip;
+    target.repr.levels = limited ? PL_COLOR_LEVELS_LIMITED : PL_COLOR_LEVELS_FULL;
+    target.repr.bits.sample_depth = bits;
+    target.repr.bits.color_depth = bits;
+    struct pl_render_params params = pl_render_default_params;
+    params.min_fbo_precision = 32;
+    params.peak_detect_params = NULL;
+    params.frame_mixer = NULL;
+    params.skip_caching_single_frame = true;
+    params.dither_params = &pl_dither_default_params;
+    // Identical source/target color spaces preserve absolute PQ luminance.
+    // Only output quantization and the selected signal range change here.
+    bool ok = pl_render_image(r->renderer, &source, &target, &params);
+    struct pl_render_errors errors = pl_renderer_get_errors(r->renderer);
+    return ok && !errors.errors && !errors.num_disabled_hooks;
 }
 
 const struct dvbridge_candidate *dvbridge_render_candidate(const struct dvbridge_renderer *r)

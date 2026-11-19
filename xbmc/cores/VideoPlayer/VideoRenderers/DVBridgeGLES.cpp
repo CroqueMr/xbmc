@@ -2,6 +2,7 @@
 #include "DVBridgeGLES.h"
 #include "DVBridgeShaders.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackInfo.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/DVStreamTelemetry.h"
 #include "utils/log.h"
 extern "C"
 {
@@ -10,6 +11,7 @@ extern "C"
 }
 
 #include <EGL/egl.h>
+#include <algorithm>
 #include <GLES3/gl3.h>
 #include <limits>
 #include <mutex>
@@ -61,10 +63,11 @@ CDVBridgeGLES::~CDVBridgeGLES()
   pl_log_destroy(&m_log);
 }
 
-bool CDVBridgeGLES::Initialize(bool allowSoftware)
+bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10)
 {
   if (m_gl)
     return m_renderer && m_packer;
+  m_hdr10 = hdr10;
   pl_opengl_params params{};
   params.get_proc_addr = reinterpret_cast<pl_voidfunc_t (*)(const char*)>(eglGetProcAddress);
   params.egl_display = eglGetCurrentDisplay();
@@ -101,8 +104,11 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware)
   glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_BACK,
       GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
-      red == 8 && green == 8 && blue == 8 && samples <= 1 && encoding == GL_LINEAR)
+      ((hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
+       (!hdr10 && red == 8 && green == 8 && blue == 8)) &&
+      samples <= 1 && encoding == GL_LINEAR)
     m_scanout = pl_opengl_wrap(m_gl->gpu, &output);
+  m_outputBits = std::min(red, std::min(green, blue));
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
   glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
   m_packer = dvbridge_gl_packer_create(DVBRIDGE_VERTEX, DVBRIDGE_FRAGMENT);
@@ -110,7 +116,7 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware)
     CLog::Log(LOGINFO, "DVBridge renderer init: rgb={}/{}/{} samples={} linear={} direct_target={} renderer={} packer={}",
         red, green, blue, samples, encoding == GL_LINEAR, m_scanout != nullptr,
         m_renderer != nullptr, m_packer != nullptr);
-  return m_renderer && m_packer;
+  return m_renderer && m_packer && (!hdr10 || m_scanout);
 }
 
 void CDVBridgeGLES::Reset()
@@ -150,7 +156,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
   }
   // The fast path produces the exact transport bytes directly. GUI/subtitle
   // frames and non-fullscreen geometry retain the original 32F composition.
-  if (allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
+  if (!m_hdr10 && allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
       geometry.width == 3840 && geometry.height == 2160)
   {
     m_direct = dvbridge_render_packed(m_renderer, &bl.frame, metadata.Data(), metadata.Size(),
@@ -162,8 +168,9 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
       dvbridge_renderer_reset(m_renderer);
     }
   }
-  m_prepared = m_direct || dvbridge_render_rgb(m_renderer, &bl.frame, metadata.Data(), metadata.Size(),
-                                               base.pts, elPts, geometry);
+  const auto renderRGB = m_hdr10 ? dvbridge_render_hdr10_rgb : dvbridge_render_rgb;
+  m_prepared = m_direct || renderRGB(m_renderer, &bl.frame, metadata.Data(), metadata.Size(),
+                                     base.pts, elPts, geometry);
   m_pendingInfo = 0;
   if (m_prepared)
   {
@@ -175,7 +182,9 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
     const bool fel = enhancement &&
                      dvbridge_map_color(&color, metadata.Data(), metadata.Size(), true) &&
                      color.dovi.nlq_active;
-    m_pendingInfo = CDVPlaybackInfo::HDMI | (fel ? CDVPlaybackInfo::FEL : 0u);
+    DVBRIDGE::StreamTelemetry::Metadata(parsed, fel, m_outputBits);
+    m_pendingInfo = (m_hdr10 ? CDVPlaybackInfo::HDR10 : CDVPlaybackInfo::HDMI) |
+                   (fel ? CDVPlaybackInfo::FEL : 0u);
     for (int i = 0; i < parsed->num_ext_blocks; ++i)
     {
       const auto level = av_dovi_get_ext(parsed, i)->level;
@@ -246,6 +255,13 @@ bool CDVBridgeGLES::Pack(unsigned int framebuffer, int width, int height, bool f
   m_packed = dvbridge_gl_pack(m_packer, GetPQTexture(), framebuffer, width, height,
                              packets, count, flipY);
   return m_packed || Failure("composition-pack");
+}
+
+bool CDVBridgeGLES::ResolveHDR10(bool limited)
+{
+  m_packed = m_hdr10 && m_prepared &&
+      dvbridge_render_hdr10(m_renderer, m_scanout, true, limited, m_outputBits);
+  return m_packed || Failure("hdr10-resolve");
 }
 
 unsigned int CDVBridgeGLES::GetPQFramebuffer()

@@ -25,6 +25,9 @@
 extern "C"
 {
 #include <libavutil/pixfmt.h>
+#ifdef HAVE_DVBRIDGE
+#include "dvbridge_placebo.h"
+#endif
 }
 #include "utils/BufferObjectFactory.h"
 #include "utils/DMAHeapBufferObject.h"
@@ -41,6 +44,8 @@ extern "C"
 #ifdef HAVE_DVBRIDGE
 #include "ServiceBroker.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/DVStreamTelemetry.h"
 #include "cores/VideoPlayer/DVDStreamInfo.h"
 #include "drm/DRMAtomic.h"
 #endif
@@ -151,6 +156,26 @@ void CWinSystemGbmGLESContext::PresentRender(bool rendered, bool videoLayer)
     return;
 
 #ifdef HAVE_DVBRIDGE
+  if (m_hdrConversion)
+  {
+    bool presented = false;
+    if (m_dvFrame && m_dvBridge && m_dvBridge->ResolveHDR10(UseLimitedColor()))
+    {
+      glFinish();
+      if (m_eglContext.TrySwapBuffers())
+      {
+        auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+        auto* bo = m_GBM->GetDevice().GetSurface().LockFrontBuffer().Get();
+        presented = drm && bo &&
+            drm->AddProperty(drm->GetConnector(), "DVBRIDGE_HDR10_DEEP_COLOR", 1) &&
+            drm->FlipPageTransactional(bo);
+      }
+    }
+    if (m_dvBridge)
+      m_dvBridge->Presented(presented);
+    m_dvFrame = false;
+    return;
+  }
   if (m_dvState.Captured())
   {
     bool presented = false;
@@ -237,7 +262,7 @@ bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
       std::string defines;
       if (UseLimitedColor()
 #ifdef HAVE_DVBRIDGE
-          && !m_dvState.Captured()
+          && !m_dvState.Captured() && !m_hdrConversion
 #endif
           )
         defines += "#define KODI_LIMITED_RANGE 1\n";
@@ -400,7 +425,7 @@ void CWinSystemGbmGLESContext::CompositeGui()
 #ifdef HAVE_DVBRIDGE
   GLint previousFramebuffer = 0;
   GLint previousViewport[4]{};
-  const bool dvComposite = m_dvState.Captured();
+  const bool dvComposite = m_dvState.Captured() || m_hdrConversion;
   if (dvComposite)
   {
     if (!m_dvFrame || !m_dvBridge)
@@ -489,21 +514,30 @@ bool NativeDVEligible(bool source, bool software, bool interlaced, bool stereo)
   if (!source || software)
     return false;
   auto* window = dynamic_cast<CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
-  const bool available = window && window->SupportsNativeDVOutput();
+  const auto mode = DVBRIDGE::playbackMode.load();
+  const bool available = window && mode != DVBRIDGE::OutputMode::Disabled &&
+      (mode == DVBRIDGE::OutputMode::HDR10 ? window->SupportsHDR10Conversion() : window->SupportsNativeDVOutput());
   return DVBRIDGE::Eligible(available, available, source, software, interlaced, stereo);
 }
 } // namespace
 
 bool DVBRIDGE::WantsNativeOutput(const CDVDStreamInfo& stream)
 {
+  if (!(stream.codecOptions & CODEC_FORCE_SOFTWARE))
+  {
+    StreamTelemetry::Begin(stream.dovi.dv_profile, stream.dovi.dv_level,
+        stream.dovi.dv_version_major, stream.dovi.dv_version_minor,
+        stream.dovi.bl_present_flag, stream.dovi.el_present_flag, stream.dovi.rpu_present_flag);
+    StreamTelemetry::StaticMetadata(stream.masteringMetadata.get(), stream.contentLightMetadata.get());
+  }
   const bool eligible = NativeDVEligible(stream.dovi.dv_profile != 0,
                           (stream.codecOptions & CODEC_FORCE_SOFTWARE) != 0,
                           stream.interlaced, !stream.stereo_mode.empty());
   if (stream.dovi.dv_profile && DiagnosticsEnabled())
-    CLog::Log(LOGINFO, "DVBridge stream candidate: profile={} level={} compatibility={} native_eligible={} software={} interlaced={} stereo={} (selection probe, not active output)",
+    CLog::Log(LOGINFO, "DVBridge stream candidate: profile={} level={} compatibility={} native_eligible={} software={} interlaced={} stereo={} mode={} (selection probe, not active output)",
         stream.dovi.dv_profile, stream.dovi.dv_level, stream.dovi.dv_bl_signal_compatibility_id, eligible,
         (stream.codecOptions & CODEC_FORCE_SOFTWARE) != 0, stream.interlaced,
-        !stream.stereo_mode.empty());
+        !stream.stereo_mode.empty(), static_cast<int>(playbackMode.load()));
   return eligible;
 }
 
@@ -521,7 +555,70 @@ bool CWinSystemGbmGLESContext::DVBridgeRequested(const VideoPicture* picture)
 
 int CWinSystemGbmGLESContext::VideoOutputBitDepth(const VideoPicture* picture) const
 {
-  return DVBridgeRequested(picture) ? 8 : CWinSystemGbmEGLContext::VideoOutputBitDepth(picture);
+  if (!DVBridgeRequested(picture))
+    return CWinSystemGbmEGLContext::VideoOutputBitDepth(picture);
+  if (DVBRIDGE::playbackMode.load() == DVBRIDGE::OutputMode::HDR10)
+    return 10;
+  return 8;
+}
+
+bool CWinSystemGbmGLESContext::SupportsHDR10Conversion()
+{
+  if (!IsHDRDisplay() || !GetDisplayHDRCapabilities().SupportsHDR10())
+    return false;
+  const auto* mode = m_DRM->GetSelectedMode();
+  auto* connector = m_DRM->GetConnector();
+  return connector && connector->IsConnected() && connector->SupportsProperty("HDR_OUTPUT_METADATA") &&
+      connector->SupportsProperty("DVBRIDGE_HDR10_DEEP_COLOR") &&
+      mode && mode->hdisplay == 3840 && mode->vdisplay == 2160 && !(mode->flags & DRM_MODE_FLAG_INTERLACE);
+}
+
+bool CWinSystemGbmGLESContext::ConfigureHDR10Conversion(const VideoPicture& picture)
+{
+  VideoPicture output;
+  output.SetParams(picture);
+  output.color_transfer = AVCOL_TRC_SMPTE2084;
+  output.color_primaries = AVCOL_PRI_BT2020;
+  output.color_space = AVCOL_SPC_BT2020_NCL;
+  output.colorBits = 10;
+  dvbridge_hdr10_metadata metadata{};
+  if (!dvbridge_get_hdr10_metadata(&metadata, picture.doviMetadata.Data(), picture.doviMetadata.Size()))
+    return false;
+  if (metadata.max_luminance)
+  {
+    if (!output.hasDisplayMetadata)
+      output.displayMetadata = {};
+    output.hasDisplayMetadata = true;
+    output.displayMetadata.has_luminance = metadata.max_luminance != 0;
+    output.displayMetadata.max_luminance = {static_cast<int>(metadata.max_luminance), 1};
+    output.displayMetadata.min_luminance = {static_cast<int>(metadata.min_luminance), 10000};
+    output.hasLightMetadata = true;
+    output.lightMetadata.MaxCLL = metadata.max_cll;
+    output.lightMetadata.MaxFALL = metadata.max_fall;
+  }
+  if (DVBRIDGE::DiagnosticsEnabled())
+    CLog::Log(LOGINFO, "DVBridge HDR10 mapping: target={} nits origin={} curve=libplacebo-spline dynamic=L1 inverse=false maxcll=unknown maxfall=unknown",
+        metadata.max_luminance, metadata.level6 ? "RPU-L6" : "RPU-source-PQ");
+  SetColorimetry(&output);
+  if (!SetHDR(&output))
+    return false;
+  auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  auto* connector = drm ? drm->GetConnector() : nullptr;
+  if (!connector)
+    return false;
+  const auto previous = connector->GetPropertyValue("DVBRIDGE_HDR10_DEEP_COLOR");
+  if (!previous || !drm->AddProperty(connector, "DVBRIDGE_HDR10_DEEP_COLOR", 1))
+    return false;
+  m_hdrDeepColorPrevious = previous;
+  if (!BeginDVBridge())
+  {
+    drm->AddProperty(connector, "DVBRIDGE_HDR10_DEEP_COLOR", *previous);
+    m_hdrDeepColorPrevious.reset();
+    return false;
+  }
+  if (DVBRIDGE::DiagnosticsEnabled())
+    CLog::Log(LOGINFO, "DVBridge HDR10: link minimum=10 bits; native HDMI bandwidth and format validation retained");
+  return true;
 }
 
 bool CWinSystemGbmGLESContext::BeginDVBridge()
@@ -534,20 +631,27 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
           GetOutputBitDepth(), m_renderableType);
     return false;
   };
-  if (m_nWidth != 3840 || m_nHeight != 2160 || GetOutputBitDepth() != 8 ||
+  const bool hdr10 = DVBRIDGE::playbackMode.load() == DVBRIDGE::OutputMode::HDR10;
+  if (m_nWidth != 3840 || m_nHeight != 2160 ||
+      (hdr10 ? GetOutputBitDepth() < 10 : GetOutputBitDepth() != 8) ||
       m_renderableType != EGL_OPENGL_ES3_BIT)
     return failure("output-format");
-  if (m_dvState.Captured())
+  if (m_dvState.Captured() || m_hdrConversion)
     return m_dvBridge && m_guiCompositing && m_compositeShader;
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   if (!drm)
     return failure("atomic-output-unavailable");
   if (!m_dvBridge)
     m_dvBridge = std::make_unique<CDVBridgeGLES>();
-  if (!m_dvBridge->Initialize())
+  if (!m_dvBridge->Initialize(false, hdr10))
     return failure("renderer-init");
-  if (!m_dvState.Captured() && !m_dvState.Capture(*drm))
+  if (!hdr10 && !m_dvState.Captured() && !m_dvState.Capture(*drm))
     return failure("drm-state-capture");
+  m_hdrConversion = hdr10;
+  if (hdr10 && DVBRIDGE::DiagnosticsEnabled())
+    CLog::Log(LOGINFO, "DVBridge conversion: output=HDR10 transfer=PQ primaries=BT2020 target_mapping=none framebuffer_bits={} range={}",
+        GetOutputBitDepth(),
+        UseLimitedColor() ? "limited" : "full");
   m_compositeShader.reset();
   return SetGuiCompositing(AVCOL_TRC_SMPTE2084);
 }
@@ -555,8 +659,9 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
 bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
 {
   // Restore with the current surface before EGL replaces its buffers.
-  if (m_dvState.Captured() && !EndDVBridge())
+  if ((m_dvState.Captured() || m_hdrConversion) && !EndDVBridge())
     return false;
+  m_dvBridge.reset();
   return CWinSystemGbmEGLContext::SetVideoOutput(picture);
 }
 
@@ -578,9 +683,30 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
 
 bool CWinSystemGbmGLESContext::EndDVBridge()
 {
+  if (m_hdrDeepColorPrevious)
+  {
+    auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+    if (!drm || !drm->AddProperty(drm->GetConnector(), "DVBRIDGE_HDR10_DEEP_COLOR",
+                                  *m_hdrDeepColorPrevious))
+      return false;
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glClearColor(0, 0, 0, 1);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glFinish();
+    if (!m_eglContext.TrySwapBuffers())
+      return false;
+    auto* bo = m_GBM->GetDevice().GetSurface().LockFrontBuffer().Get();
+    if (!bo || !drm->FlipPageTransactional(bo, true))
+      return false;
+    m_hdrDeepColorPrevious.reset();
+    if (DVBRIDGE::DiagnosticsEnabled())
+      CLog::Log(LOGINFO, "DVBridge HDR10: native link policy restored");
+  }
   m_dvFrame = false;
   // Never reset Kodi's ordinary HDR GUI compositor unless we owned DV output.
-  if (!m_dvState.Captured())
+  if (!m_dvState.Captured() && !m_hdrConversion)
     return true;
   if (m_dvState.Captured())
   {
@@ -602,6 +728,7 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
   }
   if (m_dvBridge)
     m_dvBridge->Reset();
+  m_hdrConversion = false;
   if (DVBRIDGE::DiagnosticsEnabled() &&
       m_dvSetupFailures.Recovered(DVBRIDGE::DiagnosticNowMs()))
     CLog::Log(LOGINFO, "DVBridge: normal display restored after failures={}", m_dvSetupFailures.Count());

@@ -8,6 +8,9 @@
 
 #include "VideoPlayer.h"
 #ifdef HAVE_DVBRIDGE
+#include "DVDCodecs/Video/DVOutputSettings.h"
+#endif
+#ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
 #endif
 
@@ -1391,6 +1394,9 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
 
 void CVideoPlayer::Prepare()
 {
+#ifdef HAVE_DVBRIDGE
+  DVBRIDGE::SelectOutputSettings();
+#endif
   CFFmpegLog::SetLogLevel(1);
   SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
   m_processInfo->SetSpeed(1.0);
