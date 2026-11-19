@@ -1947,8 +1947,7 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
       preferences.lldvFormat, allowModeSwitch);
   if (allowModeSwitch)
   {
-    if (!caps.playerLed && (!DVBRIDGE::LldvUnavailableLabel(m_dvLldvStatus, 0, true) ||
-        !DVBRIDGE::LldvUnavailableLabel(m_dvLldvStatus, DVBRIDGE::LLDV_FORCE_422_10, true)))
+    if (!caps.playerLed && DVBRIDGE::LldvCanChooseFormat(m_dvLldvStatus))
       caps.lldvUnavailableLabel = DVBRIDGE::LLDV_CHOOSE_FORMAT_LABEL;
     caps.nativeDV = m_dvAvailableNativeDV;
     caps.hdr10 = m_dvAvailableHDR10;

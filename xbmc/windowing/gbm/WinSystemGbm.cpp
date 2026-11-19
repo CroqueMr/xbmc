@@ -1674,13 +1674,16 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
       (packed.format != LldvFormat::Y422_10 && packed.format != LldvFormat::Y422_12) ||
       (packed.rgb10Scanout && (!status.rgb10Scanout || packed.forced)) ||
       (packed.forced && (packed.format != LldvFormat::Y422_10 || !status.forced42210)) ||
+      (packed.format == LldvFormat::Y422_12 && status.packed42212 &&
+       !dvbridge_lldv_422_12(status.sink)) ||
       LldvFormatReason(status.sink, packed.format, status.driverFormats,
                        status.currentTiming, packed.forced) != LldvReason::Ready)
     return reject();
 
   const char* name = packed.rgb10Scanout ? "YCbCr 4:2:2 10 bits RGB10 lab" :
       packed.forced ? "YCbCr 4:2:2 10 bits forced" :
-      packed.format == LldvFormat::Y422_10 ? "YCbCr 4:2:2 10 useful bits" : "YCbCr 4:2:2 12 bits";
+      packed.format == LldvFormat::Y422_10 ? "YCbCr 4:2:2 10 useful bits" :
+      status.packed42212 ? "YCbCr 4:2:2 12 bits packed" : "YCbCr 4:2:2 12 bits";
   auto* connector = drm->GetConnector();
   const auto value = connector ? connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", name) :
                                  std::nullopt;
@@ -1753,15 +1756,19 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
   {
     const auto native10 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 useful bits");
-    const auto native12 =
-        connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 12 bits");
+    auto output12 = connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 12 bits");
+    if (!output12)
+    {
+      output12 = connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 12 bits packed");
+      status.packed42212 = output12.has_value();
+    }
     const auto rgb10 = connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 bits RGB10 lab");
     status.rgb10Scanout = rgb10.has_value();
     const auto forced10 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 bits forced");
     if (native10 || rgb10)
       status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_10);
-    if (native12)
+    if (output12)
       status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_12);
     status.forced42210 = forced10.has_value();
     status.cta93FractionalOnly =
@@ -1793,7 +1800,7 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
       status.active = DVBRIDGE::LldvFormat::Y422_10;
       status.activeRgb10Scanout = active == rgb10;
     }
-    else if (active && active == native12)
+    else if (active && active == output12)
       status.active = DVBRIDGE::LldvFormat::Y422_12;
     else if (active && active == forced10)
     {
