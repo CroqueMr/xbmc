@@ -285,6 +285,8 @@ public:
   // yields wrong transparency. When true, GUI draws select a compensated
   // alpha blend (see CGUIFontTTFGLES::FirstBegin).
   virtual bool IsHdrComposite() const { return false; }
+  // Native HDR keeps its perceived-translucency compensation by default.
+  virtual bool UseGuiCoverageAlpha() const { return !IsHdrComposite(); }
 
   /*!
    * \brief Gets debug info from video renderer for use in "Debug Info OSD" (Alt + O)

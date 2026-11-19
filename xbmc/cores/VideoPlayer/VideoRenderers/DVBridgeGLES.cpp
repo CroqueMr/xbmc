@@ -34,6 +34,7 @@ extern "C"
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <fmt/ranges.h>
 
 #if !defined(DVBRIDGE_L2_TRIMS_API) || DVBRIDGE_L2_TRIMS_API < 1
 #error "Matching CB1 L2 output-trim API required"
@@ -121,6 +122,60 @@ bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::La
 }
 }
 
+
+// Copy the live query context into a call-local value; never retain imports.
+// Decision: origin(DV=1/raw=2), allowPacked, usable, target, query(-1=not run), attempt, draw(-1=not run).
+std::string SDRPreparationAudit(const pl_frame& source,const pl_frame* enhancement,
+    const CDVMetadataBuffer& metadata,dvbridge_geometry geometry,pl_tex target,
+    unsigned bits,bool limited,double pts,double elPts,const std::array<int,7>& decision) try
+{
+  unsigned aliases[2]{};
+  const auto frame = [&](const pl_frame& f,unsigned origin) {
+    std::string planes;
+    for (int p=0;p<std::clamp(f.num_planes,0,4);++p)
+    {
+      const auto& plane=f.planes[p];
+      if (plane.texture==target) aliases[origin]|=1u<<p;
+      const auto* tex=plane.texture;
+      const auto* fmt=tex ? tex->params.format : nullptr;
+      const std::array<int,8> storage{tex ? tex->params.w : 0,tex ? tex->params.h : 0,
+          fmt ? int(fmt->type) : -1,fmt ? fmt->num_components : 0,
+          fmt ? fmt->component_depth[0] : 0,fmt ? fmt->component_depth[1] : 0,
+          fmt ? fmt->component_depth[2] : 0,fmt ? fmt->component_depth[3] : 0};
+      planes+=fmt::format("[{};{}:{}]",fmt::join(storage,","),plane.components,
+          fmt::join(plane.component_mapping,","));
+    }
+    // np/sys/alpha/rotation/overlays/profile/icc/lut/primaries/transfer/sample/color/shift/levels.
+    const std::array<int,14> description{f.num_planes,int(f.repr.sys),int(f.repr.alpha),
+        f.rotation,f.num_overlays,bool(f.profile.len),bool(f.icc),bool(f.lut),
+        int(f.color.primaries),int(f.color.transfer),f.repr.bits.sample_depth,
+        f.repr.bits.color_depth,f.repr.bits.bit_shift,int(f.repr.levels)};
+    return fmt::format("{};{:.9g};{}",fmt::join(description,","),
+        fmt::join(std::array<float,4>{f.crop.x0,f.crop.y0,f.crop.x1,f.crop.y1},","),planes);
+  };
+  const auto sourceText=frame(source,0);
+  const auto elText=enhancement ? frame(*enhancement,1) : "na";
+  const auto* format=target ? target->params.format : nullptr;
+  const std::array<int,8> targetInfo{target ? target->params.w : 0,target ? target->params.h : 0,
+      format ? int(format->type) : -1,format ? format->num_components : 0,
+      format ? format->component_depth[0] : 0,format ? format->component_depth[1] : 0,
+      format ? format->component_depth[2] : 0,target && target->params.renderable};
+  const std::array<int,8> g{geometry.source_width,geometry.source_height,geometry.x,geometry.y,
+      geometry.width,geometry.height,geometry.target_width,geometry.target_height};
+  unsigned margins[4]{};
+  const auto area=!metadata.Data() ? "na" :
+      dvbridge_frame_area(margins,metadata.Data(),metadata.Size(),geometry) ?
+      fmt::format("{}",fmt::join(margins,",")) : "invalid";
+  const auto& h=source.color.hdr;
+  const std::array<float,9> hdr{h.min_luma,h.max_luma,h.max_cll,h.max_pq_y,h.avg_pq_y,
+      h.scene_max[0],h.scene_max[1],h.scene_max[2],h.scene_avg};
+  return fmt::format(" sdr={} s={} e={} t={} g={} c={:.9g} p={:.9g} b={},{},1 m={}/{} a={},{} l5={}/{} v={} h={:.9g}",
+      fmt::join(decision,","),sourceText,elText,fmt::join(targetInfo,","),fmt::join(g,","),
+      fmt::join(geometry.crop,","),fmt::join(geometry.placement,","),bits,limited,
+      bool(metadata.Data()),metadata.Size(),aliases[0],aliases[1],area,geometry.ignore_l5,
+      fmt::join(std::array<int,3>{std::isfinite(pts),std::isfinite(elPts),pts==elPts},","),fmt::join(hdr,","));
+}
+catch (...) { return {}; } // Observation cannot change preparation or fence/release results.
 
 /* Native spatial interpolation only. Colour processing and transport stay in CB1. */
 class DVNativeScaler
@@ -1013,17 +1068,25 @@ bool CDVBridgeGLES::Failure(const char* stage)
   return false;
 }
 
-void CDVBridgeGLES::PreparedAudit()
+void CDVBridgeGLES::PreparedAudit(std::string_view sdr)
 {
   DVBRIDGE::StreamTelemetry::NativeStage({m_pendingIdentity.stream,m_pendingIdentity.picture,
       m_pendingIdentity.revision},"Prepared");
+  // An unevaluated SDR selector leaves both the epoch and retry limiter pending.
+  if (m_effectiveMode==DVBRIDGE_MODE_SDR && sdr.empty()) return;
   if (m_auditPreparedSerial!=m_auditSerial && DVBRIDGE::DiagnosticsEnabled() &&
       m_auditPrepared.Record(DVBRIDGE::DiagnosticNowMs(),"prepared",m_auditSerial))
   {
-    m_auditPreparedSerial=m_auditSerial;
-    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy prepared: source={}/{}/{} policy={} mode={}",
-        m_pendingBinding.stream,m_pendingBinding.picture,m_pendingBinding.revision,
-        m_pendingIdentity.revision,int(m_effectiveMode));
+    try
+    {
+      const auto message=fmt::format("DVBridge policy prepared: source={}/{}/{} policy={} mode={}{}",
+          m_pendingBinding.stream,m_pendingBinding.picture,m_pendingBinding.revision,
+          m_pendingIdentity.revision,int(m_effectiveMode),sdr);
+      // Never consume the epoch with a truncated or suppressed snapshot.
+      if (message.size()<=640 && DVBRIDGE::DiagnosticLog(LOGINFO,"{}",message))
+        m_auditPreparedSerial=m_auditSerial;
+    }
+    catch (...) {} // A failed observation leaves this epoch available for a bounded retry.
   }
 }
 
@@ -1509,18 +1572,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     return FrameStatus::Busy;
   }
   // A selected policy already passed output admission, including compatibility routes.
-  const bool fallback = !selected &&
-      (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid(policy.mode);
-  if (fallback)
-  {
-    policy.mode = preferences.output == DVBRIDGE::OutputMode::HDR10 ?
-        DVBRIDGE_MODE_HDR10_BASIC : DVBRIDGE_MODE_STANDARD;
-    policy.tv = {};
-    policy.adaptive = DVBRIDGE_ADAPTIVE_A;
-  }
+  if (!selected &&
+      (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid(policy.mode))
+    return FrameStatus::Unsupported;
   // Capture the proven observation key before geometry or refresh rekeys work.
   dvbridge_renderer_set_l2_trims_disabled(m_renderer, preferences.L2TrimsDisabled(policy.mode));
-  const auto cmv40 = preferences.CMv40Options(fallback ? DVBRIDGE_MODE_DISABLED : policy.mode);
+  const auto cmv40 = preferences.CMv40Options(policy.mode);
   dvbridge_renderer_set_cmv40(m_renderer, &cmv40);
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
       policy.mode);
@@ -1574,7 +1631,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       return PollReady() ? FrameStatus::Ready : FrameStatus::Pending;
     Cancel();
   }
-  const bool eligible = allowAsync && asyncSetting && !fallback && !m_fallback && !m_pendingHDR10Fallback &&
+  const bool eligible = allowAsync && asyncSetting && !m_fallback && !m_pendingHDR10Fallback &&
       policy.mode != DVBRIDGE_MODE_DISABLED && m_hasCommitted && sameGeometry &&
       base.lease && (!enhancement || enhancement->lease) &&
       (m_directUsable || policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE) &&
@@ -1612,7 +1669,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   dvbridge_renderer_set_fel_filter(m_renderer, preferences.felUpscaling == 2 ? DVBRIDGE_FEL_REFERENCE : preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416) ? DVBRIDGE_FEL_BILINEAR : DVBRIDGE_FEL_DEFAULT);
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
-  m_fallback = fallback;
+  m_fallback = false;
   m_asyncEligible = eligible;
   const auto previousMode=m_effectiveMode;
   m_effectiveMode = policy.mode;
@@ -1690,6 +1747,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   }
   const double elPts = enhancement ? enhancement->pts : base.pts;
   FrameStatus result = FrameStatus::Failed;
+  std::string sdrAudit;
   m_prepared = m_packed = m_direct = false;
   if (policy.mode == DVBRIDGE_MODE_ENHANCED_DV)
   {
@@ -1743,10 +1801,11 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     const bool originalDV = base.sourceInfo.profile && base.sourceInfo.rpu && metadata.Data();
     const bool originalHDR = !base.sourceInfo.profile && !base.sourceInfo.rpu &&
         !base.sourceInfo.el && !base.hlg && !metadata.Data() && !enhancement;
+    int directQuery=-1; // Not evaluated is distinct from a negative C query.
     const bool attemptedSDR = policy.mode == DVBRIDGE_MODE_SDR &&
         (originalDV || originalHDR) && allowPacked && m_directUsable && m_scanout &&
-        dvbridge_render_sdr_policy_direct_eligible(m_renderer,&policy,&m_pendingIdentity,
-            &bl.frame,metadata.Data(),metadata.Size(),base.pts,elPts,geometry,m_scanout,m_outputBits);
+        (directQuery=dvbridge_render_sdr_policy_direct_eligible(m_renderer,&policy,&m_pendingIdentity,
+            &bl.frame,metadata.Data(),metadata.Size(),base.pts,elPts,geometry,m_scanout,m_outputBits));
     if (attemptedSDR)
       m_direct = dvbridge_render_hdr10_policy_direct(m_renderer,&policy,&m_pendingIdentity,
           &bl.frame,metadata.Data(),metadata.Size(),base.pts,elPts,geometry,m_scanout,
@@ -1780,6 +1839,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     const bool fenced = m_context->FenceLastUse();
     m_pending = m_prepared && fenced;
     result = m_pending ? FrameStatus::Ready : FrameStatus::Failed;
+    if (result==FrameStatus::Ready && policy.mode==DVBRIDGE_MODE_SDR && directQuery>=0 &&
+        m_auditPreparedSerial!=m_auditSerial && DVBRIDGE::DiagnosticsEnabled())
+      sdrAudit=SDRPreparationAudit(bl.frame,enhancement ? &el.frame : nullptr,metadata,
+          geometry,m_scanout,m_outputBits,m_hdr10Limited,base.pts,elPts,
+          {int(originalDV)+2*int(originalHDR),allowPacked,m_directUsable,bool(m_scanout),
+              directQuery,attemptedSDR,attemptedSDR ? int(m_prepared) : -1});
   }
   dvbridge_gl_frame_release(&el); dvbridge_gl_frame_release(&bl);
   if (m_pending)
@@ -1790,7 +1855,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
         color.dovi.nlq_active;
     CaptureMetadata(metadata,fel);
   }
-  if (result == FrameStatus::Ready) PreparedAudit();
+  if (result == FrameStatus::Ready) PreparedAudit(sdrAudit);
   if (result == FrameStatus::Failed) { m_failedIdentity = m_pendingIdentity; Failure("policy-prepare"); }
   return result;
 }
