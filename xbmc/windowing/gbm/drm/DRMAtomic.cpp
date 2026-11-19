@@ -272,6 +272,8 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (!PrepareHDR10Plus(flags, frameMetadata))
     return reject("hdr10plus-property", EINVAL);
 
+  m_commitFellBack = false;
+
   if (m_old_crtc != nullptr)
   {
     if (m_old_crtc->GetId() != m_crtc->GetId())
@@ -394,7 +396,8 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (ret < 0)
   {
     const int testError = errno;
-    if (strict || m_req->sdrRestore || frameMetadata || (m_mode->flags & DRM_MODE_FLAG_3D_MASK))
+    if (strict || m_req->sdrRestore || frameMetadata || m_colorRangeTransition ||
+        (m_mode->flags & DRM_MODE_FLAG_3D_MASK))
     {
       return reject("atomic-test", testError);
     }
@@ -404,6 +407,8 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
                strerror(testError));
     if (DVBRIDGE::DiagnosticsEnabled() && m_dvFailures.Record(DVNowMs(), "native-atomic-test", testError))
       CollectDVKernelLog();
+
+    m_commitFellBack = true;
 
     auto oldRequest = m_atomicRequestQueue.front().get();
     CDRMAtomicRequest::LogAtomicDiff(m_req, oldRequest);
@@ -467,7 +472,12 @@ void CDRMAtomic::FinishRequest(bool accepted)
       ReportSignalState();
 
     if (m_atomicRequestQueue.size() > 1)
-      m_atomicRequestQueue.pop_front();
+    {
+      if (m_commitFellBack)
+        m_atomicRequestQueue.pop_back();
+      else
+        m_atomicRequestQueue.pop_front();
+    }
   }
   else if (!m_atomicRequestQueue.empty())
     m_atomicRequestQueue.pop_back();
@@ -481,6 +491,7 @@ void CDRMAtomic::FinishRequest(bool accepted)
   m_atomicRequestQueue.emplace_back(std::make_unique<CDRMAtomicRequest>());
   m_req = m_atomicRequestQueue.back().get();
   m_propertyFailure = false;
+  m_colorRangeTransition = false;
   m_signalDirty = false;
 }
 
@@ -671,6 +682,7 @@ bool CDRMAtomic::TestFramebuffer(struct gbm_bo* bo)
 void CDRMAtomic::FlipPage(struct gbm_bo* bo, bool rendered, bool videoLayer, bool async)
 {
   ResetCB1PresentationTime();
+  m_commitFellBack = false;
   m_lastPageAccepted=false;
   struct drm_fb* drm_fb = nullptr;
   uint32_t flags = 0;
@@ -820,7 +832,8 @@ bool CDRMAtomic::AddProperty(CDRMObject* object, const char* name, uint64_t valu
   if (added && DVBRIDGE::DiagnosticsEnabled() &&
       (strcmp(name, "MODE_ID") == 0 || strcmp(name, "ACTIVE") == 0 ||
        strcmp(name, "DVBRIDGE_DV_STANDARD_LAB") == 0 || strcmp(name, "HDR_OUTPUT_METADATA") == 0 ||
-       strcmp(name, "Colorspace") == 0 || strcmp(name, "max bpc") == 0 ||
+       strcmp(name, "Colorspace") == 0 || strcmp(name, "color format") == 0 ||
+       strcmp(name, "max bpc") == 0 ||
        strcmp(name, "Broadcast RGB") == 0 || strcmp(name, "NV_HDMI_VSIF_METADATA") == 0 ||
        strcmp(name, "dithering mode") == 0))
     m_signalDirty = true;
@@ -841,25 +854,28 @@ void CDRMAtomic::ReportSignalState() noexcept try
   const auto color = get(m_connector, "Colorspace");
   const auto bpc = get(m_connector, "max bpc");
   const auto rgb = get(m_connector, "Broadcast RGB");
+  const auto format = get(m_connector, "color format");
   const auto active = get(m_crtc, "ACTIVE");
   const auto nv = get(m_connector, "NV_HDMI_VSIF_METADATA");
   const auto dither = get(m_connector, "dithering mode");
   const auto& mode = m_committedMode;
-  const std::array<uint64_t, 25> state{m_connector ? m_connector->GetId() : 0,
+  const std::array<uint64_t, 27> state{m_connector ? m_connector->GetId() : 0,
       m_crtc ? m_crtc->GetId() : 0, dv.value.value_or(0), hdr.value.value_or(0),
       color.value.value_or(0), bpc.value.value_or(0), rgb.value.value_or(0),
       mode.hdisplay, mode.vdisplay, mode.clock, mode.htotal, mode.vtotal, mode.flags,
       mode.vscan, active.value.value_or(0), dv.Code(),hdr.Code(),color.Code(),bpc.Code(),rgb.Code(),active.Code(),
-      nv.value.value_or(0),nv.Code(),dither.value.value_or(0),dither.Code()};
+      nv.value.value_or(0),nv.Code(),dither.value.value_or(0),dither.Code(),
+      format.value.value_or(0),format.Code()};
   if (m_signalKnown && state == m_signalState)
     return;
   const auto error = m_connector ? m_connector->PropertyInventoryError() : std::nullopt;
   if (DVBRIDGE::DiagnosticLog(LOGINFO,
-      "DVBridge signal: origin=accepted-commit-cache connector={} crtc={} dv_property={} dv_value={} hdr_property={} hdr_value={} colorspace_property={} colorspace_value={} max_bpc_property={} max_bpc_ceiling={} rgb_property={} rgb_value={} active_property={} active_value={} mode={}x{} clock_khz={} inventory_error={} nv_vsif_property={} nv_vsif_value={} dither_property={} dither_value={}",
+      "DVBridge signal: origin=accepted-commit-cache connector={} crtc={} dv_property={} dv_value={} hdr_property={} hdr_value={} colorspace_property={} colorspace_value={} max_bpc_property={} max_bpc_ceiling={} rgb_property={} rgb_value={} active_property={} active_value={} mode={}x{} clock_khz={} inventory_error={} nv_vsif_property={} nv_vsif_value={} dither_property={} dither_value={} color_format_property={} color_format_value={}",
       state[0], state[1], dv.Presence(),dv.Value(),hdr.Presence(),hdr.Value(),
       color.Presence(),color.Value(),bpc.Presence(),bpc.Value(),rgb.Presence(),rgb.Value(),
       active.Presence(),active.Value(),mode.hdisplay,mode.vdisplay,mode.clock,
-      error ? std::to_string(*error) : "unavailable",nv.Presence(),nv.Value(),dither.Presence(),dither.Value()))
+      error ? std::to_string(*error) : "unavailable",nv.Presence(),nv.Value(),dither.Presence(),dither.Value(),
+      format.Presence(),format.Value()))
   {
     m_signalKnown = true;
     m_signalState = state;
@@ -945,6 +961,7 @@ void CDRMAtomic::CDRMAtomicRequest::LogDVProperties()
       const auto name = object.first->GetPropertyName(property.first);
       if (name != "DVBRIDGE_DV_STANDARD_LAB" && name != "HDR_OUTPUT_METADATA" &&
           name != "max bpc" && name != "Broadcast RGB" && name != "Colorspace" &&
+          name != "color format" &&
           name != "CRTC_ID" && name != "ACTIVE" && name != "VRR_ENABLED" &&
           name != "CTM" && name != "GAMMA_LUT" && name != "DEGAMMA_LUT" &&
           name != "rotation" && name != "alpha" && name != "COLOR_PIPELINE" &&

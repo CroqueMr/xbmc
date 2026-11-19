@@ -168,6 +168,13 @@ protected:
   void PresentRenderImpl(bool rendered) override {};
   bool CreateContext() override;
 #ifdef HAVE_DVBRIDGE
+  bool ConnectorPreferencesAllowed() const override;
+  bool StageTransportPreferences() override;
+  std::optional<bool> TransportLimitedColor() const override;
+  bool CaptureCB1ConnectorPreferences();
+  std::optional<uint64_t> RestoredConnectorProperty(const char* name) const override;
+  bool StageCB1ConnectorPreferences(bool restore);
+  void CompleteCB1ConnectorRestore();
   int VideoOutputBitDepth(const VideoPicture* picture) const override;
   bool RejectDVOutputSurface() override;
 #endif
@@ -193,6 +200,8 @@ private:
 #endif
   void PresentFrame(bool rendered, bool videoLayer);
   bool m_guiCompositing{false};
+  int m_guiColorTransfer{0};
+  bool m_compositeShaderLimited{false};
   CFrameBufferObject m_guiFbo;
   int m_guiFboWidth{0};
   int m_guiFboHeight{0};
@@ -263,6 +272,9 @@ private:
   uint64_t m_dvPendingStream{}, m_dvPendingPolicy{}, m_dvFailedStream{}, m_dvFailedPolicy{};
   bool m_dvOutputRetiring{}, m_dvOrdinaryFrame{};
   CDVBridgeState m_dvState;
+  CDVBridgeState m_cb1ConnectorState;
+  bool m_cb1RestoringPreferences{};
+  std::optional<bool> m_cb1LimitedRange, m_cb1OrdinaryLimitedRange;
   DVBRIDGE::DiagnosticFailures m_dvSetupFailures;
   DVBRIDGE::DiagnosticFailures m_dvScreenshotFailures;
   DVBRIDGE::DiagnosticInterval m_dvGuiDiagnostic;
