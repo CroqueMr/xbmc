@@ -40,7 +40,10 @@ CSubtitlesSettings::CSubtitlesSettings(const std::shared_ptr<CSettings>& setting
        CSettings::SETTING_SUBTITLES_LANGUAGES,      CSettings::SETTING_SUBTITLES_STORAGEMODE,
        CSettings::SETTING_SUBTITLES_CUSTOMPATH,     CSettings::SETTING_SUBTITLES_PAUSEONSEARCH,
        CSettings::SETTING_SUBTITLES_DOWNLOADFIRST,  CSettings::SETTING_SUBTITLES_TV,
-       CSettings::SETTING_SUBTITLES_MOVIE,          CSettings::SETTING_SUBTITLES_LINE_SPACING});
+       CSettings::SETTING_SUBTITLES_MOVIE,          CSettings::SETTING_SUBTITLES_LINE_SPACING,
+       "subtitles.bitmapauthoring", "subtitles.bitmapplacement", "subtitles.bitmapoffset",
+       "subtitles.bitmapzoom", "subtitles.bitmapsdrbrightness", "subtitles.bitmapsdrsaturation",
+       "subtitles.bitmaphdrbrightness", "subtitles.bitmaphdrsaturation"});
 }
 
 CSubtitlesSettings::~CSubtitlesSettings()
@@ -65,6 +68,26 @@ void CSubtitlesSettings::OnSettingChanged(const std::shared_ptr<const CSetting>&
 Align CSubtitlesSettings::GetAlignment() const
 {
   return static_cast<Align>(m_settings->GetInt(CSettings::SETTING_SUBTITLES_ALIGN));
+}
+
+BitmapOptions CSubtitlesSettings::GetBitmapOptions() const
+{
+  BitmapOptions options;
+#ifdef HAVE_DVBRIDGE
+  const auto read = [this](const char* id, int fallback)
+  {
+    return m_settings->GetSetting(id) ? m_settings->GetInt(id) : fallback;
+  };
+  options.authoring = read("subtitles.bitmapauthoring", options.authoring);
+  options.placement = read("subtitles.bitmapplacement", options.placement);
+  options.offset = read("subtitles.bitmapoffset", options.offset);
+  options.zoom = read("subtitles.bitmapzoom", options.zoom);
+  options.sdrBrightness = read("subtitles.bitmapsdrbrightness", options.sdrBrightness);
+  options.sdrSaturation = read("subtitles.bitmapsdrsaturation", options.sdrSaturation);
+  options.hdrBrightness = read("subtitles.bitmaphdrbrightness", options.hdrBrightness);
+  options.hdrSaturation = read("subtitles.bitmaphdrsaturation", options.hdrSaturation);
+#endif
+  return options;
 }
 
 void CSubtitlesSettings::SetAlignment(Align align) const

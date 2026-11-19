@@ -17,15 +17,18 @@
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "application/ApplicationVolumeHandling.h"
+#include "cores/AudioEngine/Interfaces/AE.h"
 #include "cores/AudioEngine/Utils/AEUtil.h"
 #include "cores/DataCacheCore.h"
 #include "cores/EdlEdit.h"
+#include "cores/VideoPlayer/Interface/StreamInfo.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIDialog.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/guiinfo/GUIInfo.h"
 #include "guilib/guiinfo/GUIInfoHelper.h"
 #include "guilib/guiinfo/GUIInfoLabels.h"
+#include "guilib/guiinfo/VideoProcessingInfoGUI.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "utils/StringUtils.h"
@@ -167,6 +170,16 @@ bool CPlayerGUIInfo::GetLabel(std::string& value,
                               const CGUIInfo& info,
                               std::string* fallback) const
 {
+  const auto processingId=static_cast<uint32_t>(info.GetInfo());
+  if (processingId == PLAYER_PROCESS_VIDEOSIDEDATA)
+  {
+    value = CServiceBroker::GetDataCacheCore().GetVideoSourceSideData();
+    return true;
+  }
+  if (processingId >= PLAYER_PROCESS_VIDEOOUTPUTHDRTYPE &&
+      processingId <= PLAYER_PROCESS_VIDEOOUTPUTBITS)
+    return VideoProcessingInfoGUI::GetLabel(processingId,
+        CServiceBroker::GetDataCacheCore().GetVideoProcessingInfo(), value);
   switch (info.GetInfo())
   {
     ///////////////////////////////////////////////////////////////////////////////////////////////
@@ -340,14 +353,133 @@ bool CPlayerGUIInfo::GetLabel(std::string& value,
       value = StringUtils::Format("{:.2f}", CServiceBroker::GetDataCacheCore().GetVideoDAR());
       return true;
     case PLAYER_PROCESS_VIDEOWIDTH:
-      value = StringUtils::FormatNumber(CServiceBroker::GetDataCacheCore().GetVideoWidth());
+      value = std::to_string(CServiceBroker::GetDataCacheCore().GetVideoWidth());
       return true;
     case PLAYER_PROCESS_VIDEOHEIGHT:
-      value = StringUtils::FormatNumber(CServiceBroker::GetDataCacheCore().GetVideoHeight());
+      value = std::to_string(CServiceBroker::GetDataCacheCore().GetVideoHeight());
       return true;
     case PLAYER_PROCESS_VIDEOSCANTYPE:
       value = CServiceBroker::GetDataCacheCore().IsVideoInterlaced() ? "i" : "p";
       return true;
+    case PLAYER_PROCESS_AUDIOSOURCETITLE:
+    case PLAYER_PROCESS_AUDIOSOURCEFORMAT:
+    case PLAYER_PROCESS_AUDIOSOURCECHANNELS:
+    case PLAYER_PROCESS_AUDIOBEDOBJECTSLABEL:
+    case PLAYER_PROCESS_AUDIOBEDOBJECTS:
+    case PLAYER_PROCESS_AUDIOPRESENTATION:
+    case PLAYER_PROCESS_AUDIODIALNORM:
+    case PLAYER_PROCESS_AUDIOSOURCELANGUAGE:
+    case PLAYER_PROCESS_AUDIOSOURCEBITRATE:
+    case PLAYER_PROCESS_AUDIOOUTPUTTRANSPORT:
+    case PLAYER_PROCESS_AUDIOOUTPUTCODEC:
+    case PLAYER_PROCESS_AUDIOOUTPUTDATA:
+    case PLAYER_PROCESS_AUDIOOUTPUTCHANNELS:
+    {
+      if (!m_appPlayer->IsPlaying() || !m_appPlayer->HasAudio())
+        return false;
+      AudioStreamInfo stream;
+      m_appPlayer->GetAudioStreamInfo(CURRENT_STREAM, stream);
+      const auto& source = stream.source;
+      if (!stream.valid || !source.valid)
+        return false;
+      switch (info.GetInfo())
+      {
+        case PLAYER_PROCESS_AUDIOSOURCETITLE:
+          value = AE::SourceTitle(source);
+          return true;
+        case PLAYER_PROCESS_AUDIOSOURCEFORMAT:
+          value = AE::SourceFormat(source);
+          return true;
+        case PLAYER_PROCESS_AUDIOSOURCECHANNELS:
+          value = AE::SourceChannels(source);
+          return true;
+        case PLAYER_PROCESS_AUDIOBEDOBJECTSLABEL:
+          value = AE::BedObjectsLabel(source);
+          return true;
+        case PLAYER_PROCESS_AUDIOBEDOBJECTS:
+          value = AE::BedObjects(source);
+          return true;
+        case PLAYER_PROCESS_AUDIOPRESENTATION:
+          value = AE::Presentation(source);
+          return true;
+        case PLAYER_PROCESS_AUDIODIALNORM:
+          value = AE::Dialnorm(source);
+          return true;
+        case PLAYER_PROCESS_AUDIOSOURCELANGUAGE:
+          value = stream.language.GetEnglishName();
+          if (!value.empty() && (stream.flags & FLAG_COMMENT))
+            value += " (commentary)";
+          if (!value.empty() && (stream.flags & FLAG_VISUAL_IMPAIRED))
+            value += " (audio description)";
+          return true;
+        case PLAYER_PROCESS_AUDIOSOURCEBITRATE:
+        {
+          const auto observed = CServiceBroker::GetDataCacheCore().GetAudioSourceInfo();
+          const bool current = observed.valid && observed.uniqueId == source.uniqueId &&
+                               observed.demuxerId == source.demuxerId && observed.codec == source.codec;
+          const int measured = current ? CServiceBroker::GetDataCacheCore().GetAudioLiveBitRate() : 0;
+          const int bitrate = measured > 0 ? measured : stream.bitrate;
+          if (bitrate > 0)
+          {
+            value = bitrate >= 1000000 ? StringUtils::Format("{:.1f} Mb/s", bitrate / 1000000.0)
+                                       : StringUtils::Format("{:.0f} Kb/s", bitrate / 1000.0);
+            if (measured <= 0)
+              value += " (stream)";
+          }
+          return true;
+        }
+      }
+      auto* engine = CServiceBroker::GetActiveAE();
+      AE::SinkInfo sink;
+      if (!engine || !engine->GetCurrentSinkInfo(sink))
+        return false;
+      const bool raw = sink.mode == AE::SinkMode::Passthrough || sink.mode == AE::SinkMode::Transcoded;
+      const auto& format = sink.format;
+      if (info.GetInfo() == PLAYER_PROCESS_AUDIOOUTPUTTRANSPORT)
+      {
+        value = sink.mode == AE::SinkMode::Passthrough ? "Passthrough"
+                : sink.mode == AE::SinkMode::Transcoded ? "Transcoded"
+                : AE::IsNativePCM(source.codec) ? "Native PCM" : "PCM decoded";
+      }
+      else if (info.GetInfo() == PLAYER_PROCESS_AUDIOOUTPUTDATA)
+      {
+        if (raw)
+          value = "RAW";
+        else
+        {
+          const auto bits = CAEUtil::DataFormatToUsedBits(format.m_dataFormat);
+          if (bits > 0)
+            value = StringUtils::Format("{}-bit{}", bits,
+                format.m_dataFormat == AE_FMT_FLOAT || format.m_dataFormat == AE_FMT_FLOATP ? " float" : "");
+          const auto rate = AE::FormatSampleRate(format.m_sampleRate);
+          if (!rate.empty())
+            value += (value.empty() ? "" : " / ") + rate;
+        }
+      }
+      else if (info.GetInfo() == PLAYER_PROCESS_AUDIOOUTPUTCHANNELS && !raw)
+        value = AE::FormatChannels(CAEUtil::GetAVChannelLayout(format.m_channelLayout),
+                                   format.m_channelLayout.Count());
+      else if (info.GetInfo() == PLAYER_PROCESS_AUDIOOUTPUTCODEC && raw)
+      {
+        switch (format.m_streamInfo.m_type)
+        {
+          case CAEStreamInfo::STREAM_TYPE_AC3: value = "Dolby Digital"; break;
+          case CAEStreamInfo::STREAM_TYPE_EAC3: value = "Dolby Digital Plus"; break;
+          case CAEStreamInfo::STREAM_TYPE_TRUEHD: value = "TrueHD"; break;
+          case CAEStreamInfo::STREAM_TYPE_MLP: value = "MLP"; break;
+          case CAEStreamInfo::STREAM_TYPE_DTSHD_MA: value = "DTS-HD MA"; break;
+          case CAEStreamInfo::STREAM_TYPE_DTSHD: value = "DTS-HD HRA"; break;
+          case CAEStreamInfo::STREAM_TYPE_DTSHD_CORE: value = "DTS core"; break;
+          case CAEStreamInfo::STREAM_TYPE_DTS_512:
+          case CAEStreamInfo::STREAM_TYPE_DTS_1024:
+          case CAEStreamInfo::STREAM_TYPE_DTS_2048: value = "DTS"; break;
+          default: break;
+        }
+        if (sink.mode == AE::SinkMode::Passthrough && value == AE::SourceCodec(source))
+          value.clear();
+      }
+      return true;
+    }
     case PLAYER_PROCESS_AUDIODECODER:
       value = CServiceBroker::GetDataCacheCore().GetAudioDecoderName();
       return true;

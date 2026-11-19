@@ -14486,7 +14486,7 @@ msgstr ""
 #: xbmc/playlists/SmartPlayList.cpp
 #: addons/skin.estuary/xml/DialogPlayerProcessInfo.xml
 msgctxt "#20478"
-msgid "DV profile"
+msgid "Dolby Vision profile"
 msgstr ""
 
 #. Used in the smart playlist editor to define a watched mode
@@ -25794,4 +25794,595 @@ msgstr ""
 #: system/settings/settings.xml
 msgctxt "#40804"
 msgid "{0:.1f} dB"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40810"
+msgid "CB1 - Dolby Vision engine"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40811"
+msgid "Dolby Vision default playback"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40812"
+msgid "Dolby Vision Reference"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40813"
+msgid "HDR10 / HDR10+ conversion"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40814"
+msgid "Kodi default"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40815"
+msgid "Choose the default playback circuit for Dolby Vision sources, including HLG-based Dolby Vision. New files use this default. Playback-menu choices apply only to the current file. Kodi default uses native Kodi playback."
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40816"
+msgid "Enhanced player information"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40817"
+msgid "Use enhanced player information when pressing O. Disable to use Kodi's original information panel."
+msgstr ""
+
+#: addons/skin.estuary/xml/IncludesDVProcessInfo.xml
+msgctxt "#40818"
+msgid "Player information"
+msgstr ""
+
+#: system/settings/settings.xml
+msgctxt "#40819"
+msgid "Dolby Vision Adaptive HDR Mapping"
+msgstr ""
+
+msgctxt "#40820"
+msgid " - HDR10 conversion method"
+msgstr ""
+
+msgctxt "#40821"
+msgid "HDR10 Rendering uses source metadata. LLDV Reference – HDR10 Output maps to the configured display peak, black level and gamut. HDR10+ sends picture statistics and representable trims to a compatible display."
+msgstr ""
+
+msgctxt "#40922"
+msgid "HDR10+ Rendering"
+msgstr ""
+
+msgctxt "#40923"
+msgid "No HDR10+ output"
+msgstr ""
+
+msgctxt "#40925"
+msgid " - Disable L2 trims"
+msgstr ""
+
+msgctxt "#40926"
+msgid "Reference and Master Reference only. L8 trims remain active."
+msgstr ""
+
+msgctxt "#40822"
+msgid "HDR10 Rendering"
+msgstr ""
+
+msgctxt "#40823"
+msgid "LLDV Reference – HDR10 Output"
+msgstr ""
+
+msgctxt "#40829"
+msgid " - TV peak luminance (nits)"
+msgstr ""
+
+msgctxt "#40830"
+msgid "Enter a known TV peak, 1 to 10000 nits. This is a processing reference, not measured TV light. LLDV Reference – HDR10 Output has its own display calibration settings."
+msgstr ""
+
+msgctxt "#40831"
+msgid " - TV panel type"
+msgstr ""
+
+msgctxt "#40832"
+msgid "Optional TV panel type. Peak luminance and color gamut define the manual profile."
+msgstr ""
+
+msgctxt "#40833"
+msgid "Unset"
+msgstr ""
+
+msgctxt "#40834"
+msgid "OLED"
+msgstr ""
+
+msgctxt "#40835"
+msgid "LCD"
+msgstr ""
+
+msgctxt "#40836"
+msgid " - TV color gamut"
+msgstr ""
+
+msgctxt "#40837"
+msgid "Use P3-D65 for most HDR TVs; choose a known alternative when appropriate. This selects gamut, not a separate whitepoint or measured calibration."
+msgstr ""
+
+msgctxt "#40838"
+msgid "BT709"
+msgstr ""
+
+msgctxt "#40839"
+msgid "P3-D65"
+msgstr ""
+
+msgctxt "#40840"
+msgid "BT2020"
+msgstr ""
+
+msgctxt "#40841"
+msgid "No Dolby Vision output"
+msgstr ""
+
+msgctxt "#40842"
+msgid "No HDR10 output"
+msgstr ""
+
+msgctxt "#40843"
+msgid "GPU processing unavailable"
+msgstr ""
+
+msgctxt "#40844"
+msgid "Mode unavailable for source"
+msgstr ""
+
+msgctxt "#40845"
+msgid "Configure the TV profile"
+msgstr ""
+
+msgctxt "#40846"
+msgid "Output activation failed"
+msgstr ""
+
+msgctxt "#40847"
+msgid "Display restore failed"
+msgstr ""
+
+msgctxt "#40848"
+msgid "Link minimum"
+msgstr ""
+
+msgctxt "#40849"
+msgid "Output availability"
+msgstr ""
+
+msgctxt "#40850"
+msgid "Atomic output result"
+msgstr ""
+
+msgctxt "#40851"
+msgid "Unavailable"
+msgstr ""
+
+#. Driver-validated minimum link precision, not a measured link depth
+msgctxt "#40852"
+msgid "{}-bit minimum"
+msgstr ""
+
+msgctxt "#40853"
+msgid " - Configure TV profile"
+msgstr ""
+
+msgctxt "#40854"
+msgid "Set peak and gamut for Expert or Adaptive HDR Mapping."
+msgstr ""
+
+msgctxt "#40857"
+msgid "Show playback mode at start"
+msgstr ""
+
+msgctxt "#40900"
+msgid "Asynchronous frame preparation"
+msgstr ""
+
+msgctxt "#40901"
+msgid "Prepare at most one next CB1 frame while the current frame is presented. Native and fallback playback stay unchanged. Applies to the next video."
+msgstr ""
+
+msgctxt "#40858"
+msgid "Show the accepted playback mode once when a video starts."
+msgstr ""
+
+msgctxt "#40863"
+msgid "Playback mode"
+msgstr ""
+
+msgctxt "#40864"
+msgid "Disable TV dynamic tone mapping"
+msgstr ""
+
+msgctxt "#40865"
+msgid "HDR10 default playback"
+msgstr ""
+
+msgctxt "#40866"
+msgid "Kodi default"
+msgstr ""
+
+msgctxt "#40867"
+msgid "Dolby Vision Rendering"
+msgstr ""
+
+msgctxt "#40868"
+msgid "Dolby Vision Adaptive HDR Mapping"
+msgstr ""
+
+msgctxt "#40870"
+msgid "Choose the default playback circuit for HDR10 sources. New files use this default. Playback-menu choices apply only to the current file. Adaptive requires a TV profile. Kodi default uses native Kodi playback."
+msgstr ""
+
+msgctxt "#40875"
+msgid "Requested rendering is unavailable. Playback stopped."
+msgstr ""
+
+msgctxt "#40876"
+msgid "Playback modes | Source: {0}"
+msgstr ""
+
+msgctxt "#40907"
+msgid "FEL upscaling"
+msgstr ""
+
+msgctxt "#40908"
+msgid "FEL upscaling: VAAPI, GPU bilinear or Reference GPU. Master Reference always uses Reference GPU. If VAAPI is unavailable, GPU bilinear is used."
+msgstr ""
+
+msgctxt "#40909"
+msgid "Bilinear (GPU)"
+msgstr ""
+
+msgctxt "#40995"
+msgid "Reference (GPU)"
+msgstr ""
+
+msgctxt "#40911"
+msgid "Set HDR target peak"
+msgstr ""
+
+msgctxt "#40912"
+msgid "Set HDR target gamut"
+msgstr ""
+
+msgctxt "#40910"
+msgid "VAAPI"
+msgstr ""
+
+msgctxt "#40913"
+msgid "Dolby Vision Master Reference"
+msgstr ""
+
+msgctxt "#40914"
+msgid "Dolby Vision Adaptive HDR Mapping"
+msgstr ""
+
+msgctxt "#40915"
+msgid "Insufficient rendering headroom. Switching to Dolby Vision Reference."
+msgstr ""
+
+msgctxt "#40916"
+msgid " - Master Reference output"
+msgstr ""
+
+msgctxt "#40917"
+msgid "Preferred TV-Led transport. Profile 5 remains direct IPT."
+msgstr ""
+
+msgctxt "#40918"
+msgid "YCbCr"
+msgstr ""
+
+msgctxt "#40919"
+msgid "IPT-PQc2"
+msgstr ""
+
+msgctxt "#40920"
+msgid "Allow Master Reference to switch to Reference"
+msgstr ""
+
+msgctxt "#40921"
+msgid "Switch when sustained rendering headroom is insufficient. Off keeps Master Reference strict."
+msgstr ""
+
+msgctxt "#40971"
+msgid "Pixels unchanged. No HDR10+ curve or saturation."
+msgstr ""
+
+msgctxt "#41012"
+msgid "HDR10+ default playback"
+msgstr ""
+
+msgctxt "#41013"
+msgid "Choose the default playback circuit for HDR10+ sources. New files use this default. Playback-menu choices apply only to the current file. Kodi default uses native Kodi playback."
+msgstr ""
+
+msgctxt "#41014"
+msgid "Kodi default"
+msgstr ""
+
+msgctxt "#40970"
+msgid "Dolby Vision Rendering"
+msgstr ""
+
+msgctxt "#40940"
+msgid "Bitmap subtitles (PGS/DVB)"
+msgstr ""
+
+msgctxt "#40941"
+msgid "Bitmap subtitle authoring"
+msgstr ""
+
+msgctxt "#40942"
+msgid "Auto keeps native interpretation. Choose SDR or PQ when needed. Reselect the subtitle track or reopen playback to apply. Disc menus are excluded."
+msgstr ""
+
+msgctxt "#40943"
+msgid "Auto (native interpretation)"
+msgstr ""
+
+msgctxt "#40944"
+msgid "SDR (BT.709)"
+msgstr ""
+
+msgctxt "#40945"
+msgid "HDR PQ (BT.2020)"
+msgstr ""
+
+msgctxt "#40946"
+msgid "Bitmap subtitle position"
+msgstr ""
+
+msgctxt "#40947"
+msgid "Move the complete bitmap subtitle block relative to native video or screen geometry. Text subtitles and disc menu graphics are unchanged."
+msgstr ""
+
+msgctxt "#40948"
+msgid "Original placement"
+msgstr ""
+
+msgctxt "#40949"
+msgid "Bottom of video"
+msgstr ""
+
+msgctxt "#40950"
+msgid "Top of video"
+msgstr ""
+
+msgctxt "#40951"
+msgid "Bottom of screen"
+msgstr ""
+
+msgctxt "#40952"
+msgid "Top of screen"
+msgstr ""
+
+msgctxt "#40953"
+msgid "Manual offset"
+msgstr ""
+
+msgctxt "#40954"
+msgid "Bitmap subtitle vertical offset"
+msgstr ""
+
+msgctxt "#40955"
+msgid "Positive values move bitmap subtitles upwards. The complete block stays within the screen. Zero preserves the chosen position."
+msgstr ""
+
+msgctxt "#40956"
+msgid "Bitmap subtitle size"
+msgstr ""
+
+msgctxt "#40957"
+msgid "100% preserves original size. Multiline bitmaps scale as one block; oversized blocks are limited to fit the screen."
+msgstr ""
+
+msgctxt "#40958"
+msgid "SDR-authored bitmap brightness"
+msgstr ""
+
+msgctxt "#40959"
+msgid "SDR-authored bitmap saturation"
+msgstr ""
+
+msgctxt "#40960"
+msgid "PQ-authored bitmap brightness"
+msgstr ""
+
+msgctxt "#40961"
+msgid "PQ-authored bitmap saturation"
+msgstr ""
+
+msgctxt "#40962"
+msgid "Adjust only bitmap subtitles in their authoring domain before composition. 100% preserves original colours. Changes apply while paused too. Text subtitles, disc menus and movie pixels are unchanged."
+msgstr ""
+
+msgctxt "#40980"
+msgid " - Add CM4.0 metadata"
+msgstr ""
+
+msgctxt "#40981"
+msgid "Adds CM4 metadata without changing video pixels or removing L2 trims. TV rendering may change. Reference and Master only."
+msgstr ""
+
+msgctxt "#40982"
+msgid "Only if source has no L2 trims"
+msgstr ""
+
+msgctxt "#40983"
+msgid "Always"
+msgstr ""
+
+msgctxt "#40984"
+msgid "Auto"
+msgstr ""
+
+msgctxt "#40985"
+msgid "Auto 2"
+msgstr ""
+
+msgctxt "#40986"
+msgid " - CM4.0 Auto trigger"
+msgstr ""
+
+msgctxt "#40987"
+msgid "Source: append when the TV peak covers the mastering peak. Other choices use a fixed mastering limit. Sources without L2 always qualify."
+msgstr ""
+
+msgctxt "#40988"
+msgid "Source"
+msgstr ""
+
+msgctxt "#40989"
+msgid "1000 nits"
+msgstr ""
+
+msgctxt "#40990"
+msgid "2000 nits"
+msgstr ""
+
+msgctxt "#40991"
+msgid "4000 nits"
+msgstr ""
+
+msgctxt "#40992"
+msgid "10000 nits"
+msgstr ""
+
+msgctxt "#40993"
+msgid " - CM4.0 Auto 2 headroom (%)"
+msgstr ""
+
+msgctxt "#40994"
+msgid "Append while L1 peak fits the TV peak plus this margin. Requires TV peak brightness. Sources without L2 always qualify."
+msgstr ""
+
+msgctxt "#41030"
+msgid " - HDR10 rendering peak brightness"
+msgstr ""
+
+msgctxt "#41031"
+msgid "Enter the measured peak manually: 50 to 10000 nits, in 0.1-nit steps. Zero means not configured. Disable additional tone mapping on the display when comparing this player-led mapping."
+msgstr ""
+
+msgctxt "#41032"
+msgid " - HDR10 rendering display black level"
+msgstr ""
+
+msgctxt "#41033"
+msgid "Estimated display black floor. Custom overrides the estimate without changing peak brightness or gamut."
+msgstr ""
+
+msgctxt "#41034"
+msgid "OLED (0 nits)"
+msgstr ""
+
+msgctxt "#41035"
+msgid "LCD / Mini-LED (0.005 nits)"
+msgstr ""
+
+msgctxt "#41036"
+msgid "Projector (0.05 nits)"
+msgstr ""
+
+msgctxt "#41037"
+msgid "Custom"
+msgstr ""
+
+msgctxt "#41038"
+msgid " - HDR10 rendering custom black level (nits)"
+msgstr ""
+
+msgctxt "#41039"
+msgid "0 to 0.5 nit, in 0.0001-nit steps. This value is remembered independently of the selected black-level preset."
+msgstr ""
+
+msgctxt "#41040"
+msgid " - HDR10 rendering target color gamut"
+msgstr ""
+
+msgctxt "#41041"
+msgid "Nominal rendering volume. HDMI output remains BT.2020 PQ. Selecting BT.2020 does not imply that the display covers the entire gamut."
+msgstr ""
+
+msgctxt "#41100"
+msgid "Optimized GUI rendering"
+msgstr ""
+
+msgctxt "#41101"
+msgid "Reduce GUI compositing work during Dolby Vision playback on supported GPUs. Movie pixels and metadata are unchanged; very small GUI differences are possible. Off retains the existing rendering path."
+msgstr ""
+
+msgctxt "#41120"
+msgid "Use encoded frame as Dolby Vision active area"
+msgstr ""
+
+msgctxt "#41121"
+msgid "Ignore Level 5 margins only for files already cropped without matching metadata. Kodi zoom and placement still apply. Off preserves the authored active area; no automatic aspect-ratio correction is performed."
+msgstr ""
+
+msgctxt "#41130"
+msgid "SDR Rendering"
+msgstr ""
+
+msgctxt "#41131"
+msgid "HLG default playback"
+msgstr ""
+
+msgctxt "#41132"
+msgid "Choose the default playback circuit for original HLG video. New files use this default. Playback-menu choices apply only to the current file. Kodi default uses native Kodi playback."
+msgstr ""
+
+msgctxt "#41133"
+msgid "HDR/DV to SDR target"
+msgstr ""
+
+msgctxt "#41134"
+msgid "BT.709 target for HDR10, HDR10+ and Dolby Vision to SDR conversion only. Native SDR playback is unchanged. Custom values set peak luminance, gamma and black floor."
+msgstr ""
+
+msgctxt "#41135"
+msgid "Reference (100 nits / gamma 2.4)"
+msgstr ""
+
+msgctxt "#41136"
+msgid "Bright room (200 nits / gamma 2.2)"
+msgstr ""
+
+msgctxt "#41137"
+msgid "Custom / Projector"
+msgstr ""
+
+msgctxt "#41138"
+msgid " - SDR target peak (nits)"
+msgstr ""
+
+msgctxt "#41139"
+msgid " - SDR target gamma"
+msgstr ""
+
+msgctxt "#41142"
+msgid "Checking rendering support"
+msgstr ""
+
+msgctxt "#41141"
+msgid "Check SDR target settings"
+msgstr ""
+
+msgctxt "#41140"
+msgid " - SDR target black (nits)"
 msgstr ""

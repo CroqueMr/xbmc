@@ -1233,7 +1233,7 @@ constexpr std::array<InfoMap, 11> player_times = {{
 ///
 /// -----------------------------------------------------------------------------
 // clang-format off
-constexpr std::array<InfoMap, 20> player_process = {{
+constexpr std::array<InfoMap, 51> player_process = {{
     {"videodecoder",        PLAYER_PROCESS_VIDEODECODER},
     {"deintmethod",         PLAYER_PROCESS_DEINTMETHOD},
     {"pixformat",           PLAYER_PROCESS_PIXELFORMAT},
@@ -1254,6 +1254,36 @@ constexpr std::array<InfoMap, 20> player_process = {{
     {"videoqueuedatalevel", PLAYER_PROCESS_VIDEO_QUEUE_DATA_LEVEL},
     {"videoscantype",       PLAYER_PROCESS_VIDEOSCANTYPE},
     {"subtitledecoder",     PLAYER_PROCESS_SUBTITLEDECODER},
+    {"videooutputhdrtype", PLAYER_PROCESS_VIDEOOUTPUTHDRTYPE},
+    {"videoprocessingmode", PLAYER_PROCESS_VIDEOPROCESSINGMODE},
+    {"videoprocessingengine", PLAYER_PROCESS_VIDEOPROCESSINGENGINE},
+    {"videoprocessingcircuit", PLAYER_PROCESS_VIDEOPROCESSINGCIRCUIT},
+    {"videoprocessingfallback", PLAYER_PROCESS_VIDEOPROCESSINGFALLBACK},
+    {"videodvcmversion", PLAYER_PROCESS_VIDEODVCMVERSION},
+    {"videodvparsedblocks", PLAYER_PROCESS_VIDEODVPARSEDBLOCKS},
+    {"videodvappliedblocks", PLAYER_PROCESS_VIDEODVAPPLIEDBLOCKS},
+    {"videodvtransmittedblocks", PLAYER_PROCESS_VIDEODVTRANSMITTEDBLOCKS},
+    {"videosourcebits", PLAYER_PROCESS_VIDEOSOURCEBITS},
+    {"videodvprofile", PLAYER_PROCESS_VIDEODVPROFILE},
+    {"videodvlevel", PLAYER_PROCESS_VIDEODVLEVEL},
+    {"videodvversion", PLAYER_PROCESS_VIDEODVVERSION},
+    {"videodvlayers", PLAYER_PROCESS_VIDEODVLAYERS},
+    {"videooutputformat", PLAYER_PROCESS_VIDEOOUTPUTFORMAT},
+    {"videooutputbits", PLAYER_PROCESS_VIDEOOUTPUTBITS},
+    {"video.sidedata", PLAYER_PROCESS_VIDEOSIDEDATA},
+    {"audiosourcetitle", PLAYER_PROCESS_AUDIOSOURCETITLE},
+    {"audiosourceformat", PLAYER_PROCESS_AUDIOSOURCEFORMAT},
+    {"audiosourcechannels", PLAYER_PROCESS_AUDIOSOURCECHANNELS},
+    {"audiobedobjectslabel", PLAYER_PROCESS_AUDIOBEDOBJECTSLABEL},
+    {"audiobedobjects", PLAYER_PROCESS_AUDIOBEDOBJECTS},
+    {"audiopresentation", PLAYER_PROCESS_AUDIOPRESENTATION},
+    {"audiodialnorm", PLAYER_PROCESS_AUDIODIALNORM},
+    {"audiosourcelanguage", PLAYER_PROCESS_AUDIOSOURCELANGUAGE},
+    {"audiosourcebitrate", PLAYER_PROCESS_AUDIOSOURCEBITRATE},
+    {"audiooutputtransport", PLAYER_PROCESS_AUDIOOUTPUTTRANSPORT},
+    {"audiooutputcodec", PLAYER_PROCESS_AUDIOOUTPUTCODEC},
+    {"audiooutputdata", PLAYER_PROCESS_AUDIOOUTPUTDATA},
+    {"audiooutputchannels", PLAYER_PROCESS_AUDIOOUTPUTCHANNELS},
 }};
 // clang-format on
 

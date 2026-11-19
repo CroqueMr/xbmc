@@ -255,6 +255,7 @@ void CGUIFadeLabelControl::AssignDepth()
 {
   CGUIControl::AssignDepth();
   m_fadeDepth = m_cachedTransform.depth;
+  m_fadeMatrix.depth = m_fadeDepth;
 }
 
 std::string CGUIFadeLabelControl::GetDescription() const

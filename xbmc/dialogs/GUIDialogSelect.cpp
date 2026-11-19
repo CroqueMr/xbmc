@@ -12,11 +12,18 @@
 #include "FileItemList.h"
 #include "ServiceBroker.h"
 #include "guilib/GUIMessage.h"
+#include "input/actions/Action.h"
 #include "input/actions/ActionIDs.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "utils/StringUtils.h"
+#ifdef HAVE_DVBRIDGE
+#include "guilib/GUIFontManager.h"
+#include "guilib/GUIIncludes.h"
+#include "windowing/GraphicContext.h"
+#endif
 
+#include <algorithm>
 #include <memory>
 
 #define CONTROL_HEADING         1
@@ -44,6 +51,41 @@ CGUIDialogSelect::CGUIDialogSelect(int windowId)
 }
 
 CGUIDialogSelect::~CGUIDialogSelect(void) = default;
+
+#ifdef HAVE_DVBRIDGE
+std::unique_ptr<TiXmlElement> CGUIDialogSelect::Prepare(
+    const std::unique_ptr<TiXmlElement>& rootElement)
+{
+  if (!GetProperty("CB1.PlaybackModes").asBoolean())
+    return CGUIDialogBoxBase::Prepare(rootElement);
+  if (!rootElement)
+    return nullptr;
+
+  // This closed app include graph has no conditional includes or skin defaults.
+  auto preparedRoot = std::make_unique<TiXmlElement>(*rootElement);
+  CGUIIncludes includes;
+  includes.Load("special://xbmc/media/cb1/IncludesDVProcessInfo.xml");
+  includes.Resolve(preparedRoot.get());
+  return preparedRoot;
+}
+#endif
+
+bool CGUIDialogSelect::OnAction(const CAction& action)
+{
+#ifdef HAVE_DVBRIDGE
+  if (action.GetID() == ACTION_PLAYER_PROCESS_INFO)
+  {
+    if (GetProperty("CB1.PlaybackModes").asBoolean())
+    {
+      m_bConfirmed = false;
+      Close(true);
+    }
+    // Keep the shared O key from opening information over an ordinary selector.
+    return true;
+  }
+#endif
+  return CGUIDialogBoxBase::OnAction(action);
+}
 
 bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
 {
@@ -78,6 +120,25 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
 
   case GUI_MSG_WINDOW_INIT:
     {
+#ifdef HAVE_DVBRIDGE
+      const bool playback = GetProperty("CB1.PlaybackModes").asBoolean();
+      const std::string file = playback ?
+          "special://xbmc/media/cb1/DialogPlaybackModes.xml" : "DialogSelect.xml";
+      if (GetProperty("xmlfile").asString() != file)
+      {
+        FreeResources(true);
+        SetProperty("xmlfile", file);
+      }
+      if (playback)
+      {
+        const RESOLUTION_INFO resolution(1920, 1080);
+        SetCoordsRes(resolution);
+        g_fontManager.LoadTTF("CB1.SwitchBody", "special://xbmc/media/Fonts/arial.ttf",
+                            0xfff0f0f0, 0, 25, 0, false, 1.0f, 1.0f, &resolution);
+        g_fontManager.LoadTTF("CB1.SwitchHelp", "special://xbmc/media/Fonts/arial.ttf",
+                            0xffa0a0a0, 0, 23, 0, false, 1.0f, 1.0f, &resolution);
+      }
+#endif
       m_bButtonPressed = false;
       m_bButton2Pressed = false;
       m_bConfirmed = false;
@@ -99,6 +160,8 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
           if (iSelected >= 0 && iSelected < m_vecList->Size())
           {
             CFileItemPtr item(m_vecList->Get(iSelected));
+            if (item->GetProperty("disabled").asBoolean())
+              return true;
             if (m_multiSelection)
               item->Select(!item->IsSelected());
             else
@@ -342,6 +405,24 @@ void CGUIDialogSelect::OnWindowLoaded()
 
 void CGUIDialogSelect::OnInitWindow()
 {
+#ifdef HAVE_DVBRIDGE
+  if (GetProperty("CB1.PlaybackModes").asBoolean())
+  {
+    const int maxRows = std::max(1, (GetCoordsRes().iHeight - 80 - 112) / 50);
+    const float rowsHeight = 50.0f * std::clamp(m_vecList->Size(), 1, maxRows);
+    const float height = 112.0f + rowsHeight;
+    if (auto* group = GetControl(9100))
+    {
+      group->SetPosition(group->GetXPosition(), GetCoordsRes().iHeight - 40.0f - height);
+      group->SetHeight(height);
+    }
+    if (auto* background = GetControl(9101)) background->SetHeight(height);
+    for (int id : {CONTROL_SIMPLE_LIST, CONTROL_DETAILED_LIST})
+      if (auto* list = GetControl(id)) list->SetHeight(rowsHeight);
+    if (auto* help = GetControl(9102))
+      help->SetPosition(help->GetXPosition(), 70.0f + rowsHeight);
+  }
+#endif
   m_viewControl.SetItems(*m_vecList);
   m_selectedItems.clear();
   for(int i = 0 ; i < m_vecList->Size(); i++)

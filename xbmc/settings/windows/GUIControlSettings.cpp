@@ -35,6 +35,10 @@
 #include "settings/MediaSourceSettings.h"
 #include "settings/SettingAddon.h"
 #include "settings/SettingControl.h"
+#ifdef HAVE_DVBRIDGE
+#include "settings/SettingConditions.h"
+#include "dialogs/DVPlaybackModes.h"
+#endif
 #include "settings/SettingDateTime.h"
 #include "settings/SettingPath.h"
 #include "settings/SettingUtils.h"
@@ -175,6 +179,12 @@ bool GetIntegerOptions(const SettingConstPtr& setting,
     }
   }
 
+#ifdef HAVE_DVBRIDGE
+  if (setting->GetId()=="dvbridge.outputmode" || setting->GetId()=="dvbridge.hdr10method" ||
+      setting->GetId()=="dvbridge.hdr10source" || setting->GetId()=="dvbridge.hdr10plussource" ||
+      setting->GetId()=="dvbridge.hlgsource")
+    CSettingConditions::DVOutputOptions(setting,options);
+#endif
   switch (pSettingInt->GetOptionsSort())
   {
     case SettingOptionsSort::Ascending:
@@ -1124,7 +1134,12 @@ void CGUIControlButtonSetting::Update(bool fromControl, bool updateDisplayOnly)
           // CSettingAction.
           // Note: This can be removed once all settings use a proper control & format combination.
           // CSettingAction is strictly speaking not designed to have a label2, it does not even have a value.
-          strText = m_pButton->GetLabel2();
+#ifdef HAVE_DVBRIDGE
+          if (m_pSetting->GetId()=="dvbridge.playback")
+            strText=CDVPlaybackModes::DefaultPlaybackLabel();
+          else
+#endif
+            strText = m_pButton->GetLabel2();
 
           break;
         }

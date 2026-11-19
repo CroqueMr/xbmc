@@ -23,6 +23,7 @@ public:
   CGUIDialogSelect();
   explicit CGUIDialogSelect(int windowid);
   ~CGUIDialogSelect(void) override;
+  bool OnAction(const CAction& action) override;
   bool OnMessage(CGUIMessage& message) override;
   bool OnBack(int actionID) override;
 
@@ -49,6 +50,9 @@ public:
   void SetButtonFocus(bool buttonFocus);
 
 protected:
+#ifdef HAVE_DVBRIDGE
+  std::unique_ptr<TiXmlElement> Prepare(const std::unique_ptr<TiXmlElement>& rootElement) override;
+#endif
   CGUIControl *GetFirstFocusableControl(int id) override;
   void OnWindowLoaded() override;
   void OnInitWindow() override;
