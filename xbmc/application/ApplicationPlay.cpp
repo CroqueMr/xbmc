@@ -46,6 +46,9 @@ bool CApplicationPlay::ResolvePath()
   if (m_item.HasVideoInfoTag() && m_item.GetVideoInfoTag()->GetPath().starts_with("bluray://"))
     m_item.SetDynPath(m_item.GetVideoInfoTag()->m_strFileNameAndPath);
 
+  if (m_item.IsBackgroundHttpPlayback())
+    return true;
+
   // Translate/Resolve the url if needed - recursively, but only limited times.
   std::string lastDynPath{m_item.GetDynPath()};
   size_t itemResolveAttempt{0};

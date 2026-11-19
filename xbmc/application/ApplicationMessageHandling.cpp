@@ -508,6 +508,8 @@ bool CApplicationMessageHandling::OnMessage(const CGUIMessage& message)
 #endif
       m_app.SetCurrentFileItem(
           std::make_shared<CFileItem>(*std::static_pointer_cast<CFileItem>(message.GetItem())));
+      // A queued playlist entry can replace the resolved event item below.
+      const bool backgroundHttpPlayback = m_app.CurrentFileItem().IsBackgroundHttpPlayback();
       m_app.ResetPlayerEvent();
 
       CServiceBroker::GetPVRManager().OnPlaybackStarted(m_app.CurrentFileItem());
@@ -554,8 +556,9 @@ bool CApplicationMessageHandling::OnMessage(const CGUIMessage& message)
 
       // we don't want a busy dialog when switching channels
       const auto appPlayer = m_app.GetComponent<CApplicationPlayer>();
-      if (!m_app.CurrentFileItem().IsLiveTV() ||
-          (!appPlayer->IsPlayingVideo() && !appPlayer->IsPlayingAudio()))
+      if (!backgroundHttpPlayback &&
+          (!m_app.CurrentFileItem().IsLiveTV() ||
+           (!appPlayer->IsPlayingVideo() && !appPlayer->IsPlayingAudio())))
         CGUIDialogBusy::WaitOnEvent(m_app.m_playerEvent);
 
       return true;

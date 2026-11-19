@@ -1229,6 +1229,27 @@ void CFileItem::UpdateMimeType(bool lookup /*= true*/)
   FillInMimeType(lookup);
 }
 
+bool CFileItem::IsBackgroundHttpPlayback() const
+{
+  if (!GetProperty("backgroundplayback").asBoolean() || IsFolder() || GetMimeType().empty())
+    return false;
+
+  const auto& url = GetDynURL();
+  const auto& protocol = url.GetProtocol();
+  if ((protocol != "http" && protocol != "https") || url.IsDiscImage() ||
+      url.IsOpticalMediaFile() || URIUtils::IsArchive(GetDynPath()))
+    return false;
+
+  std::string mime = GetMimeType().substr(0, GetMimeType().find(';'));
+  StringUtils::Trim(mime);
+  StringUtils::ToLower(mime);
+  return (mime.size() > 6 && (mime.starts_with("audio/") || mime.starts_with("video/"))) ||
+         mime == "application/mp4" || mime == "application/ogg" || mime == "application/mxf" ||
+         mime == "application/vnd.apple.mpegurl" || mime == "vnd.apple.mpegurl" ||
+         mime == "application/x-mpegurl" || mime == "application/dash+xml" ||
+         mime == "application/vnd.ms-sstr+xml";
+}
+
 void CFileItem::SetMimeTypeForInternetFile()
 {
   if (m_doContentLookup && NETWORK::IsInternetStream(*this))
