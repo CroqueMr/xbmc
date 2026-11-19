@@ -457,6 +457,11 @@ void CVideoPlayerVideo::Process()
     }
     else if (ret == MSGQ_TIMEOUT)
     {
+      // The first picture is queued. Keep the worker available for the clock
+      // message instead of blocking on the next hardware decode.
+      if (m_syncState == IDVDStreamPlayer::SYNC_WAITSYNC)
+        continue;
+
       if (m_outputSate == OUTPUT_AGAIN &&
           m_picture.videoBuffer)
       {
