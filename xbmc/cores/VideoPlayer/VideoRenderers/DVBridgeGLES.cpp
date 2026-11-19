@@ -730,6 +730,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
       !base.lease || prediction.id.stream != base.binding.stream ||
       prediction.id.picture != base.binding.picture || !std::isfinite(base.pts))
   { m_asyncEligible = false; return FrameStatus::Failed; }
+  BeginDiagnosticStream(base.binding.stream);
   dvbridge_renderer_set_l2_trims_disabled(m_renderer, false);
   // Quarantined policy work cannot be bypassed by historical frame reuse.
   if (m_dvPolicyActive && dvbridge_render_dv_policy_poll(m_renderer) == DVBRIDGE_DV_FAILED)
@@ -873,6 +874,18 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
 }
 #endif
 
+void CDVBridgeGLES::BeginDiagnosticStream(uint64_t stream)
+{
+  if (!stream || stream == m_diagnosticStream) return;
+  if (m_diagnosticStream) Summary("stream-end");
+  m_diagnosticStream = stream;
+  m_failures.Reset();
+  m_prepares = m_directFrames = m_presentations = m_failedPresentations = 0;
+  m_lastSummary = m_lastReported = m_rawELImports = m_rawELHits = 0;
+  m_hdr10plusDiagnostics = {};
+  m_firstFrame = true;
+}
+
 bool CDVBridgeGLES::Failure(const char* stage)
 {
   if (DVBRIDGE::DiagnosticsEnabled())
@@ -880,7 +893,9 @@ bool CDVBridgeGLES::Failure(const char* stage)
     const auto now=DVBRIDGE::DiagnosticNowMs();
     const bool changed = m_failures.Record(now, stage);
     DVBRIDGE::DiagnosticFailureLog(stage, changed, LOGERROR,
-          "DVBridge renderer: stage={} failures={}", stage,m_failures.Count());
+          "DVBridge renderer: stage={} failures={} mode={} master_ipt={} hdr10={} target={} pending={} prepared={} output_bits={}",
+          stage,m_failures.Count(),int(m_effectiveMode),m_requested.masterIPT,m_hdr10,
+          m_scanout != nullptr,m_pending,m_prepared,m_outputBits);
     const bool eligible=m_live && m_advanced && m_hasCommitted &&
         m_pendingBinding.stream==m_committedBinding.stream &&
         m_pendingBinding.revision==m_committedBinding.revision;
@@ -913,8 +928,8 @@ void CDVBridgeGLES::Summary(const char* event)
   {
     if (!DVBRIDGE::DiagnosticsEnabled() ||
         (std::string_view(event) == "summary" && m_lastReported == m_presentations)) return;
-    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge advanced renderer {}: presented={} presentation_failures={} stage_failures={}",
-        event,m_presentations,m_failedPresentations,m_failures.Count());
+    DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge advanced renderer {}: presented={} presentation_failures={} stage_failures={} counter_stream={}",
+        event,m_presentations,m_failedPresentations,m_failures.Count(),m_diagnosticStream);
     m_lastReported = m_presentations;
     return;
   }
@@ -922,9 +937,9 @@ void CDVBridgeGLES::Summary(const char* event)
       (std::string_view(event) == "summary" && m_lastReported == m_prepares))
     return;
   DVBRIDGE::DiagnosticLog(LOGINFO,
-      "DVBridge renderer {}: prepared={} direct={} composed={} presented={} presentation_failures={} stage_failures={} raw_el_imports={} raw_el_hits={}",
+      "DVBridge renderer {}: prepared={} direct={} composed={} presented={} presentation_failures={} stage_failures={} raw_el_imports={} raw_el_hits={} counter_stream={}",
       event, m_prepares, m_directFrames, m_prepares - m_directFrames,
-      m_presentations, m_failedPresentations, m_failures.Count(),m_rawELImports,m_rawELHits);
+      m_presentations, m_failedPresentations, m_failures.Count(),m_rawELImports,m_rawELHits,m_diagnosticStream);
   m_lastReported = m_prepares;
 }
 
@@ -1315,7 +1330,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
     {
       m_firstFrame = false;
       m_lastSummary = DVBRIDGE::DiagnosticNowMs();
-      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge first frame: source={}x{} output={}x{} offset={},{} enhancement={} fel={} cm4={} direct={} bl_layout={} bl_texture={}x{} el={}x{} el_layout={} el_texture={}x{} bl_chroma={} el_chroma={}",
+      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge first frame: source={}x{} output={}x{} offset={},{} enhancement={} fel={} cm4={} direct={} bl_layout={} bl_texture={}x{} el={}x{} el_layout={} el_texture={}x{} bl_chroma={} el_chroma={} bl_uv_texture={}x{} el_uv_texture={}x{}",
           base.width, base.height, geometry.width, geometry.height, geometry.x, geometry.y,
           enhancement != nullptr, bool(m_pendingInfo & CDVPlaybackInfo::FEL),
           bool(m_pendingInfo & CDVPlaybackInfo::CM4), m_direct,
@@ -1323,7 +1338,9 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
           enhancement ? enhancement->width : 0, enhancement ? enhancement->height : 0,
           enhancement ? int(enhancement->layout) : -1,
           enhancement ? enhancement->planes[0].width : 0, enhancement ? enhancement->planes[0].height : 0,
-          int(base.chromaLocation), enhancement ? int(enhancement->chromaLocation) : -1);
+          int(base.chromaLocation), enhancement ? int(enhancement->chromaLocation) : -1,
+          base.planes[1].width,base.planes[1].height,
+          enhancement ? enhancement->planes[1].width : 0,enhancement ? enhancement->planes[1].height : 0);
     }
   }
   return m_prepared;
@@ -1349,6 +1366,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     const DVBRIDGE::OutputPreferences& preferences, bool allowPacked, const dvbridge_policy* selected,
     bool allowAsync)
 {
+  if (base.binding.Valid()) BeginDiagnosticStream(base.binding.stream);
   DVBRIDGE::ObserveDiagnostic(base.binding.stream,base.binding.picture,base.binding.revision,
       preferences.revision,"prepare-entry",preferences.output != DVBRIDGE::OutputMode::Disabled,false);
   if (m_submission.asyncEligible) m_submission = {};
@@ -1361,6 +1379,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   { Failure("renderer-unavailable"); m_asyncEligible = false; return FrameStatus::Failed; }
   const bool asyncSetting = m_context->AsyncPreparation(base.binding.stream);
   auto policy = selected ? *selected : preferences.Policy();
+  if (policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && !allowPacked)
+  {
+    // The next GUI pass can create its composition target. No render was attempted.
+    DVBRIDGE::DiagnosticStage("master-await-overlay");
+    return FrameStatus::Busy;
+  }
   // A selected policy already passed output admission, including compatibility routes.
   const bool fallback = !selected &&
       (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid();
@@ -1701,6 +1725,16 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PollHDR10Plus()
     return FrameStatus::Failed;
   }
   m_hdr10plusMetadata = metadata;
+  if (DVBRIDGE::DiagnosticsEnabled() && m_hdr10plusDiagnostics.Due(DVBRIDGE::DiagnosticNowMs()))
+  {
+    Crc32 histogram;
+    histogram.Compute(reinterpret_cast<const char*>(statistics.histogram),sizeof(statistics.histogram));
+    DVBRIDGE::DiagnosticLog(LOGINFO,
+        "CB1 HDR10+ analysis: source={}/{}/{} pixels={} avg_maxrgb={} maxscl={},{},{} histogram={:#x} version={} coverage={} reason={}",
+        m_pendingIdentity.stream,m_pendingIdentity.picture,m_pendingIdentity.revision,
+        statistics.count,statistics.average_maxrgb,statistics.maxscl[0],statistics.maxscl[1],statistics.maxscl[2],
+        uint32_t(histogram),m_hdr10plusVersion,int(m_hdr10plusReport.coverage),int(m_hdr10plusReport.reason));
+  }
   m_prepared = true;
   PreparedAudit();
   return FrameStatus::Ready;
@@ -1816,6 +1850,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
     m_asyncEligible = false;
     return FrameStatus::Failed;
   }
+  BeginDiagnosticStream(base.binding.stream);
   struct Import
   {
     struct Raw
@@ -1929,6 +1964,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
           reinterpret_cast<const AVDRMFrameDescriptor*>(imported->image.mapping->data[0]),
           imported->image.width,imported->image.height,enhancement->hw_frames_ctx->data,
           imported->image.display,eglGetCurrentContext());
+      if (cacheable && !m_rawELImports)
+        DVBRIDGE::DiagnosticLog(LOGINFO,
+            "CB1 FEL DMA: source={}/{}/{} objects={} format={:#x}/{:#x} pitch={}/{} offset={}/{} modifier={:#x}/{:#x}",
+            base.binding.stream,base.binding.picture,base.binding.revision,key.objects_count,
+            key.layers[0][0],key.layers[1][0],key.layers[0][4],key.layers[1][4],key.layers[0][3],key.layers[1][3],
+            key.objects[key.layers[0][2]][3],key.objects[key.layers[1][2]][3]);
       if (cacheable && !m_rawELCache.empty() &&
           std::static_pointer_cast<Import::Raw>(m_rawELCache.front())->key.pool != key.pool)
         m_rawELCache.clear();
@@ -2238,11 +2279,17 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
     }
     if (m_auditCreative.Record(DVBRIDGE::DiagnosticNowMs(), "hdr10plus",
         int(m_hdr10plusReport.coverage)*32 + int(m_hdr10plusReport.reason)*2 + submission.hdr10plusAccepted))
+    {
+      Crc32 packet;
+      if (submission.hdr10plus)
+        packet.Compute(reinterpret_cast<const char*>(submission.hdr10plus->data()),submission.hdr10plus->size());
       DVBRIDGE::DiagnosticLog(LOGINFO,
-          "CB1 HDR10+ output: active={} coverage={} reason={} l3={} curve_error_pq={} color_error_pq={}",
+          "CB1 HDR10+ output: active={} coverage={} reason={} l3={} curve_error_pq={} color_error_pq={} packet_present={} packet_crc={:#x} source={}/{}/{}",
           submission.hdr10plusAccepted, int(m_hdr10plusReport.coverage), int(m_hdr10plusReport.reason),
           m_hdr10plusReport.l3_used, m_hdr10plusReport.maximum_curve_pq_error,
-          m_hdr10plusReport.maximum_color_pq_error);
+          m_hdr10plusReport.maximum_color_pq_error,bool(submission.hdr10plus),uint32_t(packet),
+          submission.identity.stream,submission.identity.picture,submission.identity.revision);
+    }
   }
   output.stream=m_pendingIdentity.stream; output.picture=m_pendingIdentity.picture;
   const char* pixelAlgorithm=nullptr;

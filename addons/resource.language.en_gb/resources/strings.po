@@ -25891,7 +25891,7 @@ msgid "TV panel type"
 msgstr ""
 
 msgctxt "#40832"
-msgid "Select the TV panel type for the shared manual profile. Unset leaves the profile incomplete."
+msgid "Optional TV panel type. Peak luminance and color gamut define the manual profile."
 msgstr ""
 
 msgctxt "#40833"
