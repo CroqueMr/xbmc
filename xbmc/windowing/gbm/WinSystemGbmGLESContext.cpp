@@ -793,6 +793,24 @@ void CWinSystemGbmGLESContext::StageNativeHDR10Plus(bool overlay)
 
 bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
 {
+  float gamma = 2.4f;
+#ifdef HAVE_DVBRIDGE
+  if (colorTransfer && m_sdrConversion)
+  {
+    double peak = 0, targetGamma = 0, black = 0;
+    if (!dvbridge_sdr_target(&m_dvSelection.policy.sdr, &peak, &targetGamma, &black)) return false;
+    gamma = static_cast<float>(targetGamma);
+  }
+#endif
+  return ConfigureGuiCompositing(colorTransfer, gamma);
+}
+
+bool CWinSystemGbmGLESContext::ConfigureGuiCompositing(int colorTransfer, float gamma)
+{
+  if (colorTransfer == AVCOL_TRC_GAMMA22 && m_guiColorTransfer == colorTransfer &&
+      m_guiCompositing && m_compositeShader && m_guiSDRGamma == gamma)
+    return true;
+
   m_guiCacheValid = false;
   m_guiColorTransfer = colorTransfer;
   m_guiCompositing = (colorTransfer != 0);
@@ -819,15 +837,6 @@ bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
       }
     }
 
-    float gamma = 2.4f;
-#ifdef HAVE_DVBRIDGE
-    if (m_sdrConversion)
-    {
-      double peak = 0, targetGamma = 0, black = 0;
-      if (!dvbridge_sdr_target(&m_dvSelection.policy.sdr, &peak, &targetGamma, &black)) return false;
-      gamma = static_cast<float>(targetGamma);
-    }
-#endif
     if (!m_compositeShader->CreateLUTs(colorTransfer, gamma))
     {
       CLog::Log(LOGERROR, "CWinSystemGbmGLESContext: failed to create LUTs");
@@ -835,6 +844,7 @@ bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
       m_guiCompositing = false;
       return false;
     }
+    m_guiSDRGamma = gamma;
   }
   else
   {
@@ -1751,12 +1761,21 @@ bool CWinSystemGbmGLESContext::RecoverDVActivation()
   if (!PollRejectedDVSurface()) return false;
   // Retire the rejected GPU work before restoring properties with clean pixels.
   if (!m_dvContext || m_dvContext->Poll() != DVBRIDGE_DV_IDLE) return false;
+  const bool superseded = m_dvSuperseded;
   if (!EndDVBridge())
   {
     m_dvRollbackFailed = true;
     std::lock_guard lock(m_dvCapabilityMutex);
     m_dvActivationReason = DVBRIDGE::OutputReason::RestoreFailed;
     return false;
+  }
+  // Supersession retired the candidate and restored connector/session state,
+  // but it was not an activation failure of either the old or the new target.
+  if (superseded)
+  {
+    m_dvConfiguredOutput.reset();
+    m_dvRecoveryPending = false;
+    return true;
   }
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   bool fallback;
@@ -2054,7 +2073,8 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
   if (m_renderableType != EGL_OPENGL_ES3_BIT) return failure("output-format", "egl-renderable");
   if (m_dvBridge && m_dvConfiguredOutput == m_dvSelection.policy.mode &&
       (m_dvState.Captured() || m_hdrConversion))
-    return m_dvBridge && m_guiCompositing && m_compositeShader;
+    return (!sdr || SetGuiCompositing(AVCOL_TRC_GAMMA22)) &&
+        m_guiCompositing && m_compositeShader;
   if (!CompleteDVBridgePage())
   { DVBRIDGE::DiagnosticStage("display-pending"); return false; }
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
@@ -2153,6 +2173,7 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
       m_dvPriorHDRConversion = m_hdrConversion;
       m_dvPriorSDRConversion = m_sdrConversion;
       m_dvPriorGuiCompositing = m_guiCompositing;
+      m_dvPriorGuiSDRGamma = m_guiSDRGamma;
       m_dvPendingStream = picture ? (picture->doviSourceBinding.Valid() ?
           picture->doviSourceBinding.stream : picture->doviMetadata.Binding().stream) : 0;
       m_dvPendingPolicy = preferences.revision;
@@ -2265,10 +2286,22 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
         capabilities.isDV && preferences.output==DVBRIDGE::OutputMode::MasterReference &&
         preferences.allowMasterFallback);
   }
-  m_dvSelection = SelectedDVOutput(&picture, preferences, selectionCapabilities);
-  // Retained renderer facts belong to this render-side phase, never Configure.
+  const auto selection = SelectedDVOutput(&picture, preferences, selectionCapabilities);
   const auto binding = picture.doviSourceBinding.Valid() ?
       picture.doviSourceBinding : picture.doviMetadata.Binding();
+  if (HasPendingDVOutputSurface() &&
+      (m_dvPendingStream != binding.stream || m_dvPendingPolicy != preferences.revision ||
+       m_dvSelection.route != selection.route || m_dvSelection.policy.mode != selection.policy.mode))
+  {
+    // A pending drawable and renderer belong to their original target. Retire
+    // and unwind that transaction before selecting any successor, even at the
+    // same bit depth. Preserve real retirement/restoration failures.
+    m_dvSuperseded = true;
+    if (!RejectDVOutputSurface() || !RecoverDVActivation())
+      return deferred("output-await-superseded-scanout");
+  }
+  m_dvSelection = selection;
+  // Retained renderer facts belong to this render-side phase, never Configure.
   if (capabilities.sourceKnown)
   {
     auto identity = m_dvBridge ? m_dvBridge->SelectionIdentity(binding, preferences, m_dvSelection.policy.mode) :
@@ -2333,7 +2366,8 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
   }
   if (m_dvConfiguredOutput == m_dvSelection.policy.mode && !m_dvOutputRetiring &&
       (m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla || m_dvState.Captured() || m_hdrConversion))
-    return true;
+    return m_dvSelection.route != DVBRIDGE::OutputRoute::SDR ||
+        SetGuiCompositing(AVCOL_TRC_GAMMA22);
   const bool requested = DVBridgeRequested(&picture);
   if (requested && m_dvBridge && !HasPendingDVOutputSurface() &&
       (m_dvState.Captured() || m_hdrConversion) &&
@@ -2399,10 +2433,13 @@ bool CWinSystemGbmGLESContext::RejectDVOutputSurface()
   if (!m_dvStopPending && !m_dvRecoveryPending)
   {
     m_dvRecoveryPending = true;
-    m_dvRejectedRoute = m_dvSelection.route;
-    if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-        drm && drm->DVActivationFailures() == m_dvAttemptFailures)
-      drm->FailDVActivation(EINVAL);
+    if (!m_dvSuperseded)
+    {
+      m_dvRejectedRoute = m_dvSelection.route;
+      if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+          drm && drm->DVActivationFailures() == m_dvAttemptFailures)
+        drm->FailDVActivation(EINVAL);
+    }
   }
   if (!HasPendingDVOutputSurface())
   {
@@ -2425,8 +2462,13 @@ bool CWinSystemGbmGLESContext::RejectDVOutputSurface()
 bool CWinSystemGbmGLESContext::PollRejectedDVSurface()
 {
   if (!m_dvRejectedSurface) return true;
-  if (m_dvRollbackFailed || !m_dvContext ||
-      m_dvContext->Poll() != DVBRIDGE_DV_IDLE) return false;
+  if (m_dvRollbackFailed || !m_dvContext) return false;
+  const auto retired = m_dvContext->Poll();
+  if (retired != DVBRIDGE_DV_IDLE)
+  {
+    if (retired == DVBRIDGE_DV_FAILED) m_dvRollbackFailed = true;
+    return false;
+  }
   if (!CompleteDVOutputSurface(false))
   {
     m_dvRollbackFailed = true;
@@ -2443,8 +2485,14 @@ bool CWinSystemGbmGLESContext::PollRejectedDVSurface()
   m_sdrConversion = m_dvPriorSDRConversion;
   m_hdr10Signal.reset();
   m_dvConfiguredOutput = m_dvPriorConfiguredOutput;
-  SetGuiCompositing(m_dvPriorGuiCompositing ?
-      (m_dvPriorSDRConversion ? AVCOL_TRC_GAMMA22 : AVCOL_TRC_SMPTE2084) : 0);
+  const bool guiReady = ConfigureGuiCompositing(m_dvPriorGuiCompositing ?
+      (m_dvPriorSDRConversion ? AVCOL_TRC_GAMMA22 : AVCOL_TRC_SMPTE2084) : 0,
+      m_dvPriorGuiSDRGamma);
+  if (m_dvPriorGuiCompositing && !guiReady)
+  {
+    m_dvRollbackFailed = true;
+    return false;
+  }
   m_dvRejectedSurface = false;
   return true;
 }
@@ -2548,12 +2596,9 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
       m_previousSourceStream == layer.binding.stream &&
       DVBRIDGE::ContinuousPresentationPicture(layer.pts, m_previousSourcePts) &&
       m_dvSelection.reason == DVBRIDGE::OutputReason::None;
-#ifdef CB1_HAS_HDR10_AI
   const auto preferences = DVBRIDGE::FrameOutputSettings(
-      !metadata.Data() && m_dvContext && m_dvContext->HDR10AI().HDR10Plus());
-#else
-  const auto preferences = DVBRIDGE::FrameOutputSettings();
-#endif
+      !layer.sourceInfo.profile && layer.hdr10PlusSource,
+      !layer.sourceInfo.profile && layer.hlg);
   m_masterFramePeriodNs=m_continuousFrameEligible && preferences.allowMasterFallback &&
       m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE ?
       DVBRIDGE::MasterFramePeriodNs(CServiceBroker::GetDataCacheCore().GetVideoFps()) : 0;
@@ -3066,6 +3111,7 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
   // Never reset Kodi's ordinary HDR GUI compositor unless we owned DV output.
   if (!m_dvState.Captured() && !m_hdrConversion)
   {
+    m_dvSuperseded = false;
     m_dvEndPending = false;
     return true;
   }
@@ -3107,6 +3153,7 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
       m_dvSetupFailures.Recovered(DVBRIDGE::DiagnosticNowMs()))
     DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge: normal display restored after failures={}", m_dvSetupFailures.Count());
   SetGuiCompositing(0);
+  m_dvSuperseded = false;
   m_dvEndPending = false;
   return true;
 }

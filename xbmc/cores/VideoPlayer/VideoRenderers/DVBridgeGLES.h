@@ -102,6 +102,7 @@ public:
     uint64_t sourceSerial{};
     bool fullRange{};
     bool hlg{};
+    bool hdr10PlusSource{};
     pl_hdr_metadata hdr{};
     AVChromaLocation chromaLocation{AVCHROMA_LOC_UNSPECIFIED};
   };
@@ -116,6 +117,7 @@ public:
   HDR10AISource::Decision PredictHDR10AI(DVBRIDGE::SourceBinding binding,
       const DVBRIDGE::OutputPreferences& preferences, uint64_t now, cb1_ai_result* result);
   const std::optional<cb1_ai_result>& CommittedHDR10AI() const;
+  bool HDR10AISourceHLG() const { return m_sourceHLG; }
   FrameStatus PrepareHDR10AIFrame(const Layer& base, dvbridge_geometry geometry,
       const DVBRIDGE::OutputPreferences& preferences, const cb1_ai_result& prediction,
       dvbridge_policy policy, bool allowAsync = false, bool allowPacked = false);

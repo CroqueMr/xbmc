@@ -261,6 +261,7 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   layer.sourceInfo = buffer.doviSourcePicture->doviSourceInfo;
   layer.sourceSideData = source.sourceSideData;
   layer.sourceSerial = source.sourceSideData ? source.sourceSideData->Serial() : 0;
+  layer.hdr10PlusSource = source.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS;
   layer.chromaLocation = source.chroma_position;
   layer.hlg = source.hdrType == StreamHdrType::HDR_TYPE_HLG;
   if (hdr10)

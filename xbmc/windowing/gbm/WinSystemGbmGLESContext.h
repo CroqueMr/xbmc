@@ -107,7 +107,7 @@ public:
   {
     return m_dvBridge && m_dvContext &&
         m_dvContext->HDR10AI().Current(m_aiActivation,
-            DVBRIDGE::FrameOutputSettings(m_dvContext->HDR10AI().HDR10Plus())) &&
+            DVBRIDGE::FrameOutputSettings(m_dvContext->HDR10AI().HDR10Plus(), m_dvBridge->HDR10AISourceHLG())) &&
         m_dvBridge->CommittedHDR10AI().has_value();
   }
   bool PrepareHDR10AIQueue(const VideoPicture& picture,
@@ -206,6 +206,8 @@ private:
   unsigned m_guiCachedElementCount{0};
 
   std::unique_ptr<CGuiCompositeShaderGLES> m_compositeShader;
+  float m_guiSDRGamma{2.4f};
+  bool ConfigureGuiCompositing(int colorTransfer, float gamma);
 #ifdef HAVE_DVBRIDGE
   DVBRIDGE::OutputCapabilities GetDVOutputCapabilities(const VideoPicture* picture,
       const DVBRIDGE::OutputPreferences& preferences, bool allowModeSwitch = false) const;
@@ -230,6 +232,7 @@ private:
   bool StageOrdinaryDVOutput(const VideoPicture* picture);
   bool RecoverDVActivation();
   void ResetDVActivation(const VideoPicture* picture);
+  bool m_dvSuperseded{}; // Benign cancellation still uses the complete recovery owner.
   bool m_dvRecoveryPending{}, m_dvNativeFailed{}, m_dvHDR10Failed{}, m_dvSDRFailed{}, m_dvFallbackActive{};
   bool m_dvActivating{};
   uint64_t m_dvActivationStream{}, m_dvActivationPolicy{};
@@ -274,6 +277,7 @@ private:
   bool m_hdrConversion = false;
   bool m_sdrConversion = false;
   bool m_dvPriorSDRConversion = false;
+  float m_dvPriorGuiSDRGamma{2.4f};
   std::optional<dvbridge_hdr10_session> m_hdr10Session;
   std::unique_ptr<VideoPicture> m_hdr10BasicSignal;
   std::optional<std::array<unsigned, 5>> m_hdr10Signal;
