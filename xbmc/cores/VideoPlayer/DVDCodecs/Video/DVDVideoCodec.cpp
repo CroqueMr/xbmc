@@ -49,6 +49,11 @@ void VideoPicture::Reset()
   pict_type = 0;
 
   hdrType = StreamHdrType::HDR_TYPE_NONE;
+  doviMetadata.Reset();
+  doviSourcePts = AV_NOPTS_VALUE;
+#ifdef HAVE_DVBRIDGE
+  doviEnhancement.reset();
+#endif
 
   hasDisplayMetadata = false;
   hasLightMetadata = false;

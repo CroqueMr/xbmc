@@ -7,6 +7,10 @@
  */
 
 #include "DRMAtomic.h"
+#include "DVBridgeKernelLogReader.h"
+#include "jobs/JobManager.h"
+#include <cstdlib>
+#include <cstring>
 
 #include "ServiceBroker.h"
 #include "application/ApplicationComponents.h"
@@ -17,6 +21,7 @@
 #include "utils/log.h"
 
 #include <chrono>
+#include <algorithm>
 #include <errno.h>
 #include <string.h>
 #include <thread>
@@ -28,8 +33,46 @@
 
 using namespace KODI::WINDOWING::GBM;
 
-void CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer)
+void CDRMAtomic::LogDVFailure(const char* stage, int error)
 {
+  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (!m_dvFailures.Record(now))
+    return;
+  CLog::Log(LOGERROR,
+            "DVBridge: output rejected stage={} errno={} ({}) failures={} connector={} "
+            "crtc={} mode={}x{} clock_khz={} gui_plane={} video_plane={}; "
+            "enable Kodi debug logging for requested properties; kernel DV diagnostics follow asynchronously",
+            stage, error, strerror(error), m_dvFailures.Count(),
+            m_connector ? m_connector->GetId() : 0, m_crtc ? m_crtc->GetId() : 0,
+            m_mode ? m_mode->hdisplay : 0, m_mode ? m_mode->vdisplay : 0,
+            m_mode ? m_mode->clock : 0, m_gui_plane ? m_gui_plane->GetId() : 0,
+            m_video_plane ? m_video_plane->GetId() : 0);
+  // Only formats a property snapshot on the bounded failure path, never per frame.
+  // Kodi's existing debug switch controls whether the snapshot is written.
+  if (m_req)
+    m_req->LogAtomicRequest();
+  // No IO on the render thread. This hook is reached at most once per five
+  // seconds for persistent failures; ordinary playback never polls the kernel.
+  const char* enabled = std::getenv("DVBRIDGE_KERNEL_LOG");
+  if (!enabled || std::strcmp(enabled, "0") != 0)
+  {
+    if (auto jobs = CServiceBroker::GetJobManager())
+      jobs->Submit([] {
+        static DVBRIDGE::KernelLogReader reader;
+        reader.Collect();
+      });
+  }
+}
+
+bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool videoLayer, bool strict)
+{
+  CDRMCrtc* oldCrtc = m_old_crtc;
+  const auto reject = [&]() {
+    m_old_crtc = oldCrtc;
+    FinishRequest(false);
+    return false;
+  };
   // Declared at function scope so the blob outlives drmModeAtomicCommit.
   // DRM requires the blob to remain alive for the duration of the commit;
   // destroying it before the commit returns leaves the atomic request
@@ -75,17 +118,17 @@ void CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (flags & DRM_MODE_ATOMIC_ALLOW_MODESET)
   {
     if (!AddProperty(m_connector, "CRTC_ID", m_crtc->GetCrtcId()))
-      return;
+      return reject();
 
     modeBlob = CDRMPropertyBlob(m_fd, m_mode, sizeof(*m_mode));
     if (!modeBlob.IsValid())
-      return;
+      return reject();
 
     if (!AddProperty(m_crtc, "MODE_ID", modeBlob.Get()))
-      return;
+      return reject();
 
     if (!AddProperty(m_crtc, "ACTIVE", m_active ? 1 : 0))
-      return;
+      return reject();
   }
 
   // In Direct-To-Plane (dual plane) mode m_gui_plane is the output
@@ -133,9 +176,21 @@ void CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (CServiceBroker::GetLogging().CanLogComponent(LOGWINDOWING))
     m_req->LogAtomicRequest();
 
+  if (strict && m_propertyFailure)
+  {
+    LogDVFailure("property-assembly", EINVAL);
+    return reject();
+  }
+
   auto ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags | DRM_MODE_ATOMIC_TEST_ONLY, nullptr);
   if (ret < 0)
   {
+    if (strict)
+    {
+      const int error = errno;
+      LogDVFailure("atomic-test", error);
+      return reject();
+    }
     CLog::LogF(LOGERROR,
                "test commit failed: ({}) - falling back to last successful atomic "
                "request",
@@ -153,10 +208,27 @@ void CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags, nullptr);
   if (ret < 0)
   {
-    CLog::LogF(LOGERROR, "atomic commit failed: {}", strerror(errno));
-    m_atomicRequestQueue.pop_back();
+    const int error = errno;
+    if (strict)
+      LogDVFailure("atomic-commit", error);
+    else
+      CLog::LogF(LOGERROR, "atomic commit failed: {}", strerror(error));
+    return reject();
   }
-  else
+  if (strict && (!m_dvCommitReported || m_dvFailures.Count()))
+  {
+    CLog::Log(LOGDEBUG, "DVBridge: atomic output accepted connector={} previous_failures={}",
+              m_connector ? m_connector->GetId() : 0, m_dvFailures.Count());
+    m_dvCommitReported = true;
+    m_dvFailures.Reset();
+  }
+  FinishRequest(true);
+  return true;
+}
+
+void CDRMAtomic::FinishRequest(bool accepted)
+{
+  if (accepted)
   {
     // Sync the property cache with values the kernel accepted.
     // This must happen after a successful commit so that
@@ -168,6 +240,8 @@ void CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
     if (m_atomicRequestQueue.size() > 1)
       m_atomicRequestQueue.pop_front();
   }
+  else if (!m_atomicRequestQueue.empty())
+    m_atomicRequestQueue.pop_back();
 
   if (m_inFenceFd != -1)
   {
@@ -177,6 +251,30 @@ void CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
 
   m_atomicRequestQueue.emplace_back(std::make_unique<CDRMAtomicRequest>());
   m_req = m_atomicRequestQueue.back().get();
+  m_propertyFailure = false;
+}
+
+bool CDRMAtomic::FlipPageTransactional(struct gbm_bo* bo)
+{
+  if (!bo)
+  {
+    LogDVFailure("buffer-lock-or-staging", EINVAL);
+    FinishRequest(false);
+    return false;
+  }
+  const uint32_t fb = DrmOpaqueFbGetFromBo(bo);
+  if (!fb)
+  {
+    const int error = errno;
+    LogDVFailure("framebuffer-import", error ? error : EINVAL);
+    FinishRequest(false);
+    return false;
+  }
+  const int flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
+  const bool accepted = DrmAtomicCommit(fb, flags, true, false, true);
+  if (accepted)
+    m_need_modeset = false;
+  return accepted;
 }
 
 void CDRMAtomic::FlipPage(struct gbm_bo* bo, bool rendered, bool videoLayer, bool async)
@@ -310,9 +408,9 @@ bool CDRMAtomic::SetActive(bool active)
 
 bool CDRMAtomic::AddProperty(CDRMObject* object, const char* name, uint64_t value)
 {
-  if (!object)
-    return false;
-  return m_req->AddProperty(object, name, value);
+  const bool added = object && m_req && m_req->AddProperty(object, name, value);
+  m_propertyFailure |= !added;
+  return added;
 }
 
 CDRMAtomic::CDRMAtomicRequest::CDRMAtomicRequest() : m_atomicRequest(drmModeAtomicAlloc())

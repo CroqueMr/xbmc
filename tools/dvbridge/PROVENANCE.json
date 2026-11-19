@@ -1,0 +1,11 @@
+{
+  "source": "intel-dv-linux source-manifest.json",
+  "changes": "Player-specific GPU state and rendering entry points removed; metadata functions made header-local; geometry and bounds validation adapted for the shared transactional API. CM4 helper retained verbatim. Release preparation removes the optional per-frame payload trace; transport calculations are unchanged.",
+  "license": "GPL-3.0-or-later",
+  "integrated_into_kodi": true,
+  "scope": "Derivation record for these two headers, not a complete third-party provenance clearance or hardware qualification.",
+  "files": {
+    "dvbridge_metadata.h": "bc38347df1488546b80fe0e7613840a0437a7f075c9bac114e1f9111c9e99196",
+    "mpv_dvbridge_cm4.h": "f6762808f5d7a5824983d72b0188098f19e86bd2a6db7b997ef63e2d35612661"
+  }
+}

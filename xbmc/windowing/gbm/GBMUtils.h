@@ -127,9 +127,16 @@ public:
        */
       CGBMSurfaceBuffer& LockFrontBuffer();
 
+      // Blocking atomic presentation only: retain the current scanout on failure.
+      gbm_bo* LockTransactionalBuffer();
+      void CompleteTransactionalBuffer(bool presented);
+      void EndTransactionalMode();
+
     private:
       gbm_surface* m_surface{nullptr};
       std::queue<std::unique_ptr<CGBMSurfaceBuffer>> m_buffers;
+      std::unique_ptr<CGBMSurfaceBuffer> m_scanoutBuffer;
+      std::unique_ptr<CGBMSurfaceBuffer> m_pendingBuffer;
     };
 
     /**

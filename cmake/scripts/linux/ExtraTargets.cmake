@@ -32,5 +32,7 @@ if("wayland" IN_LIST CORE_PLATFORM_NAME_LC)
   # Dummy target for dependencies
   add_custom_target(generate-wayland-extra-protocols DEPENDS wayland-extra-protocols.hpp)
 
-  add_dependencies(lib${APP_NAME_LC} generate-wayland-extra-protocols)
+  if(NOT HEADERS_ONLY)
+    add_dependencies(lib${APP_NAME_LC} generate-wayland-extra-protocols)
+  endif()
 endif()

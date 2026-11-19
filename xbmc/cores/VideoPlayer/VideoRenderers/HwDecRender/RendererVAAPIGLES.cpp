@@ -16,6 +16,11 @@
 #include "utils/EGLFence.h"
 #include "utils/GLUtils.h"
 #include "utils/log.h"
+#ifdef HAVE_DVBRIDGE
+#include "ServiceBroker.h"
+#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#include <cmath>
+#endif
 
 #include <memory>
 
@@ -170,6 +175,47 @@ bool CRendererVAAPIGLES::RenderHook(int idx)
 {
   return false;
 }
+
+#ifdef HAVE_DVBRIDGE
+bool CRendererVAAPIGLES::RenderDVBridge(int idx)
+{
+  // Native decoder textures only. Postprocessed/cropped/rotated images need
+  // their own explicit metadata/geometry mapping and must not fall back here.
+  if (!m_isVAAPIBuffer || m_textureTarget != GL_TEXTURE_2D || m_renderOrientation != 0)
+    return false;
+  auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      CServiceBroker::GetWinSystem());
+  auto& buffer = m_buffers[idx];
+  if (!window || !buffer.doviMetadata.Data() || buffer.doviPts == DVD_NOPTS_VALUE)
+    return false;
+  CDVBridgeGLES::Layer layer{};
+  switch (m_vaapiFourcc)
+  {
+    case VA_FOURCC_NV12: layer.layout = DVBRIDGE_NV12; break;
+    case VA_FOURCC_P010: layer.layout = DVBRIDGE_P010; break;
+    case VA_FOURCC_P012: layer.layout = DVBRIDGE_P012; break;
+    case VA_FOURCC_P016: layer.layout = DVBRIDGE_P016; break;
+    default: return false;
+  }
+  layer.width = m_sourceWidth;
+  layer.height = m_sourceHeight;
+  layer.pts = buffer.doviPts;
+  for (int p = 0; p < 2; ++p)
+  {
+    const auto& plane = buffer.fields[FIELD_FULL][p];
+    layer.planes[p] = {plane.id, static_cast<int>(plane.texwidth),
+                      static_cast<int>(plane.texheight)};
+  }
+  if (m_sourceRect.x1 != 0 || m_sourceRect.y1 != 0 ||
+      m_sourceRect.Width() != m_sourceWidth || m_sourceRect.Height() != m_sourceHeight)
+    return false;
+  dvbridge_geometry geometry{layer.width, layer.height,
+      static_cast<int>(std::lround(m_destRect.x1)), static_cast<int>(std::lround(m_destRect.y1)),
+      static_cast<int>(std::lround(m_destRect.Width())),
+      static_cast<int>(std::lround(m_destRect.Height()))};
+  return window->RenderDVBridge(layer, buffer.doviEnhancement.get(), buffer.doviMetadata, geometry);
+}
+#endif
 
 bool CRendererVAAPIGLES::CreateTexture(int index)
 {
