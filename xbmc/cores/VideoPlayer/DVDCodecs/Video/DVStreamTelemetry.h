@@ -65,9 +65,12 @@ struct StreamSnapshot
     int creativeStatus{}, creativeReason{};
     bool iptTransport{};
     bool l2TrimsDisabled{};
+    bool cmv40Appended{};
     int felUpscaling{-1};
 #ifdef CB1_HAS_HDR10_AI
     bool hdr10AI{};
+    bool hdr10PlusDV{}, untranslatedCurve{}, untranslatedSaturation{};
+    unsigned guidedSourceFields{}, guidedEstimatedFields{};
     std::array<unsigned,6> aiL1L3{};
     bool emittedL1Known{};
     std::array<unsigned,3> emittedL1{};
@@ -76,6 +79,7 @@ struct StreamSnapshot
       if (!flags) return "";
       if (hdr10AI)
       {
+        if (hdr10PlusDV) return cb1_circuit_version(CB1_HDR10PLUS_DV_REFERENCE);
         if (effective==1) return cb1_circuit_version(CB1_HDR10_DV_REFERENCE);
         if (effective==4) return cb1_circuit_version(CB1_HDR10_DV_ADAPTIVE);
       }
@@ -129,6 +133,7 @@ struct StreamSnapshot
     if (output.authoredLegacy) { result[1]=result[5]=true; return result; }
     result=blocks;
     if (output.l2TrimsDisabled) result[2]=false;
+    if (output.cmv40Appended) result[3]=result[9]=result[11]=result[254]=true;
     result[6]=false; // L6 is static HDR metadata, not dynamic DV wire data.
     result[5]=true; // Native serializer always supplies final-raster margins.
     return result;

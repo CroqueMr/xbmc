@@ -153,6 +153,7 @@ void CRenderer::ReleaseUnused()
 void CRenderer::Render(int idx, float depth)
 {
   std::unique_lock lock(m_section);
+  PrepareBitmapBounds(idx);
 
   // during HDR composite the m_isHDROverlay overlays render via
   // RenderHDROverlays instead
@@ -205,6 +206,7 @@ void CRenderer::RenderHDROverlays(int idx)
 #endif
 
   std::unique_lock lock(m_section);
+  PrepareBitmapBounds(idx);
 
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
@@ -229,7 +231,7 @@ void CRenderer::RenderHDROverlays(int idx)
   ReleaseUnused();
 }
 
-void CRenderer::Render(COverlay* o)
+SRenderState CRenderer::ComputeBaseState(const COverlay* o) const
 {
   SRenderState state;
   state.x = o->m_x;
@@ -313,7 +315,56 @@ void CRenderer::Render(COverlay* o)
     }
   }
 
-  state.x += SubtitleDepth();
+  return state;
+}
+
+namespace
+{
+CRect BitmapOverlayRect(const COverlay* overlay, const SRenderState& state)
+{
+  const bool centered = overlay->m_pos == COverlay::POSITION_RELATIVE;
+  const float x = state.x - (centered ? state.width * 0.5f : 0.0f);
+  const float y = state.y - (centered ? state.height * 0.5f : 0.0f);
+  return CRect(x, y, x + state.width, y + state.height);
+}
+}
+
+void CRenderer::PrepareBitmapBounds(int idx)
+{
+  m_bitmapBounds = CRect();
+  if (!m_bitmapOptions.HasGeometry())
+    return;
+  const auto view = CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
+  for (auto& element : m_buffers[idx])
+  {
+    if (!element.overlay_dvd || element.overlay_dvd->GetSource() != DVDOverlaySource::SUBTITLE ||
+        !element.overlay_dvd->IsOverlayType(DVDOVERLAY_TYPE_IMAGE) ||
+        !KODI::VIDEO::SUBTITLES::ShouldRenderStereoOverlay(element.overlay_dvd->m_stereoView,
+                                                          view, m_stereomode))
+      continue;
+    auto overlay = Convert(element);
+    if (overlay)
+    {
+      const auto rect = BitmapOverlayRect(overlay.get(), ComputeBaseState(overlay.get()));
+      if (m_bitmapBounds.IsEmpty()) m_bitmapBounds = rect;
+      else m_bitmapBounds.Union(rect);
+    }
+  }
+}
+
+void CRenderer::Render(COverlay* o)
+{
+  SRenderState state = ComputeBaseState(o);
+  if (o->m_isBitmap && o->m_source == DVDOverlaySource::SUBTITLE && m_bitmapOptions.HasGeometry())
+  {
+    const CRect rect = SUBTITLES::BitmapRect(BitmapOverlayRect(o, state), m_bitmapBounds,
+                                            m_rd, m_rv, m_bitmapOptions, o->m_source);
+    const bool centered = o->m_pos == COverlay::POSITION_RELATIVE;
+    state = {rect.x1 + (centered ? rect.Width() * 0.5f : 0.0f),
+             rect.y1 + (centered ? rect.Height() * 0.5f : 0.0f), rect.Width(), rect.Height()};
+  }
+
+  state.x += SubtitleDepth(); // Keep the selected-picture MVC plane offset unchanged.
 
   o->Render(state);
 }
@@ -514,6 +565,31 @@ void CRenderer::PrepareOverlays(int idx)
   std::unique_lock lock(m_section);
   if (idx < 0 || idx >= MAX_RENDER_BUFFERS)
     return;
+
+  if (m_bitmapSettingsChanged.exchange(false))
+  {
+    auto options = CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetBitmapOptions();
+    // Authoring is decoder-latched. Reselect the subtitle stream to change it.
+    options.authoring = m_bitmapOptions.authoring;
+    if (!(options == m_bitmapOptions))
+    {
+      const bool recolor = options.sdrBrightness != m_bitmapOptions.sdrBrightness ||
+                           options.sdrSaturation != m_bitmapOptions.sdrSaturation ||
+                           options.hdrBrightness != m_bitmapOptions.hdrBrightness ||
+                           options.hdrSaturation != m_bitmapOptions.hdrSaturation;
+      m_bitmapOptions = options;
+      if (recolor)
+      {
+        for (auto it = m_textureCache.begin(); it != m_textureCache.end();)
+          if (it->second && it->second->m_isBitmap &&
+              it->second->m_source == DVDOverlaySource::SUBTITLE)
+            it = m_textureCache.erase(it);
+          else
+            ++it;
+      }
+      MarkDirty();
+    }
+  }
 
   bool doMarkDirty = false;
   bool hasImageSpu = false;
@@ -755,15 +831,30 @@ std::shared_ptr<COverlay> CRenderer::Convert(SElement& e)
       r = it->second;
   }
 
-  if (r)
+#if defined(HAS_GLES)
+  if (r && o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE) &&
+      static_cast<CDVDOverlayImage&>(o).m_isHDROverlay &&
+      r->m_paletteOutputState != BitmapPaletteOutputState())
   {
-    return r;
+    // Configure/Reset can retain the same decoded image across output changes.
+    // Rebuild just its upload conversions, never the film/decoder pipeline.
+    m_textureCache.erase(o.m_textureid);
+    r.reset();
   }
+#endif
+  if (r)
+    return r;
 
   if (o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
     r = COverlay::Create(static_cast<CDVDOverlayImage&>(o), m_rs);
   else if (o.IsOverlayType(DVDOVERLAY_TYPE_SPU))
     r = COverlay::Create(static_cast<CDVDOverlaySpu&>(o));
+
+  if (r)
+  {
+    r->m_source = o.GetSource();
+    r->m_isBitmap = o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE);
+  }
 
   m_textureCache[m_textureid] = r;
   o.m_textureid = m_textureid;
@@ -779,6 +870,7 @@ void CRenderer::Notify(const Observable& obs, const ObservableMessage msg)
     case ObservableMessageSettingsChanged:
     {
       m_isSettingsChanged = true;
+      m_bitmapSettingsChanged = true;
       break;
     }
     case ObservableMessagePositionChanged:

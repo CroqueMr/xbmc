@@ -12,6 +12,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #ifdef CB1_HAS_HDR10_AI
 #include "HDR10AISource.h"
+#include "HDR10PlusDVSource.h"
 #endif
 
 extern "C"
@@ -96,6 +97,8 @@ public:
     DVBRIDGE::SourceBinding binding{};
     std::shared_ptr<void> lease;
     DVBRIDGE::SourceInfo sourceInfo{};
+    std::shared_ptr<const VideoSourceSideData> sourceSideData;
+    uint64_t sourceSerial{};
     bool fullRange{};
     pl_hdr_metadata hdr{};
     AVChromaLocation chromaLocation{AVCHROMA_LOC_UNSPECIFIED};
@@ -143,11 +146,13 @@ public:
     int felFilter{-1}, felBackend{};
     std::optional<std::array<uint8_t,CB1_HDR10PLUS_VSIF_BYTES>> hdr10plus{};
     bool hdr10plusAccepted{};
+    cb1_cmv40_status cmv40Status{CB1_CMV40_OFF};
   };
   Submission CaptureSubmission() const
   {
     auto submission=m_submission;
     submission.informationGeneration=m_pendingSourceInfo.informationGeneration;
+    submission.cmv40Status=dvbridge_renderer_cmv40_status(m_renderer);
     const bool fel=(m_pendingInfo & CDVPlaybackInfo::FEL) != 0;
     submission.felFilter=fel ? m_requested.felUpscaling : -1;
     submission.felBackend=fel ? (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE ? 3 :
@@ -159,6 +164,7 @@ public:
       if (cb1_hdr10plus_vsif(packet.data(), &*m_hdr10plusMetadata,
           m_guiComposed || m_overlayVisible, true) == CB1_HDR10PLUS_OK)
         submission.hdr10plus = packet;
+      ObserveHDR10PlusSubmission(submission);
     }
     return submission;
   }
@@ -215,6 +221,8 @@ public:
 private:
   FrameStatus BeginHDR10Plus();
   FrameStatus PollHDR10Plus();
+  void ObserveHDR10PlusSubmission(const Submission& submission) const;
+  void ReportHDR10Plus();
   int m_hdr10plusVersion{-1};
   cb1_hdr10plus_analysis* m_hdr10plusAnalysis{};
   std::optional<AVDynamicHDRPlus> m_hdr10plusMetadata;
@@ -222,6 +230,10 @@ private:
   void BeginDiagnosticStream(uint64_t stream);
   uint64_t m_diagnosticStream{};
   DVBRIDGE::DiagnosticInterval m_hdr10plusDiagnostics;
+  DVBRIDGE::DiagnosticFrames m_hdr10plusAnalyzed, m_hdr10plusAccepted;
+  mutable DVBRIDGE::DiagnosticFrames m_hdr10plusGenerated;
+  uint64_t m_hdr10plusSubmits{};
+  std::array<double,4> m_hdr10plusLight{};
   struct FELPrefetch;
   std::shared_ptr<FELPrefetch> m_felPrefetch;
   FrameStatus TakeFELPrefetch(const std::shared_ptr<AVFrame>& frame,
@@ -256,6 +268,7 @@ private:
   bool m_asyncEligible{};
 #ifdef CB1_HAS_HDR10_AI
   bool m_aiFrame{}, m_aiOutputAccepted{};
+  std::optional<cb1_hdr10plus_dovi_result> m_aiGuidance;
   uint64_t m_aiRenderSubmitNs{};
   DVBRIDGE::DiagnosticInterval m_aiSummary;
 #endif
@@ -273,6 +286,8 @@ private:
   DVBRIDGE::DiagnosticFailures m_failures;
   DVBRIDGE::DiagnosticFailures m_auditRequested,m_auditPrepared,m_auditCommitted;
   DVBRIDGE::DiagnosticFailures m_auditCreative;
+  DVBRIDGE::DiagnosticFailures m_auditCMv40;
+  uint64_t m_cmv40LogStream{};
   uint64_t m_auditStream{},m_auditSource{},m_auditPolicy{};
   int m_auditSerial{},m_auditRequestedSerial{},m_auditPreparedSerial{},m_auditCommittedSerial{};
   uint64_t m_prepares{0}, m_directFrames{0}, m_presentations{0}, m_failedPresentations{0};

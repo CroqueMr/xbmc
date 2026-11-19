@@ -17,6 +17,8 @@
 #include "cores/FFmpeg.h"
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
+#include "settings/SettingsComponent.h"
+#include "settings/SubtitlesSettings.h"
 #include "utils/EndianSwap.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
@@ -147,7 +149,25 @@ bool CDVDOverlayCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &optio
     delete[] parse_extra;
   }
 
-  if (avcodec_open2(m_pCodecContext, pCodec, NULL) < 0)
+  AVDictionary* codecOptions = nullptr;
+  if (hints.codec == AV_CODEC_ID_HDMV_PGS_SUBTITLE)
+  {
+    // PGS has no reliable self-identifying transfer tag. Auto preserves native
+    // legacy interpretation; explicit authoring is latched for this subtitle stream.
+    const int authoring = CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()->GetBitmapOptions().authoring;
+    if (authoring == 1 || authoring == 2)
+    {
+      const bool pq = authoring == 2;
+      m_pCodecContext->color_trc = pq ? AVCOL_TRC_SMPTE2084 : AVCOL_TRC_BT709;
+      m_pCodecContext->color_primaries = pq ? AVCOL_PRI_BT2020 : AVCOL_PRI_BT709;
+      m_pCodecContext->colorspace = pq ? AVCOL_SPC_BT2020_NCL : AVCOL_SPC_BT709;
+      av_dict_set(&codecOptions, "pgs_matrix", pq ? "bt2020" : "bt709", 0);
+    }
+  }
+  const int opened = avcodec_open2(m_pCodecContext, pCodec, &codecOptions);
+  const bool unsupportedOptions = av_dict_count(codecOptions) != 0;
+  av_dict_free(&codecOptions);
+  if (opened < 0 || unsupportedOptions)
   {
     CLog::Log(LOGDEBUG,"CDVDVideoCodecFFmpeg::Open() Unable to open codec");
     avcodec_free_context(&m_pCodecContext);

@@ -1802,7 +1802,7 @@ void CDVDDemuxFFmpeg::CreateStreams(unsigned int program)
         m_pFormatContext->streams[i]->discard = AVDISCARD_NONE;
         if (GetStream(i) == nullptr
 #ifdef HAVE_DVBRIDGE
-            && static_cast<int>(i) != m_blurayEnhancement
+            && static_cast<int>(i) != m_blurayEnhancement && static_cast<int>(i) != m_blurayBase
 #endif
         )
           m_pFormatContext->streams[i]->discard = AVDISCARD_ALL;
@@ -1969,6 +1969,11 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
     return nullptr;
 #endif
   AVStream* pStream = m_pFormatContext->streams[streamIdx];
+#ifdef HAVE_DVBRIDGE
+  // In-band HEVC headers are extracted by ParsePacket before native stream selection.
+  if (m_blurayDovi && streamIdx == m_blurayBase && !pStream->codecpar->extradata)
+    return nullptr;
+#endif
   if (pStream && pStream->discard != AVDISCARD_ALL)
   {
     // Video (mp4) from GoPro cameras can have a 'meta' track used for a file repair containing
@@ -2668,7 +2673,7 @@ bool CDVDDemuxFFmpeg::IsProgramChange()
   {
       int idx = m_pFormatContext->programs[m_program]->stream_index[i];
 #ifdef HAVE_DVBRIDGE
-      if (idx == m_blurayEnhancement)
+      if (idx == m_blurayEnhancement || (idx == m_blurayBase && !GetStream(idx)))
         continue;
 #endif
       if (m_pFormatContext->streams[idx]->discard >= AVDISCARD_ALL)
@@ -2969,6 +2974,9 @@ void CDVDDemuxFFmpeg::ParsePacket(AVPacket* pkt)
 
     CDemuxStream* stream = GetStream(st->index);
     if (!stream)
+#ifdef HAVE_DVBRIDGE
+      if (!m_blurayDovi || st->index != m_blurayBase)
+#endif
       return;
 
     if (parser->second->m_parserCtx && parser->second->m_parserCtx->parser &&

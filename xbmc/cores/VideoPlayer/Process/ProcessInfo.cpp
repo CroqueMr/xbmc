@@ -405,6 +405,7 @@ void CProcessInfo::ResetAudioCodecInfo()
 
   if (m_dataCache)
   {
+    m_dataCache->SetAudioSourceInfo({});
     m_dataCache->SetAudioDecoderName(m_audioDecoderName);
     m_dataCache->SetAudioChannels(m_audioChannels);
     m_dataCache->SetAudioSampleRate(m_audioSampleRate);
@@ -423,6 +424,13 @@ void CProcessInfo::SetAudioDecoderName(const std::string &name)
 
   if (m_dataCache)
     m_dataCache->SetAudioDecoderName(m_audioDecoderName);
+}
+
+void CProcessInfo::SetAudioSourceInfo(const AE::AudioSourceInfo& source)
+{
+  std::unique_lock lock(m_audioCodecSection);
+  if (m_dataCache)
+    m_dataCache->SetAudioSourceInfo(source);
 }
 
 std::string CProcessInfo::GetAudioDecoderName()

@@ -51,6 +51,8 @@ struct VideoProcessingInfo
     bool iptTransport{};
     int felUpscaling{-1};
     bool hdr10AI{}, emittedL1Known{};
+    bool hdr10PlusDV{}, untranslatedCurve{}, untranslatedSaturation{};
+    unsigned guidedSourceFields{}, guidedEstimatedFields{};
     std::array<unsigned,6> aiL1L3{};
     std::array<unsigned,3> emittedL1{};
     std::string engine, circuit;

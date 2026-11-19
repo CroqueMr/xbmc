@@ -23,6 +23,7 @@ class CProcessInfo;
 class CDataCacheCore;
 struct VideoProcessingInfo;
 class VideoSourceSideData;
+namespace AE { struct AudioSourceInfo; }
 
 using CreateProcessControl = CProcessInfo* (*)();
 
@@ -72,6 +73,7 @@ public:
   void SetPixFormats(std::vector<AVPixelFormat> &formats);
 
   // player audio info
+  void SetAudioSourceInfo(const AE::AudioSourceInfo& source);
   void ResetAudioCodecInfo();
   void SetAudioDecoderName(const std::string &name);
   std::string GetAudioDecoderName();

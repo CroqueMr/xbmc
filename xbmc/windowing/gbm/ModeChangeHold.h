@@ -251,11 +251,11 @@ public:
     }
     return false;
   }
-  //! ... it was made: accepted, or refused by the driver (only a frame of native output can be)
+  //! Refused commits retain the announcement until a retry or ordinary restoration succeeds.
   void After(bool accepted, bool transport)
   {
     if (m_step == Step::TOLD)
-      m_step = !accepted && transport ? Step::BEFORE_ORDINARY : Step::NONE;
+      m_step = accepted ? Step::NONE : (transport ? Step::BEFORE_ORDINARY : Step::BEFORE_NEXT);
   }
   Step Pending() const { return m_step; }
 

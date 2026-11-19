@@ -9,6 +9,7 @@
 #pragma once
 
 #include "settings/lib/ISettingCallback.h"
+#include "cores/VideoPlayer/DVDSubtitles/BitmapSubtitles.h"
 #include "utils/ColorUtils.h"
 #include "utils/Observer.h"
 
@@ -201,6 +202,8 @@ public:
    * \return The vertical margin in %
    */
   float GetVerticalMarginPerc() const;
+
+  BitmapOptions GetBitmapOptions() const;
 
   static void SettingOptionsSubtitleFontsFiller(const std::shared_ptr<const CSetting>& setting,
                                                 std::vector<StringSettingOption>& list,

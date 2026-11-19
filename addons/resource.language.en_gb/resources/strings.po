@@ -25798,7 +25798,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40810"
-msgid "Dolby Vision"
+msgid "CB1 - Dolby Vision engine"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25808,7 +25808,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40812"
-msgid "Dolby Vision Standard"
+msgid "Dolby Vision Reference"
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25823,7 +25823,7 @@ msgstr ""
 
 #: system/settings/settings.xml
 msgctxt "#40815"
-msgid "Choose Dolby Vision Master Reference, Dolby Vision Standard, Adaptive HDR Mapping, HDR10 conversion or standard Kodi playback. Changes apply at a video frame boundary."
+msgid "Choose Dolby Vision Master Reference, Dolby Vision Reference, Adaptive HDR Mapping, HDR10 conversion or standard Kodi playback. Changes apply at a video frame boundary."
 msgstr ""
 
 #: system/settings/settings.xml
@@ -25867,7 +25867,7 @@ msgid "Disable L2 trims"
 msgstr ""
 
 msgctxt "#40926"
-msgid "Standard and Master Reference only. L8 trims remain active."
+msgid "Reference and Master Reference only. L8 trims remain active."
 msgstr ""
 
 msgctxt "#40822"
@@ -25955,7 +25955,7 @@ msgid "Display restoration failed"
 msgstr ""
 
 msgctxt "#40848"
-msgid "Driver-validated link minimum"
+msgid "Link minimum"
 msgstr ""
 
 msgctxt "#40849"
@@ -26024,7 +26024,7 @@ msgid "Dolby Vision Adaptive HDR Mapping (AI)"
 msgstr ""
 
 msgctxt "#40870"
-msgid "HDR10 to Dolby Vision with AI. Adaptive HDR Mapping requires a display profile."
+msgid "Convert HDR10 to Dolby Vision with AI. Adaptive requires a TV profile. HDR10+ metadata-guided mode keeps source pixels; missing statistics use AI estimates."
 msgstr ""
 
 msgctxt "#40875"
@@ -26068,7 +26068,7 @@ msgid "Dolby Vision Adaptive HDR Mapping"
 msgstr ""
 
 msgctxt "#40915"
-msgid "Insufficient rendering headroom. Switching to Dolby Vision Standard."
+msgid "Insufficient rendering headroom. Switching to Dolby Vision Reference."
 msgstr ""
 
 msgctxt "#40916"
@@ -26088,10 +26088,169 @@ msgid "IPT-PQc2"
 msgstr ""
 
 msgctxt "#40920"
-msgid "Allow Master Reference to switch to Standard"
+msgid "Allow Master Reference to switch to Reference"
 msgstr ""
 
 msgctxt "#40921"
 msgid "Switch when sustained rendering headroom is insufficient. Off keeps Master Reference strict."
 msgstr ""
 
+msgctxt "#40971"
+msgid "Source pixels unchanged. HDR10+ curve and saturation are not translated. Requires full-source analysis."
+msgstr ""
+
+msgctxt "#40970"
+msgid "HDR10+ to Dolby Vision (metadata-guided)"
+msgstr ""
+
+msgctxt "#40940"
+msgid "Bitmap subtitles (PGS/DVB)"
+msgstr ""
+
+msgctxt "#40941"
+msgid "Bitmap subtitle authoring"
+msgstr ""
+
+msgctxt "#40942"
+msgid "Auto keeps native interpretation. Choose SDR or PQ when needed. Reselect the subtitle track or reopen playback to apply. Disc menus are excluded."
+msgstr ""
+
+msgctxt "#40943"
+msgid "Auto (native interpretation)"
+msgstr ""
+
+msgctxt "#40944"
+msgid "SDR (BT.709)"
+msgstr ""
+
+msgctxt "#40945"
+msgid "HDR PQ (BT.2020)"
+msgstr ""
+
+msgctxt "#40946"
+msgid "Bitmap subtitle position"
+msgstr ""
+
+msgctxt "#40947"
+msgid "Move the complete bitmap subtitle block relative to native video or screen geometry. Text subtitles and disc menu graphics are unchanged."
+msgstr ""
+
+msgctxt "#40948"
+msgid "Original placement"
+msgstr ""
+
+msgctxt "#40949"
+msgid "Bottom of video"
+msgstr ""
+
+msgctxt "#40950"
+msgid "Top of video"
+msgstr ""
+
+msgctxt "#40951"
+msgid "Bottom of screen"
+msgstr ""
+
+msgctxt "#40952"
+msgid "Top of screen"
+msgstr ""
+
+msgctxt "#40953"
+msgid "Manual offset"
+msgstr ""
+
+msgctxt "#40954"
+msgid "Bitmap subtitle vertical offset"
+msgstr ""
+
+msgctxt "#40955"
+msgid "Positive values move bitmap subtitles upwards. The complete block stays within the screen. Zero preserves the chosen position."
+msgstr ""
+
+msgctxt "#40956"
+msgid "Bitmap subtitle size"
+msgstr ""
+
+msgctxt "#40957"
+msgid "100% preserves original size. Multiline bitmaps scale as one block; oversized blocks are limited to fit the screen."
+msgstr ""
+
+msgctxt "#40958"
+msgid "SDR-authored bitmap brightness"
+msgstr ""
+
+msgctxt "#40959"
+msgid "SDR-authored bitmap saturation"
+msgstr ""
+
+msgctxt "#40960"
+msgid "PQ-authored bitmap brightness"
+msgstr ""
+
+msgctxt "#40961"
+msgid "PQ-authored bitmap saturation"
+msgstr ""
+
+msgctxt "#40962"
+msgid "Adjust only bitmap subtitles in their authoring domain before composition. 100% preserves original colours. Changes apply while paused too. Text subtitles, disc menus and movie pixels are unchanged."
+msgstr ""
+
+msgctxt "#40980"
+msgid "CM4.0 metadata"
+msgstr ""
+
+msgctxt "#40981"
+msgid "Reference and Master only. Adds default CM4 metadata without changing video pixels. Automatic selection uses the original L2 trims."
+msgstr ""
+
+msgctxt "#40982"
+msgid "CM2.9 without L2 trims"
+msgstr ""
+
+msgctxt "#40983"
+msgid "Always"
+msgstr ""
+
+msgctxt "#40984"
+msgid "Auto"
+msgstr ""
+
+msgctxt "#40985"
+msgid "Auto 2"
+msgstr ""
+
+msgctxt "#40986"
+msgid "CM4.0 Auto trigger"
+msgstr ""
+
+msgctxt "#40987"
+msgid "Source: append when the TV peak covers the mastering peak. Other choices use a fixed mastering limit. Sources without L2 always qualify."
+msgstr ""
+
+msgctxt "#40988"
+msgid "Source"
+msgstr ""
+
+msgctxt "#40989"
+msgid "1000 nits"
+msgstr ""
+
+msgctxt "#40990"
+msgid "2000 nits"
+msgstr ""
+
+msgctxt "#40991"
+msgid "4000 nits"
+msgstr ""
+
+msgctxt "#40992"
+msgid "10000 nits"
+msgstr ""
+
+msgctxt "#40993"
+msgid "CM4.0 Auto 2 headroom (%)"
+msgstr ""
+
+msgctxt "#40994"
+msgid "Append while L1 peak fits the TV peak plus this margin. Requires TV peak brightness. Sources without L2 always qualify."
+msgstr ""

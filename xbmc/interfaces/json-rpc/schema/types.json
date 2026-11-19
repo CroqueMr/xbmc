@@ -530,6 +530,7 @@
     "type": "string",
     "enum": [
       "normal",
+      "auto",
       "zoom",
       "stretch4x3",
       "widezoom",

@@ -11,6 +11,7 @@
 #include "DVDCodecs/Video/DVStreamTelemetry.h"
 #include "DVDCodecs/Video/DVPlaybackInfo.h"
 #include "DVDCodecs/Video/DVPlaybackNotification.h"
+#include "utils/DVBridgeDiagnosticLog.h"
 #include "utils/DVBridgeDiagnosticState.h"
 #include "utils/StringUtils.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
@@ -605,6 +606,10 @@ void CVideoPlayerVideo::Process()
     {
       m_paused = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       CLog::Log(LOGDEBUG, "CVideoPlayerVideo - CDVDMsg::GENERAL_PAUSE: {}", m_paused);
+#ifdef HAVE_DVBRIDGE
+      if (DVBRIDGE::DiagnosticsEnabled())
+        DVBRIDGE::DiagnosticLog(LOGINFO, "CB1 video pause: paused={}", m_paused);
+#endif
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_REQUEST_STATE))
     {
@@ -739,6 +744,13 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
 
   if (decoderState == CDVDVideoCodec::VC_REOPEN)
   {
+#ifdef HAVE_DVBRIDGE
+    if (DVBRIDGE::DiagnosticsEnabled())
+      DVBRIDGE::DiagnosticLog(LOGWARNING,
+          "CB1 decoder reopen: codec={} extradata={} replay_packets={} paused={} speed={} sync={}",
+          static_cast<int>(m_hints.codec), m_hints.extradata.GetSize(), m_packets.size(),
+          m_paused, m_speed, static_cast<int>(m_syncState));
+#endif
     while (!m_packets.empty())
     {
       auto msg = std::static_pointer_cast<CDVDMsgDemuxerPacket>(m_packets.back().message);

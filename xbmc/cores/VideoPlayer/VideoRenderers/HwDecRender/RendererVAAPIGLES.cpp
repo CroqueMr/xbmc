@@ -18,6 +18,8 @@
 #include "utils/log.h"
 #ifdef HAVE_DVBRIDGE
 #include "ServiceBroker.h"
+#include "cores/VideoSourceSideData.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/HDR10SourceType.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
 #include <cmath>
 #endif
@@ -95,7 +97,7 @@ bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsig
 
   m_vaapiFourcc = pic->procPic.fourcc;
 #ifdef CB1_HAS_HDR10_AI
-  m_aiBuffers = m_isVAAPIBuffer && picture.hdrType == StreamHdrType::HDR_TYPE_HDR10 &&
+  m_aiBuffers = m_isVAAPIBuffer && DVBRIDGE::IsHDR10Family(picture.hdrType) &&
       !picture.doviSourceInfo.profile && !(picture.iFlags & DVP_FLAG_INTERLACED) &&
       DVBridgeOrientationSupported(orientation) ? pic->renderBufferCount : NUM_BUFFERS;
   m_aiLookahead=m_aiBuffers>NUM_BUFFERS;
@@ -154,7 +156,8 @@ bool CRendererVAAPIGLES::ConfigChanged(const VideoPicture& picture)
   CVaapiRenderPicture *pic = dynamic_cast<CVaapiRenderPicture*>(picture.videoBuffer);
 #ifdef CB1_HAS_HDR10_AI
   const unsigned buffers = pic->procPic.videoSurface != VA_INVALID_ID &&
-      picture.hdrType == StreamHdrType::HDR_TYPE_HDR10 && !picture.doviSourceInfo.profile &&
+      DVBRIDGE::IsHDR10Family(picture.hdrType) &&
+      !picture.doviSourceInfo.profile &&
       !(picture.iFlags & DVP_FLAG_INTERLACED) && DVBridgeOrientationSupported(m_renderOrientation) ?
       pic->renderBufferCount : NUM_BUFFERS;
   if (m_aiBuffers != buffers)
@@ -233,7 +236,8 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   const auto& source = *buffer.doviSourcePicture;
   bool hdr10 = false;
 #ifdef CB1_HAS_HDR10_AI
-  hdr10 = source.hdrType == StreamHdrType::HDR_TYPE_HDR10 &&
+  hdr10 = DVBRIDGE::IsHDR10AIInput(source.hdrType,
+      DVBRIDGE::FrameOutputSettings().hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
       source.doviSourceBinding.Valid() && !source.doviSourceInfo.profile;
 #endif
   if (!hdr10 && (!buffer.doviMetadata.Data() || buffer.doviPts == DVD_NOPTS_VALUE))
@@ -258,6 +262,8 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   const auto texture = m_texturePool.Retain(m_vaapiTextures[idx]);
   if (!texture || !buffer.doviSourcePicture) return false;
   layer.sourceInfo = buffer.doviSourcePicture->doviSourceInfo;
+  layer.sourceSideData = source.sourceSideData;
+  layer.sourceSerial = source.sourceSideData ? source.sourceSideData->Serial() : 0;
   layer.chromaLocation = source.chroma_position;
   if (hdr10)
   {
@@ -319,6 +325,7 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
     CDVBridgeGLES::Layer layer{};
     if (!BuildDVBridgeLayer(idx,layer)) break;
     layers.push_back(std::move(layer));
+    if(window->HDR10AIMetadataOnly())break;
     if (layers.back().pts >= horizon - 1e-9) break;
   }
   // Future imports must not replace the current picture's admission identity.

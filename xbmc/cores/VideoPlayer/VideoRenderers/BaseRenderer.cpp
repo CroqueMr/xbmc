@@ -173,6 +173,30 @@ void CBaseRenderer::CalcDestRect(float offsetX,
     }
   }
 
+  if (m_videoSettings.m_ViewMode == ViewModeAuto && zoomAmount == 1.0f)
+  {
+    float sourceWidth = m_sourceRect.Width() > 0 ? m_sourceRect.Width() : m_sourceWidth;
+    float sourceHeight = m_sourceRect.Height() > 0 ? m_sourceRect.Height() : m_sourceHeight;
+    if (isRotated)
+      std::swap(sourceWidth, sourceHeight);
+
+    const auto& info = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
+    // Hardware-plane destinations already use physical pixels.
+    const float pixelScaleX = useVideoSettings ? float(info.iScreenWidth) / info.iWidth : 1.0f;
+    const float pixelScaleY = useVideoSettings ? float(info.iScreenHeight) / info.iHeight : 1.0f;
+    if (sourceWidth > 0 && sourceHeight > 0)
+    {
+      const float scaleX = newWidth * pixelScaleX / sourceWidth;
+      const float scaleY = newHeight * pixelScaleY / sourceHeight;
+      const float scale = std::max(scaleX, scaleY);
+      if (scaleX >= 1.0f && scaleY >= 1.0f && scale <= 1.01f)
+      {
+        newWidth /= scale;
+        newHeight /= scale;
+      }
+    }
+  }
+
   // Scale the movie up by set zoom amount
   newWidth *= zoomAmount;
   newHeight *= zoomAmount;
@@ -426,7 +450,7 @@ EShaderFormat CBaseRenderer::GetShaderFormat()
 
 void CBaseRenderer::SetViewMode(int viewMode)
 {
-  if (viewMode < ViewModeNormal || viewMode > ViewModeZoom110Width)
+  if (viewMode < ViewModeNormal || viewMode > ViewModeAuto)
     viewMode = ViewModeNormal;
 
   m_videoSettings.m_ViewMode = viewMode;
@@ -440,7 +464,8 @@ void CBaseRenderer::SetViewMode(int viewMode)
   float sourceFrameRatio = GetAspectRatio();
 
   bool is43 = (sourceFrameRatio < 8.f/(3.f*sqrt(3.f)) &&
-              m_videoSettings.m_ViewMode == ViewModeNormal);
+              (m_videoSettings.m_ViewMode == ViewModeNormal ||
+               m_videoSettings.m_ViewMode == ViewModeAuto));
 
   // Splitres scaling factor
   float xscale = (float)info.iScreenWidth  / (float)info.iWidth;

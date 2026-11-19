@@ -6,6 +6,7 @@
 extern "C"
 {
 #include "cb1_hdr10_ai.h"
+#include "cb1_hdr10plus_dovi.h"
 }
 #include <optional>
 
@@ -21,7 +22,12 @@ public:
   // Called only after the owning context's retirement fence has completed.
   void ReleaseRetired();
   cb1_ai_status Begin(pl_gpu gpu, const char* bundle, const DVBRIDGE::OutputPreferences& preferences,
-      DVBRIDGE::SourceBinding binding, double pts, uint64_t now, bool buffered = true);
+      DVBRIDGE::SourceBinding binding, double pts, uint64_t now, bool buffered = true,
+      bool metadataOnly = false);
+  bool MetadataOnly() const { return m_metadataOnly; }
+  Decision DescribeHDR10Plus(DVBRIDGE::SourceBinding binding,
+      std::shared_ptr<const AVDynamicHDRPlus> source, double pts, uint64_t now,
+      cb1_ai_result* result);
   cb1_ai_status Submit(const pl_frame* frame, DVBRIDGE::SourceBinding binding, double pts,
       double headPts, std::shared_ptr<void> lease);
   cb1_ai_status Seal(double pts);
@@ -39,6 +45,12 @@ public:
   {
     return Matches(binding) && preferences.revision == m_preferences.revision &&
         preferences.SameValues(m_preferences);
+  }
+  bool Describes(DVBRIDGE::SourceBinding binding, const cb1_ai_result& prediction) const
+  {
+    const auto expected = Identity(binding);
+    return Matches(binding) && expected.stream == prediction.id.stream &&
+        expected.picture == prediction.id.picture && expected.revision == prediction.id.revision;
   }
   uint64_t LastSubmitted() const { return m_lastSubmitted; }
   void SetPresentationDeadline(uint64_t deadline) { m_activation.SetPresentationDeadline(deadline); }
@@ -79,10 +91,12 @@ private:
   cb1_ai_identity m_jobIdentity{};
   std::shared_ptr<void> m_lease;
   std::optional<cb1_ai_result> m_prepared, m_committed;
+  std::shared_ptr<const AVDynamicHDRPlus> m_preparedHDR10Plus, m_committedHDR10Plus;
   uint64_t m_revision{};
   uint64_t m_lastSubmitted{};
   double m_origin{}, m_jobPts{};
   bool m_active{}, m_job{}, m_fallback{}, m_resetPending{}, m_paused{};
+  bool m_metadataOnly{};
   const char* m_diagnosticStage{"none"};
   cb1_ai_status m_diagnosticStatus{CB1_AI_READY};
   bool m_diagnosticFailure{};

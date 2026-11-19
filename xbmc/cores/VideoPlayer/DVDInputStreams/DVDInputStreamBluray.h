@@ -233,7 +233,7 @@ public:
 protected:
   struct SPlane;
 
-  void OverlayFlush(int64_t pts);
+  void OverlayFlush(SPlane& updated, int64_t pts);
   void OverlayClose();
   static void OverlayClear(SPlane& plane, int x, int y, int w, int h);
   static void OverlayInit (SPlane& plane, int w, int h);
@@ -261,6 +261,7 @@ protected:
   struct SPlane
   {
     SOverlays o;
+    SOverlays committed;
     int w = 0;
     int h = 0;
   };

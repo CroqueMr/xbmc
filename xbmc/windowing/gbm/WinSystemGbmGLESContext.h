@@ -95,6 +95,7 @@ public:
   bool PrepareDVOutputFrame(const VideoPicture& picture);
 #ifdef CB1_HAS_HDR10_AI
   bool HDR10AILookaheadActive() const;
+  bool HDR10AIMetadataOnly() const { return m_dvContext && m_dvContext->HDR10AI().MetadataOnly(); }
   bool HDR10AISelectionPending() const
   {
     const auto preferences = DVBRIDGE::FrameOutputSettings();
@@ -245,6 +246,7 @@ private:
   bool m_dvOutputRetiring{}, m_dvOrdinaryFrame{};
   CDVBridgeState m_dvState;
   DVBRIDGE::DiagnosticFailures m_dvSetupFailures;
+  DVBRIDGE::DiagnosticInterval m_dvGuiDiagnostic;
   bool m_dvFrame = false;
   bool m_cb1FramePending{};
   bool m_dvEndPending{};
