@@ -16,6 +16,7 @@ uniform sampler2D u_lutTF;      // linear -> PQ LUT (1024 entries, sdrPeak baked
 uniform highp float u_ootfGamma; // HLG OOTF or negative SDR target gamma
                                 // PQ: 0.0 (use LUT path instead)
 uniform bool u_sdrBT2020;
+uniform bool u_unpremultiplyGui;
 uniform bool u_inputPQ;         // CB1 subtitle layer already contains BT.2020 PQ.
 uniform highp vec2 u_outputRange; // CB1 exact bit-depth scale and black code.
 uniform highp float u_playerLedScale;
@@ -53,11 +54,13 @@ void main()
     return;
   }
 
+  // Convert the native SDR GUI's straight colors before the final SRC_ALPHA blend.
+  highp vec3 rgb = u_unpremultiplyGui ? clamp(gui.rgb / gui.a, 0.0, 1.0) : gui.rgb;
   // sRGB -> linear via LUT (IEC 61966-2-1 EOTF, replaces inline pow)
   highp vec3 linear = vec3(
-    texture2D(u_lutDegamma, vec2(gui.r, 0.5)).r,
-    texture2D(u_lutDegamma, vec2(gui.g, 0.5)).r,
-    texture2D(u_lutDegamma, vec2(gui.b, 0.5)).r
+    texture2D(u_lutDegamma, vec2(rgb.r, 0.5)).r,
+    texture2D(u_lutDegamma, vec2(rgb.g, 0.5)).r,
+    texture2D(u_lutDegamma, vec2(rgb.b, 0.5)).r
   );
 
   if (u_playerLedScale > 0.0)

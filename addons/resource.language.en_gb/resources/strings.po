@@ -26794,6 +26794,14 @@ msgctxt "#41340"
 msgid "Choose a compatible HDMI format"
 msgstr ""
 
+msgctxt "#41341"
+msgid "EDID RGB / YCbCr 4:4:4"
+msgstr ""
+
+msgctxt "#41342"
+msgid "Packed · experimental"
+msgstr ""
+
 msgctxt "#41300"
 msgid "EDID target gamut exceeds BT.2020"
 msgstr ""

@@ -44,6 +44,16 @@ bool CWinSystemGbmEGLContext::InitWindowSystemEGL(EGLint renderableType, EGLint 
   }
 
   m_renderableType = renderableType;
+  m_lldvRgb10Visuals.clear();
+  if (renderableType == EGL_OPENGL_ES3_BIT)
+  {
+    for (const auto& format : m_DRM->GetOutputFormats())
+      if (format.bpp == 10 &&
+          m_eglContext.ChooseConfig(renderableType, format.drm, false, format.alpha, false, true))
+        m_lldvRgb10Visuals.push_back(format.drm);
+  }
+  m_lldvRgb16Visual = renderableType == EGL_OPENGL_ES3_BIT &&
+      m_eglContext.ChooseConfig(renderableType, DRM_FORMAT_ABGR16161616, false, 16, false, true);
 
   if (!ChooseEGLConfig(renderableType))
   {
@@ -81,6 +91,10 @@ bool CWinSystemGbmEGLContext::InitWindowSystemEGL(EGLint renderableType, EGLint 
 
 bool CWinSystemGbmEGLContext::ChooseEGLConfig(EGLint renderableType, int bitDepth)
 {
+  if (m_dvOutputSurface && bitDepth == 16)
+    return HasLldvRgb16Scanout() &&
+        m_eglContext.ChooseConfig(renderableType, DRM_FORMAT_ABGR16161616, false, 16);
+
   // Pick the highest active output format whose bpp is in range for the
   // requested bit depth. Policy: when bitDepth > 8, accept only entries
   // with bpp >= 10 and bpp <= bitDepth (do not silently fall back to 8).
@@ -91,7 +105,7 @@ bool CWinSystemGbmEGLContext::ChooseEGLConfig(EGLint renderableType, int bitDept
   std::ranges::copy_if(outputformats, std::back_inserter(candidates),
                        [bitDepth](const outputformat& format)
                        {
-                         if (!format.active)
+                         if (!format.active || format.drm == DRM_FORMAT_ABGR16161616)
                            return false;
                          if (bitDepth > 8)
                            return format.bpp >= 10 && format.bpp <= bitDepth;
@@ -112,6 +126,24 @@ bool CWinSystemGbmEGLContext::ChooseEGLConfig(EGLint renderableType, int bitDept
           m_eglContext.ChooseConfig(renderableType, format.drm, false, format.alpha, true))
         return true;
   return false;
+}
+
+bool CWinSystemGbmEGLContext::HasLldvRgb16Scanout() const
+{
+  if (!m_lldvRgb16Visual || !m_DRM)
+    return false;
+  const auto* plane = m_DRM->GetVideoPlane() ? m_DRM->GetVideoPlane() : m_DRM->GetGuiPlane();
+  return plane && plane->SupportsFormat(DRM_FORMAT_ABGR16161616);
+}
+
+bool CWinSystemGbmEGLContext::HasLldvRgb10Scanout() const
+{
+  if (!m_DRM || m_lldvRgb10Visuals.empty())
+    return false;
+  const auto* plane = m_DRM->GetVideoPlane() ? m_DRM->GetVideoPlane() : m_DRM->GetGuiPlane();
+  return plane && std::ranges::any_of(m_lldvRgb10Visuals, [plane](uint32_t format) {
+    return plane->SupportsFormat(format);
+  });
 }
 
 bool CWinSystemGbmEGLContext::FloatOutputUsable() const
@@ -319,7 +351,8 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   bool separateScanout = false;
   if (!ChooseEGLConfig(m_renderableType, bitDepth))
   {
-    separateScanout = bitDepth >= 10 && PrepareHDR10Scanout(videoPicture);
+    separateScanout = bitDepth >= 10 && !(m_dvOutputSurface && bitDepth == 16) &&
+        PrepareHDR10Scanout(videoPicture);
     if (!separateScanout)
     {
       CLog::LogF(LOGERROR, "failed to choose EGL config for {}-bit", bitDepth);
@@ -398,7 +431,7 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   if (!m_dvOutputSurface && HasFloatOutput())
   {
     auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-    if (!drm || !drm->TestFramebuffer(m_GBM->GetDevice().GetSurface().LockFrontBuffer().Get()))
+    if (!drm || !drm->TestFramebuffer(m_GBM->GetDevice().GetSurface().GetLockedFrontBuffer()))
       return reject();
   }
   // No new drawable exists when only a same-format policy value changes.

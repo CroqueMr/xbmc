@@ -177,7 +177,12 @@ bool CRenderSystemGLES::BeginRender()
     return false;
 
   m_GUIElementCount = 0;
+  UpdateGUIShaderColorState();
+  return true;
+}
 
+void CRenderSystemGLES::UpdateGUIShaderColorState()
+{
   const bool useLimited = CServiceBroker::GetWinSystem()->UseLimitedColor() &&
                           !CServiceBroker::GetWinSystem()->IsHdrComposite();
   const bool usePQ = CServiceBroker::GetWinSystem()->GetGfxContext().IsTransferPQ();
@@ -191,8 +196,6 @@ bool CRenderSystemGLES::BeginRender()
 
     InitialiseShaders();
   }
-
-  return true;
 }
 
 bool CRenderSystemGLES::EndRender()

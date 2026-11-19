@@ -1014,6 +1014,7 @@ void CLinuxRendererGL::LoadShaders(int field)
     // create regular progressive scan shader
     // if single pass, create GLSLOutput helper and pass it to YUV2RGB shader
     EShaderFormat shaderFormat = GetShaderFormat();
+    const auto dstPrimaries = m_passthroughHDR || m_shaderSDRBT2020 ? m_srcPrimaries : AVCOL_PRI_BT709;
     std::shared_ptr<GLSLOutput> out;
     m_toneMapMethod = m_videoSettings.m_ToneMapMethod;
     if (m_renderQuality == RQ_SINGLEPASS)
@@ -1027,7 +1028,7 @@ void CLinuxRendererGL::LoadShaders(int field)
       {
         m_pYUVShader = new YUV2RGBFilterShader4(
             m_textureTarget == GL_TEXTURE_RECTANGLE, shaderFormat, m_nonLinStretch,
-            m_passthroughHDR ? m_srcPrimaries : AVColorPrimaries::AVCOL_PRI_BT709, m_srcPrimaries,
+            dstPrimaries, m_srcPrimaries,
             m_toneMap, m_toneMapMethod, m_scalingMethod, out);
         if (!m_cmsOn)
           m_pYUVShader->SetConvertFullColorRange(m_fullRange);
@@ -1053,7 +1054,7 @@ void CLinuxRendererGL::LoadShaders(int field)
       m_pYUVShader = new YUV2RGBProgressiveShader(
           m_textureTarget == GL_TEXTURE_RECTANGLE, shaderFormat,
           m_nonLinStretch && m_renderQuality == RQ_SINGLEPASS,
-          m_passthroughHDR ? m_srcPrimaries : AVColorPrimaries::AVCOL_PRI_BT709, m_srcPrimaries,
+          dstPrimaries, m_srcPrimaries,
           m_toneMap, m_toneMapMethod, out,
           m_intermediateGammaCorrection && m_renderQuality == RQ_MULTIPASS);
 
@@ -1117,7 +1118,7 @@ void CLinuxRendererGL::UnInit()
 
 bool CLinuxRendererGL::IsGuiLayer()
 {
-  return !m_hdrFboActive;
+  return !m_hdrFboActive && !CServiceBroker::GetWinSystem()->UsesNativeSDRBT2020();
 }
 
 bool CLinuxRendererGL::Render(unsigned int flags, int renderBuffer)
@@ -2795,6 +2796,7 @@ void CLinuxRendererGL::SetBufferColorimetry(const CPictureBuffer& buf, bool tone
   VideoPicture tmp{};
   tmp.color_space = toneMap ? AVCOL_SPC_UNSPECIFIED : buf.m_srcColSpace;
   tmp.color_transfer = buf.m_srcColTransfer;
+  tmp.color_primaries = buf.m_srcPrimaries;
   tmp.iWidth = m_sourceWidth;
   tmp.iHeight = m_sourceHeight;
   tmp.colorBits = buf.m_srcBits;
@@ -2805,6 +2807,12 @@ void CLinuxRendererGL::CheckVideoParameters(int index)
 {
   const CPictureBuffer& buf = m_buffers[index];
   const ETONEMAPMETHOD& toneMapMethod = m_videoSettings.m_ToneMapMethod;
+  const bool wide = CServiceBroker::GetWinSystem()->UsesNativeSDRBT2020();
+  if (wide != m_shaderSDRBT2020)
+  {
+    m_shaderSDRBT2020 = wide;
+    m_reloadShaders = true;
+  }
 
   if (buf.m_srcPrimaries != m_srcPrimaries)
   {

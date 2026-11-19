@@ -28,11 +28,11 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <optional>
 #ifdef CB1_HAS_HDR10_AI
-#include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/WindowIDs.h"
@@ -41,7 +41,9 @@
 #endif
 #endif
 #ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
+#include "settings/DisplaySettings.h"
 #endif
 #if defined(HAVE_GBM) && defined(HAS_GLES)
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
@@ -972,29 +974,21 @@ void CRenderManager::ServiceVideoCaptures()
 
   for (const auto& request : requests)
   {
-    const unsigned int width =
-        request->spec.width ? request->spec.width : static_cast<unsigned int>(visible.Width());
-    const unsigned int height =
-        request->spec.height ? request->spec.height : static_cast<unsigned int>(visible.Height());
-
     CaptureResult result;
-    if (m_captureBlit->Blit(visible, width, height, request->spec.format) &&
-        m_captureBlit->Read(result))
+    // The ordinary video readback retains the mastering metadata of its source.
+    result.hasDisplayMetadata = m_picture.hasDisplayMetadata;
+    result.displayMetadata = m_picture.displayMetadata;
+    result.hasLightMetadata = m_picture.hasLightMetadata;
+    result.lightMetadata = m_picture.lightMetadata;
+    if (m_captureBlit->Capture(visible, request->spec, result))
     {
       result.color = GetOutputColorMetadata(*CServiceBroker::GetWinSystem());
-      // the presented PQ is the content's during passthrough, so carry its
-      // mastering metadata verbatim: the source peak an SDR tonemap needs.
-      // NOTE: m_picture, not m_pConfigPicture, which Configure() has already
-      // reset by the time this frame reaches CONFIGURED.
-      result.hasDisplayMetadata = m_picture.hasDisplayMetadata;
-      result.displayMetadata = m_picture.displayMetadata;
-      result.hasLightMetadata = m_picture.hasLightMetadata;
-      result.lightMetadata = m_picture.lightMetadata;
       result.content = CaptureContent::VIDEO; // this tap delivers video-only
       captureService->Complete(request, std::move(result));
     }
-    else
+    else if (request->spec.content != CaptureContent::BOTH)
       captureService->Fail(request);
+    // BOTH remains latched for the independent composite tap on this frame.
   }
 }
 
@@ -1006,22 +1000,39 @@ void CRenderManager::SetViewMode(int iViewMode)
   m_playerPort->VideoParamsChange();
 }
 
-RESOLUTION CRenderManager::ChoosePlaybackResolution(double fps, int width, int height, bool stereo,
-                                                    bool nativeDV, bool atStartup)
+RESOLUTION CRenderManager::ChoosePlaybackResolution(double fps,
+                                                    int width,
+                                                    int height,
+                                                    bool stereo,
+                                                    bool nativeDV,
+                                                    bool atStartup,
+                                                    const VideoPicture* picture)
 {
 #ifdef HAVE_DVBRIDGE
+  const KODI::WINDOWING::GBM::CWinSystemGbmGLESContext* window = nullptr;
   const auto advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
   if (nativeDV && !stereo && !CResolutionUtils::HasWhitelist() &&
       advanced->m_videoAdjustRefreshOverrides.empty())
-    if (const auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
-            CServiceBroker::GetWinSystem()))
-      if (const auto resolution = window->PlayerLedResolution(fps, atStartup))
-        return *resolution;
+    window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+  if (window)
+    if (const auto resolution = window->PlayerLedResolution(fps, atStartup))
+      return *resolution;
 #else
   (void)nativeDV;
   (void)atStartup;
+  (void)picture;
 #endif
-  return CResolutionUtils::ChooseBestResolution(fps, width, height, stereo);
+  const RESOLUTION chosen = CResolutionUtils::ChooseBestResolution(fps, width, height, stereo);
+#ifdef HAVE_DVBRIDGE
+  // When the startup fallback is active, the empty whitelist's desktop size floor
+  // can hide usable HDR10 modes on an 8K display. Keep the refresh Kodi selected.
+  if (window && (!picture || picture->doviSourceInfo.profile ||
+                 picture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) &&
+      DVBRIDGE::FrameOutputSettings().hdr10TransportFallback)
+    return window->ChooseHDR10FallbackResolution(chosen);
+#endif
+  return chosen;
 }
 
 RESOLUTION CRenderManager::GetResolution()
@@ -1035,7 +1046,7 @@ RESOLUTION CRenderManager::GetResolution()
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF)
   {
     res = ChoosePlaybackResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
-                                      !m_picture.stereoMode.empty(), m_nativeDVRate);
+                                   !m_picture.stereoMode.empty(), m_nativeDVRate, false, &m_picture);
   }
 
   return res;
@@ -1304,8 +1315,9 @@ void CRenderManager::UpdateResolution()
     {
       if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF && m_fps > 0.0f)
       {
-        const RESOLUTION res = ChoosePlaybackResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
-                                      !m_picture.stereoMode.empty(), m_nativeDVRate);
+        const RESOLUTION res =
+            ChoosePlaybackResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
+                                     !m_picture.stereoMode.empty(), m_nativeDVRate, false, &m_picture);
 #ifdef HAVE_DVBRIDGE
         // Carry the stream's intent when this later request performs the modeset.
         const auto previous = DVBRIDGE::guiModeChangeResolution;

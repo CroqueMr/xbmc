@@ -52,11 +52,15 @@ private:
 class CHeapCapturePixels : public ICapturePixels
 {
 public:
-  explicit CHeapCapturePixels(std::unique_ptr<uint8_t[]> buffer) : m_buffer(std::move(buffer)) {}
-  const uint8_t* Lock() override { return m_buffer.get(); }
+  explicit CHeapCapturePixels(std::unique_ptr<uint8_t[]> buffer, std::size_t offset = 0)
+    : m_buffer(std::move(buffer)), m_offset(offset)
+  {
+  }
+  const uint8_t* Lock() override { return m_buffer ? m_buffer.get() + m_offset : nullptr; }
 
 private:
   std::unique_ptr<uint8_t[]> m_buffer;
+  std::size_t m_offset;
 };
 
 //! swscale source pointer for a capture buffer whose stride may be negative

@@ -272,7 +272,7 @@ bool CEGLContextUtils::InitializeDisplay(EGLint renderingApi)
 }
 
 bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool hdr, int alpha,
-                                   bool floating)
+                                   bool floating, bool probe)
 {
   EGLint numMatched{0};
 
@@ -296,7 +296,6 @@ bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool
                {EGL_RENDERABLE_TYPE, renderableType}});
 
   EGLConfig* currentConfig(hdr ? &m_eglHDRConfig : &m_eglConfig);
-  const EGLConfig previousConfig = *currentConfig;
   if (floating && !CEGLUtils::HasExtension(m_eglDisplay, "EGL_EXT_pixel_format_float"))
     return false;
 
@@ -318,6 +317,8 @@ bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool
 
   if (errorMsg)
   {
+    if (probe)
+      return false;
     if (!hdr)
     {
       CEGLUtils::Log(LOGERROR, errorMsg);
@@ -329,27 +330,27 @@ bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool
     return false;
   }
 
-  EGLint id{0};
-  for (const auto &eglConfig: eglConfigs)
+  EGLConfig match{};
+  for (const auto& eglConfig : eglConfigs)
   {
-    *currentConfig = eglConfig;
-
-    if (visualId == 0)
+    EGLint id{};
+    if (visualId == 0 ||
+        (eglGetConfigAttrib(m_eglDisplay, eglConfig, EGL_NATIVE_VISUAL_ID, &id) == EGL_TRUE &&
+         id == visualId))
+    {
+      match = eglConfig;
       break;
-
-    if (eglGetConfigAttrib(m_eglDisplay, *currentConfig, EGL_NATIVE_VISUAL_ID, &id) != EGL_TRUE)
-      CEGLUtils::Log(LOGERROR, "failed to query EGL attribute EGL_NATIVE_VISUAL_ID");
-
-    if (visualId == id)
-      break;
+    }
   }
-
-  if (visualId != 0 && visualId != id)
+  if (probe)
+    return match != nullptr;
+  if (!match && visualId != 0)
   {
-    *currentConfig = previousConfig;
     CLog::Log(LOGDEBUG, "failed to find EGL config with EGL_NATIVE_VISUAL_ID={}", visualId);
     return false;
   }
+  if (match)
+    *currentConfig = match;
 
   CLog::Log(LOGDEBUG, "EGL {}Config Attributes:", hdr ? "HDR " : "");
 

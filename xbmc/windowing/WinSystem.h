@@ -238,10 +238,13 @@ public:
   /*!
    * \brief Set colorimetry (BT.709, BT.2020, etc). Passing nullptr as the
    * parameter resets to "Default" (display then decides based on rez). Native
-   * YUV shaders set sdrToBT709 when they render SDR into the BT.709 gamut.
+   * YUV shaders set nativeSDRShader when the window system can choose their SDR output gamut.
    *
    */
-  virtual void SetColorimetry(const VideoPicture* videoPicture, bool sdrToBT709 = false) {}
+  virtual void SetColorimetry(const VideoPicture* videoPicture, bool nativeSDRShader = false) {}
+
+  //! The native shader and GUI compositor are rendering this frame in SDR BT.2020.
+  virtual bool UsesNativeSDRBT2020() const { return false; }
 
   /*!
    * \brief Set the HDR metadata. Passing nullptr as the parameter should
@@ -275,6 +278,7 @@ public:
   // guiWillRender: hint that GUI rendering is about to fire this frame.
   // When false, implementations should skip FBO bind/clear since no GUI
   // draws will land in the FBO this frame.
+  virtual bool BeginFrameGuiComposite(bool guiWillRender) { return BeginGuiComposite(guiWillRender); }
   virtual bool BeginGuiComposite(bool guiWillRender) { return false; }
   virtual bool CanReuseGuiComposite() const { return false; }
   virtual void EndGuiComposite() {}
@@ -287,7 +291,7 @@ public:
   // alpha blend (see CGUIFontTTFGLES::FirstBegin).
   virtual bool IsHdrComposite() const { return false; }
   // Native HDR keeps its perceived-translucency compensation by default.
-  virtual bool UseGuiCoverageAlpha() const { return !IsHdrComposite(); }
+  virtual bool UseGuiCoverageAlpha() const { return UsesNativeSDRBT2020() || !IsHdrComposite(); }
 
   /*!
    * \brief Gets debug info from video renderer for use in "Debug Info OSD" (Alt + O)

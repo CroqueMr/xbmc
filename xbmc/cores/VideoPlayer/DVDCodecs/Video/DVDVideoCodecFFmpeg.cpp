@@ -951,8 +951,15 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
         m_dvPending.push_back(std::move(base));
       }
       if (result == VC_EOF || (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
-        if (!dvbridge_fel_drain(m_dvFel.get()))
+      {
+        const char* reason = nullptr;
+        if (!dvbridge_fel_drain(m_dvFel.get(), &reason))
+        {
+          if (reason && !m_hints.preferHybridHDR10Plus)
+            CLog::Log(LOGERROR, "DV FEL: {}; choose Kodi Default to play the Profile 7 HDR10 base", reason);
           break;
+        }
+      }
       paired = emit();
       if (paired == VC_FATAL)
         break;

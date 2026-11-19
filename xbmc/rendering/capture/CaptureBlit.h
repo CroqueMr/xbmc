@@ -39,6 +39,9 @@ public:
   CCaptureBlit(const CCaptureBlit&) = delete;
   CCaptureBlit& operator=(const CCaptureBlit&) = delete;
 
+  //! Capture the visible video region before overlays, respecting native logical pixels.
+  bool Capture(const CRect& visible, const CaptureSpec& spec, CaptureResult& result);
+
   //! \brief Copy srcRect (display coordinates, top-left origin) scaled to width x height.
   //! NATIVE keeps the output depth in the copy; BGRA8 requantizes to 8-bit during it.
   bool Blit(const CRect& srcRect,

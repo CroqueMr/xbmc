@@ -27,6 +27,7 @@
 #include "utils/StringUtils.h"
 #include "windowing/WinSystem.h"
 #ifdef HAVE_DVBRIDGE
+#include "cores/DataCacheCore.h"
 #include "dialogs/DVPlaybackModes.h"
 #include "cores/VideoPlayer/Interface/StreamInfo.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSelection.h"
@@ -540,6 +541,12 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
     const auto lldv = window->GetDVOutputCapabilities(nullptr, false);
     caps.playerLed = lldv.playerLed;
     caps.lldvUnavailableLabel = lldv.lldvUnavailableLabel;
+    if ((caps.playerLed || caps.lldvUnavailableLabel == DVBRIDGE::LLDV_CHOOSE_FORMAT_LABEL) &&
+        !window->LldvSupportsPlaybackTiming(CServiceBroker::GetDataCacheCore().GetVideoFps(), true))
+    {
+      caps.playerLed = false;
+      caps.lldvUnavailableLabel = 41212;
+    }
   }
   if (caps.isDV && preferences.output==DVBRIDGE::OutputMode::Disabled)
   {

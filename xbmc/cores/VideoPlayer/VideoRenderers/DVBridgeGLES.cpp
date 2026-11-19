@@ -24,6 +24,7 @@ extern "C"
 #include <libplacebo/dispatch.h>
 #include <libplacebo/renderer.h>
 #include "dvbridge_placebo.h"
+#include "dvbridge_metadata_bounds.h"
 #include "dvbridge_cache.h"
 #include "cb1_hdr10plus_dovi.h"
 #include "cb1_lldv_cpu.h"
@@ -1772,12 +1773,18 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int frame
   glGetFramebufferAttachmentParameteriv(
       GL_FRAMEBUFFER, framebuffer ? GL_COLOR_ATTACHMENT0 : GL_BACK,
       GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+  GLint componentType{};
+  if (m_playerLed && red == 16)
+    glGetFramebufferAttachmentParameteriv(
+        GL_FRAMEBUFFER, framebuffer ? GL_COLOR_ATTACHMENT0 : GL_BACK,
+        GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &componentType);
   pl_tex candidate{};
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
       ((sdr && hdr10 && red >= 8 && green >= 8 && blue >= 8 && red <= 16 && green <= 16 && blue <= 16) ||
        (!sdr && hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
        (!sdr && !hdr10 && red == green && green == blue &&
-        (red == 8 || (m_playerLed && red == 10)))) &&
+        (red == 8 || (m_playerLed &&
+            (red == 10 || (red == 16 && componentType == GL_UNSIGNED_NORMALIZED)))))) &&
       samples <= 1 && encoding == GL_LINEAR)
     candidate = pl_opengl_wrap(m_gl->gpu, &output);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
@@ -2532,7 +2539,22 @@ unsigned int CDVBridgeGLES::GetPQTexture() const
   return texture ? pl_opengl_unwrap(m_gl->gpu, texture, nullptr, nullptr, nullptr) : 0;
 }
 
-bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
+bool CDVBridgeGLES::UsesMasterSourceCarrier(dvbridge_mode mode, bool masterIPT,
+                                            const CDVMetadataBuffer& metadata)
+{
+  if (mode != DVBRIDGE_MODE_MASTER_REFERENCE)
+    return false;
+  if (!masterIPT)
+    return true;
+  // Master keeps an authored IPT source in its native encoding. Converted YCC
+  // uses the output IPT matrices, which the source-metadata reader cannot decode.
+  if (!dvbridge_metadata_bounds(metadata.Data(), metadata.Size()))
+    return false;
+  const auto* parsed = reinterpret_cast<const AVDOVIMetadata*>(metadata.Data());
+  return av_dovi_get_color(parsed)->signal_color_space == 2;
+}
+
+bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out, bool videoOnly)
 {
   using namespace KODI::RENDERING::CAPTURE;
   const auto failed = [&](const char* stage, int format = -1) {
@@ -2548,9 +2570,17 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
   const bool master=m_effectiveMode==DVBRIDGE_MODE_MASTER_REFERENCE;
   const bool sdr=m_effectiveMode==DVBRIDGE_MODE_SDR;
   if (!m_prepared) return failed("unprepared");
+  // Master can bake a cached GUI or subtitles into the carrier before the video tap.
+  const bool nativeOverlay = m_nativeOverlayEnabled && m_nativeOverlay.rect[0] < m_nativeOverlay.rect[2] &&
+                             m_nativeOverlay.rect[1] < m_nativeOverlay.rect[3];
+  if (videoOnly && (m_guiComposed || nativeOverlay))
+  {
+    CLog::Log(LOGWARNING, "CB1 video screenshot unavailable: the prepared picture includes an overlay");
+    return false;
+  }
   if (!m_scanout) return failed("no-scanout");
   if ((master || sdr) && !m_direct) return failed("direct-target");
-  const auto framebuffer=master || sdr ? m_scanoutFramebuffer : GetPQFramebuffer();
+  const auto framebuffer=master || sdr ? m_scanoutFramebuffer : GetPQFramebuffer(!videoOnly);
   if (!master && !sdr && !framebuffer) return failed("direct-target");
   GLint previous=0;
   glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&previous);
@@ -3061,16 +3091,17 @@ bool CDVBridgeGLES::PackPlayerLed(DVBRIDGE::LldvTransport transport)
 {
   m_packed = false;
   if (!m_playerLed || !m_prepared || !m_playerLedPicture || !m_scanout ||
-      (transport.format != DVBRIDGE::LldvFormat::Y422_10 &&
-       transport.format != DVBRIDGE::LldvFormat::Y422_12))
+      !(DVBRIDGE::LldvBit(transport.format) & DVBRIDGE::LLDV_IMPLEMENTED))
     return Failure("player-led-pack-target");
 
-  if (transport.rgb10Scanout)
+  if (transport.rgbScanoutBits > 8)
   {
-    m_packed = m_outputBits == 10 && dvbridge_resolve_player_led_rgb10(
+    // The existing RGB resolve writes full-precision PQ into the selected target.
+    m_packed = m_outputBits == transport.rgbScanoutBits &&
+        dvbridge_resolve_player_led_rgb10(
         m_renderer, &m_playerLedPolicy, m_playerLedPicture, m_scanout, true) &&
         m_context->FenceLastUse();
-    if (!m_packed) return Failure("player-led-rgb10");
+    if (!m_packed) return Failure("player-led-deep-rgb");
     m_playerLedTransport = transport;
     m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,m_asyncEligible};
     return true;
@@ -3200,7 +3231,7 @@ bool CDVBridgeGLES::ResolveHDR10(bool limited)
   return m_packed || Failure("hdr10-resolve");
 }
 
-unsigned int CDVBridgeGLES::GetPQFramebuffer()
+unsigned int CDVBridgeGLES::GetPQFramebuffer(bool forGUI)
 {
   const auto texture = m_playerLed && m_prepared && m_playerLedPicture ?
       pl_opengl_unwrap(m_gl->gpu, m_playerLedPicture, nullptr, nullptr, nullptr) : GetPQTexture();
@@ -3214,7 +3245,7 @@ unsigned int CDVBridgeGLES::GetPQFramebuffer()
   glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
   const bool valid = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, previous);
-  if (valid && m_live) m_guiComposed = true;
+  if (valid && m_live && forGUI) m_guiComposed = true;
   return valid ? m_framebuffer : 0;
 }
 

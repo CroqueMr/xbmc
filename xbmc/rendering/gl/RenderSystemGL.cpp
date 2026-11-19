@@ -263,7 +263,12 @@ bool CRenderSystemGL::BeginRender()
     return false;
 
   m_GUIElementCount = 0;
+  UpdateGUIShaderColorState();
+  return true;
+}
 
+void CRenderSystemGL::UpdateGUIShaderColorState()
+{
   bool useLimited = CServiceBroker::GetWinSystem()->UseLimitedColor() &&
                     !CServiceBroker::GetWinSystem()->IsHdrComposite();
 
@@ -274,7 +279,6 @@ bool CRenderSystemGL::BeginRender()
   }
 
   m_limitedColorRange = useLimited;
-  return true;
 }
 
 bool CRenderSystemGL::EndRender()
