@@ -411,17 +411,16 @@ void CWinSystemGbm::ApplyMaxBpcSetting(void* userptr)
   winSystem->ApplyConnectorProperties();
 }
 
-uint64_t CWinSystemGbm::GetEffectiveMaxBpc() const
+uint64_t CWinSystemGbm::GetEffectiveMaxBpc(std::optional<uint64_t> restored) const
 {
   const int setting = m_maxBpc;
   if (!m_maxBpcFallback && setting > 0 && setting < static_cast<int>(MAX_BPC_VALUES.size()))
     return MAX_BPC_VALUES[setting];
 
+  if (restored)
+    return *restored;
   const auto connector = m_DRM ? m_DRM->GetConnector() : nullptr;
-  if (!connector)
-    return 0;
-
-  return connector->GetPropertyValue(MAX_BPC).value_or(0);
+  return connector ? connector->GetPropertyValue(MAX_BPC).value_or(0) : 0;
 }
 
 void CWinSystemGbm::ApplyColorFormatSetting(void* userptr)

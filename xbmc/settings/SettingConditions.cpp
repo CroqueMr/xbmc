@@ -526,6 +526,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   // A failed frame or disabled import does not remove reusable output capabilities.
   caps.nativeDV=available.nativeDV;
   caps.hdr10=available.hdr10;
+  caps.hdr10MaxBpc=available.hdr10MaxBpc;
   caps.hdr10plus=available.hdr10plus;
   if (!menu || !caps.sourceKnown) caps.playerLed=available.playerLed;
   if (caps.isDV && preferences.output==DVBRIDGE::OutputMode::Disabled)
@@ -567,6 +568,8 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
         reason=DVBRIDGE::OutputReason::SourceIneligible;
       else if (hdr10Source && (nativeHDR10Plus || caps.hdr10PlusSource) && !guided && mode!=7)
         reason=DVBRIDGE::OutputReason::SourceIneligible;
+      else if ((mode==2 || mode==3) && caps.HDR10DepthLimited())
+        reason=DVBRIDGE::OutputReason::HDR10LinkDepthTooLow;
       else if (mode==8 && !caps.playerLed) reason=DVBRIDGE::OutputReason::NoPlayerLedTransport;
       else if (mode!=7 && mode!=8 && !(dv ? caps.nativeDV : caps.hdr10))
         reason=dv ? DVBRIDGE::OutputReason::NoDVTransport : DVBRIDGE::OutputReason::NoHDR10Transport;

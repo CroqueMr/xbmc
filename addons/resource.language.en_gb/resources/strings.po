@@ -26569,3 +26569,7 @@ msgstr ""
 msgctxt "#41222"
 msgid "No compatible LLDV output at this timing"
 msgstr ""
+
+msgctxt "#41223"
+msgid "Requires 10-bit HDMI"
+msgstr ""
