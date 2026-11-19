@@ -12,6 +12,9 @@
 #include "input/actions/ActionIDs.h"
 #ifdef HAVE_DVBRIDGE
 #include "DVPlaybackModes.h"
+#include "GUIDialogTextViewer.h"
+#include "guilib/GUIComponent.h"
+#include "guilib/GUIWindowManager.h"
 #include "DVPixelFormat.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackInfo.h"
@@ -513,6 +516,42 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
 bool CGUIDialogPlayerProcessInfo::OnAction(const CAction &action)
 {
 #ifdef HAVE_DVBRIDGE
+  if (DVBRIDGE::EnhancedInfoEnabled() && action.GetID() == ACTION_SELECT_ITEM)
+  {
+    // Labels retain their full info expression even when the static panel ellipsizes it.
+    // Reuse the native text reader on request; keep a frozen snapshot while it is open.
+    std::string snapshot;
+    const auto [first, last] = GetLookupControls(9690);
+    for (int column = 0; column < 3; ++column)
+    {
+      for (auto it = first; it != last; ++it)
+      {
+        const auto* control = it->second;
+        bool visible = true, belongs = false;
+        for (auto* parent = control; parent; parent = parent->GetParentControl())
+        {
+          visible = visible && parent->IsVisible();
+          belongs = belongs || parent->GetID() == 9620 + column ||
+              parent->GetID() == 9630 + column || parent->GetID() == 9640 + column;
+        }
+        if (visible && belongs)
+        {
+          const auto text = control->GetDescription();
+          if (!text.empty())
+            snapshot += text + "\n";
+        }
+      }
+      snapshot += "\n";
+    }
+    if (auto* viewer = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogTextViewer>(
+            WINDOW_DIALOG_TEXT_VIEWER))
+    {
+      viewer->SetHeading("Player information");
+      viewer->SetText(snapshot);
+      viewer->Open();
+    }
+    return true;
+  }
   if (DVBRIDGE::EnhancedInfoEnabled() &&
       (action.GetID() == ACTION_MOVE_UP || action.GetID() == ACTION_MOVE_DOWN ||
        action.GetID() == ACTION_PAGE_UP || action.GetID() == ACTION_PAGE_DOWN))

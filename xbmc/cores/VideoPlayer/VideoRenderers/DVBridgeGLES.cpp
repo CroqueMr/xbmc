@@ -1200,7 +1200,7 @@ bool CDVBridgeGLES::SetNativeOverlay(unsigned texture, unsigned degamma, unsigne
   return true;
 }
 
-bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<Context> context)
+bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<Context> context, bool sdr)
 {
   if (m_gl)
     return m_renderer && m_packer;
@@ -1215,10 +1215,10 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<C
     return Failure("float-blend-or-linear-unavailable");
   m_renderer = m_context->Attach();
   m_packer = dvbridge_gl_packer_create(DVBRIDGE_VERTEX, DVBRIDGE_FRAGMENT);
-  return m_renderer && m_packer && RebindOutputSurface(hdr10);
+  return m_renderer && m_packer && RebindOutputSurface(hdr10,sdr);
 }
 
-bool CDVBridgeGLES::RebindOutputSurface(bool hdr10)
+bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr)
 {
   if (!m_gl || m_pending || m_prepared) return false;
   pl_opengl_wrap_params output{};
@@ -1241,8 +1241,9 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10)
       GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
   pl_tex candidate{};
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
-      ((hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
-       (!hdr10 && red == 8 && green == 8 && blue == 8)) &&
+      ((sdr && hdr10 && red >= 8 && green >= 8 && blue >= 8 && red <= 16 && green <= 16 && blue <= 16) ||
+       (!sdr && hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
+       (!sdr && !hdr10 && red == 8 && green == 8 && blue == 8)) &&
       samples <= 1 && encoding == GL_LINEAR)
     candidate = pl_opengl_wrap(m_gl->gpu, &output);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
@@ -1920,11 +1921,23 @@ unsigned int CDVBridgeGLES::GetPQTexture() const
 bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
 {
   using namespace KODI::RENDERING::CAPTURE;
+  const auto failed = [&](const char* stage, int format = -1) {
+    if (DVBRIDGE::DiagnosticsEnabled() &&
+        m_captureFailures.Record(DVBRIDGE::DiagnosticNowMs(),stage))
+      DVBRIDGE::DiagnosticLog(LOGWARNING,
+          "CB1 screenshot failed: stage={} prepared={} direct={} mode={} output_bits={} target={}x{} format={} source={}/{}/{}",
+          stage,m_prepared,m_direct,int(m_effectiveMode),m_outputBits,
+          m_scanout ? m_scanout->params.w : 0,m_scanout ? m_scanout->params.h : 0,format,
+          m_pendingIdentity.stream,m_pendingIdentity.picture,m_pendingIdentity.revision);
+    return false;
+  };
   const bool master=m_effectiveMode==DVBRIDGE_MODE_MASTER_REFERENCE;
   const bool sdr=m_effectiveMode==DVBRIDGE_MODE_SDR;
-  if (!m_prepared || !m_scanout || ((master || sdr) && !m_direct)) return false;
+  if (!m_prepared) return failed("unprepared");
+  if (!m_scanout) return failed("no-scanout");
+  if ((master || sdr) && !m_direct) return failed("direct-target");
   const auto framebuffer=master || sdr ? m_scanoutFramebuffer : GetPQFramebuffer();
-  if (!master && !sdr && !framebuffer) return false;
+  if (!master && !sdr && !framebuffer) return failed("direct-target");
   GLint previous=0;
   glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&previous);
   glBindFramebuffer(GL_READ_FRAMEBUFFER,framebuffer);
@@ -1932,7 +1945,7 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
   const bool read=ReadFramebufferRegion(0,0,m_scanout->params.w,m_scanout->params.h,
       master ? 8 : sdr ? m_outputBits : 16,master || sdr,pixels);
   glBindFramebuffer(GL_READ_FRAMEBUFFER,previous);
-  if (!read) return false;
+  if (!read) return failed("readback",int(pixels.format));
   if (sdr)
   {
     DVBRIDGE::SDRScreenshotFormat format;
@@ -1942,12 +1955,12 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
       case AV_PIX_FMT_BGRA: format=DVBRIDGE::SDRScreenshotFormat::BGRA8; break;
       case AV_PIX_FMT_RGBA64LE: format=DVBRIDGE::SDRScreenshotFormat::RGBA16; break;
       case AV_PIX_FMT_X2BGR10LE: format=DVBRIDGE::SDRScreenshotFormat::RGB10; break;
-      default: return false;
+      default: return failed("unsupported-format",int(pixels.format));
     }
     const double gamma=m_requested.sdrPreset==0 ? 2.4 : m_requested.sdrPreset==1 ? 2.2 : m_requested.sdrGamma;
     auto rgb=std::make_unique<uint8_t[]>(size_t(pixels.width)*pixels.height*8);
     if (!DVBRIDGE::DecodeSDRScreenshot(pixels.pixels.get(),pixels.width,pixels.height,
-        format,m_outputBits,m_hdr10Limited,gamma,reinterpret_cast<uint16_t*>(rgb.get()))) return false;
+        format,m_outputBits,m_hdr10Limited,gamma,reinterpret_cast<uint16_t*>(rgb.get()))) return failed("decode",int(pixels.format));
     pixels.pixels=std::move(rgb);
     pixels.stride=-int(pixels.width*8);
     pixels.format=AV_PIX_FMT_RGBA64LE;
@@ -1955,9 +1968,10 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
   else if (master)
   {
     dvbridge_color mapped{};
-    if (pixels.format!=AV_PIX_FMT_RGBA || !dvbridge_map_color(&mapped,
+    if (pixels.format!=AV_PIX_FMT_RGBA) return failed("unsupported-format",int(pixels.format));
+    if (!dvbridge_map_color(&mapped,
         m_pendingMetadata.Data(),m_pendingMetadata.Size(),(m_pendingInfo&CDVPlaybackInfo::FEL)!=0))
-      return false;
+      return failed("decode",int(pixels.format));
     pl_color_repr_normalize(&mapped.repr);
     const auto tr=pl_color_repr_decode(&mapped.repr,nullptr);
     pl_matrix3x3 linear={{{3.06441879f,-2.16597676f,.10155818f},
@@ -1971,7 +1985,7 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
     }
     auto rgb=std::make_unique<uint8_t[]>(size_t(pixels.width)*pixels.height*8);
     if (!DVBRIDGE::DecodeReferenceScreenshot(pixels.pixels.get(),pixels.width,pixels.height,
-        decode,&linear.m[0][0],reinterpret_cast<uint16_t*>(rgb.get()))) return false;
+        decode,&linear.m[0][0],reinterpret_cast<uint16_t*>(rgb.get()))) return failed("decode",int(pixels.format));
     pixels.pixels=std::move(rgb);
     pixels.stride=-int(pixels.width*8);
     pixels.format=AV_PIX_FMT_RGBA64LE;
