@@ -116,7 +116,7 @@ bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::La
         frame->frame.color.hdr.scene_avg=10000*av_q2d(statistics.average_maxrgb);
       }
     }
-    if (hdrInputUsed)
+    if (hdrInputUsed && !layer.hlg)
     {
       // Attest the same nominal input selection the SDR tone mapper consumes.
       const auto& hdr=frame->frame.color.hdr;
@@ -1814,6 +1814,17 @@ bool CDVBridgeGLES::SetHDR10Session(const dvbridge_hdr10_session& session, uint6
   return true;
 }
 
+bool CDVBridgeGLES::SetSDROutputRange(bool limited)
+{
+  if (m_hdr10Limited == limited) return true;
+  if (m_pending || m_prepared) return false;
+  m_geometryRevision = DVBRIDGE::NextRevisionAfter(
+      std::max({m_geometryRevision, m_committedRevision, m_pendingIdentity.revision}));
+  if (!m_geometryRevision) return false;
+  m_hdr10Limited = limited;
+  return true;
+}
+
 void CDVBridgeGLES::Reset()
 {
   Summary("reset");
@@ -2035,18 +2046,23 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       std::equal(std::begin(geometry.crop), std::end(geometry.crop), std::begin(m_sourceGeometry.crop)) &&
       std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
       scalingMethod == m_spatialMethod;
-  if (m_geometryKnown && !sameGeometry)
-    m_geometryRevision = DVBRIDGE::NextRevisionAfter(std::max(preferences.revision,base.binding.revision));
+  if ((m_geometryKnown && !sameGeometry) ||
+      (policy.mode == DVBRIDGE_MODE_SDR && policy.sdr.gamut != m_sdrGamut))
+    m_geometryRevision = DVBRIDGE::NextRevisionAfter(std::max({preferences.revision,base.binding.revision,m_geometryRevision}));
+  if (policy.mode == DVBRIDGE_MODE_SDR) m_sdrGamut = policy.sdr.gamut;
   m_sourceGeometry = geometry;
   m_geometryKnown = true;
   uint64_t revision = std::max({preferences.revision,base.binding.revision,m_geometryRevision});
-  bool masterOverlayRefresh = false;
+  bool asyncOverlayRefresh = false;
   if (!m_pending && m_hasCommitted && base.binding == m_committedBinding &&
       revision == m_committedRevision && (!allowPacked || !m_committedPacked ||
           m_nativeOverlayRevision != m_committedOverlayRevision))
   {
-    masterOverlayRefresh = policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE &&
-        sameGeometry && allowPacked && m_committedPacked;
+    // The SDR GUI is blended into the resolved film target. Rebuilding that
+    // target for the same picture needs a new identity, but keeps the scanout.
+    asyncOverlayRefresh = sameGeometry && allowPacked &&
+        ((policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && m_committedPacked) ||
+         (policy.mode == DVBRIDGE_MODE_SDR && !m_committedPacked));
     // Explicit refresh of an equal-PTS source is a new processing transaction.
     revision = m_geometryRevision = DVBRIDGE::NextRevisionAfter(revision);
     if (!revision) return FrameStatus::Failed;
@@ -2081,7 +2097,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       (m_directUsable || policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE) &&
       m_committedMode == policy.mode && base.binding.stream == m_committedBinding.stream &&
       base.binding.revision == m_committedBinding.revision &&
-      (revision == m_committedRevision || masterOverlayRefresh);
+      (revision == m_committedRevision || asyncOverlayRefresh);
   if (m_dvPolicyActive)
   {
     const auto status = eligible && allowPacked ?
@@ -2114,6 +2130,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_live = true;
 #ifdef CB1_HAS_HDR10_AI
   m_aiFrame = m_aiOutputAccepted = false;
+  m_sourceHLG = base.hlg;
 #endif
   m_guiComposed = false;
   m_pendingOverlayRevision = m_nativeOverlayRevision;
@@ -2139,8 +2156,10 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_pendingSDRHDRInputUsed = 0;
   m_pendingSDRHDRInputValues = {};
   m_pendingIdentity = {base.binding.stream,base.binding.picture,revision};
+  const auto requested = !base.sourceInfo.profile && policy.mode == DVBRIDGE_MODE_SDR ?
+      preferences.HDR10Policy() : preferences.Policy();
   DVBRIDGE::StreamTelemetry::NativeRequest({base.binding.stream,base.binding.picture,revision},
-      DVBRIDGE::PolicyCode(preferences.Policy()),DVBRIDGE::PolicyCode(policy),
+      DVBRIDGE::PolicyCode(requested),DVBRIDGE::PolicyCode(policy),
       admissionIdentity.Valid() ? admissionIdentity :
           DVBRIDGE::SourceBinding{base.binding.stream,base.binding.picture,preferences.revision});
   if (m_auditStream!=base.binding.stream || m_auditSource!=base.binding.revision ||
@@ -2162,7 +2181,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     m_auditRequestedSerial=m_auditSerial;
     DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={} l2_trims_disabled={} method={} tv_peak={} tv_panel={} tv_gamut={} tv_profile_valid={} encoded_active_area={}",
         base.binding.stream,base.binding.picture,base.binding.revision,revision,
-        int(preferences.Policy().mode),int(policy.mode),!m_fallback,m_fallback,preferences.L2TrimsDisabled(policy.mode),
+        int(requested.mode),int(policy.mode),!m_fallback,m_fallback,preferences.L2TrimsDisabled(policy.mode),
         preferences.method,preferences.peak,preferences.panel,preferences.gamut,preferences.ProfileValid(),geometry.ignore_l5);
     const auto admission=DVBRIDGE::StreamTelemetry::Read().transaction;
     DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge output admission: generation={} source_known={} gpu_known={} native_dv={} hdr10={} requested={} effective={} reason={}",
@@ -2541,9 +2560,14 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
       default: return failed("unsupported-format",int(pixels.format));
     }
     const double gamma=m_requested.sdrPreset==0 ? 2.4 : m_requested.sdrPreset==1 ? 2.2 : m_requested.sdrGamma;
+    const auto* output=HDR10Output();
+    const bool wide=output && output->container.primaries==PL_COLOR_PRIM_BT_2020;
+    const auto matrix=wide ? pl_get_color_mapping_matrix(pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020),
+        pl_raw_primaries_get(PL_COLOR_PRIM_BT_709),PL_INTENT_RELATIVE_COLORIMETRIC) : pl_matrix3x3_identity;
     auto rgb=std::make_unique<uint8_t[]>(size_t(pixels.width)*pixels.height*8);
     if (!DVBRIDGE::DecodeSDRScreenshot(pixels.pixels.get(),pixels.width,pixels.height,
-        format,m_outputBits,m_hdr10Limited,gamma,reinterpret_cast<uint16_t*>(rgb.get()))) return failed("decode",int(pixels.format));
+        format,m_outputBits,m_hdr10Limited,gamma,reinterpret_cast<uint16_t*>(rgb.get()),
+        wide ? matrix.m : nullptr)) return failed("decode",int(pixels.format));
     pixels.pixels=std::move(rgb);
     pixels.stride=-int(pixels.width*8);
     pixels.format=AV_PIX_FMT_RGBA64LE;
@@ -3241,7 +3265,9 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   const auto* hdrOutput = HDR10Output();
   // Capture the executed mapping before commit releases its pending plan.
   const double displayBlack = hdrOutput ? hdrOutput->policy.expert_black_nits : 0;
-  const int displayGamut = hdrOutput ? static_cast<int>(hdrOutput->policy.tv.gamut) : 0;
+  const int displayGamut = !hdrOutput ? 0 : m_effectiveMode == DVBRIDGE_MODE_SDR ?
+      (hdrOutput->container.primaries == PL_COLOR_PRIM_BT_2020 ?
+          DVBRIDGE_GAMUT_BT2020 : DVBRIDGE_GAMUT_BT709) : hdrOutput->policy.tv.gamut;
   const float peak = m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS ? 992.0f :
       hdrOutput ? hdrOutput->nominal_target.hdr.max_luma :
       m_advanced && m_effectiveMode == DVBRIDGE_MODE_ENHANCED_DV ? static_cast<float>(m_requested.peak) :
@@ -3339,6 +3365,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
     output.flags |= CDVPlaybackInfo::SDR;
 #ifdef CB1_HAS_HDR10_AI
     output.sdrHDRSource=m_pendingSourceInfo.profile==0;
+    output.sdrHLGSource=output.sdrHDRSource && m_sourceHLG;
 #endif
     output.level6=false; output.iptTransport=false;
   }
@@ -3375,7 +3402,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   output.displayBlack = expert?displayBlack:0;
   if (m_effectiveMode==DVBRIDGE_MODE_SDR && hdrOutput)
   {
-    output.gamut=DVBRIDGE_GAMUT_BT709; output.manualPeak=peak;
+    output.gamut=displayGamut; output.manualPeak=peak;
     output.displayBlack=hdrOutput->nominal_target.hdr.min_luma;
     output.sdrGamma=m_requested.sdrPreset==0 ? 2.4 : m_requested.sdrPreset==1 ? 2.2 : m_requested.sdrGamma;
   }

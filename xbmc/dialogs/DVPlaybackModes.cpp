@@ -164,7 +164,7 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
                          nativeSource==StreamHdrType::HDR_TYPE_HDR10PLUS;
   const bool hlgSource=nativeSource==StreamHdrType::HDR_TYPE_HLG;
   if (!hdr10Source && !hlgSource && nativeSource!=StreamHdrType::HDR_TYPE_DOLBYVISION) return false;
-  constexpr Choice hlgChoices[]={{1,0,40867},{0,0,40866}};
+  constexpr Choice hlgChoices[]={{1,0,40867},{0,0,40866},{2,0,41130}};
   const auto source=DVBRIDGE::StreamTelemetry::Read().transaction.capabilities;
 #ifdef CB1_HAS_HDR10_AI
   constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,40866},{4,0,41130}};
@@ -256,7 +256,7 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
         else {active.output=static_cast<DVBRIDGE::OutputMode>(choice.output);active.method=choice.method;}
       }
 #ifdef CB1_HAS_HDR10_AI
-      if (!settingsMenu && hdr10Source && choice.output != 0) ++DVBRIDGE::hdr10Reselection;
+      if (!settingsMenu && (hdr10Source || hlgSource) && choice.output != 0) ++DVBRIDGE::hdr10Reselection;
 #endif
     }
     if (settingsMenu) settings->Save();
@@ -279,6 +279,50 @@ DVBRIDGE::LldvConnectorStatus ReadLldvConnector()
     return gbm->GetLldvConnectorStatus();
 #endif
   return {};
+}
+
+int SDRBT2020Unavailable()
+{
+#ifdef HAVE_GBM
+  const auto* gbm = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
+  if (gbm)
+  {
+    switch (gbm->GetSDRBT2020Support())
+    {
+      case KODI::WINDOWING::GBM::CWinSystemGbm::SDRBT2020Support::Available: return 0;
+      case KODI::WINDOWING::GBM::CWinSystemGbm::SDRBT2020Support::Display: return 41274;
+      case KODI::WINDOWING::GBM::CWinSystemGbm::SDRBT2020Support::Driver: break;
+    }
+  }
+#endif
+  return 41275;
+}
+
+void ShowSDRGamutMenu()
+{
+  const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  auto* dialog = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogSelect>(WINDOW_DIALOG_SELECT);
+  if (!dialog)
+    return;
+
+  const int reason = SDRBT2020Unavailable();
+  dialog->Reset();
+  dialog->SetHeading(strings.Get(41270));
+  dialog->SetUseDetails(true);
+  dialog->Add(CFileItem(strings.Get(41272)));
+  const auto label = strings.Get(41273);
+  CFileItem wide(reason ? "[COLOR grey]" + label + "[/COLOR]" : label);
+  wide.SetProperty("disabled", reason != 0);
+  if (reason)
+    wide.SetLabel2(strings.Get(reason));
+  dialog->Add(wide);
+  dialog->SetSelected(reason ? 0 : settings->GetInt("dvbridge.sdrgamutvalue"));
+  dialog->Open();
+  const int selected = dialog->GetSelectedItem();
+  if (dialog->IsConfirmed() && (selected == 0 || (selected == 1 && !SDRBT2020Unavailable())) &&
+      settings->SetInt("dvbridge.sdrgamutvalue", selected))
+    settings->Save();
 }
 
 void ShowLldvFormatMenu()
@@ -342,11 +386,19 @@ std::string CDVPlaybackModes::LldvPreferenceLabel()
       LldvFormatLabel(format, forced));
 }
 
+std::string CDVPlaybackModes::SDRGamutLabel()
+{
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  return CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(
+      settings->GetInt("dvbridge.sdrgamutvalue")==1 && !SDRBT2020Unavailable() ? 41273 : 41272);
+}
+
 void CDVPlaybackModes::OnSettingAction(const std::shared_ptr<const CSetting>& setting)
 {
   if (setting && setting->GetId()=="dvbridge.configureprofile") ConfigureProfile();
   else if (setting && setting->GetId()=="dvbridge.playback") ShowMenu(true);
   else if (setting && setting->GetId()=="dvbridge.lldvformat") ShowLldvFormatMenu();
+  else if (setting && setting->GetId()=="dvbridge.sdrgamut") ShowSDRGamutMenu();
 }
 
 

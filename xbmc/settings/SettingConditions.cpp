@@ -553,7 +553,8 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
 #endif
   for(auto& option : list)
   {
-    const int mode=hlgSource ? ((hlgMenu ? option.value==0 : option.value==1) ? 1 : 0) : hdr10PlusMenu ? (option.value>=0 && option.value<int(std::size(hdr10PlusMenuModes)) ? hdr10PlusMenuModes[option.value] : 0) :
+    const int mode=hlgSource ? (option.value==2 ? DVBRIDGE_MODE_SDR :
+        (hlgMenu ? option.value==0 : option.value==1) ? DVBRIDGE_MODE_STANDARD : DVBRIDGE_MODE_DISABLED) : hdr10PlusMenu ? (option.value>=0 && option.value<int(std::size(hdr10PlusMenuModes)) ? hdr10PlusMenuModes[option.value] : 0) :
         hdr10Menu ? (option.value>=0 && option.value<int(std::size(hdr10MenuModes)) ? hdr10MenuModes[option.value] : 0) :
         hdr10Source ? (option.value==1 || option.value==3 ? 1 : option.value==2 ? 4 : option.value==4 ? 7 : 0) :
         (menu || playback) ? (option.value>=0 && option.value<int(std::size(menuModes)) ? menuModes[option.value] : 0) :
