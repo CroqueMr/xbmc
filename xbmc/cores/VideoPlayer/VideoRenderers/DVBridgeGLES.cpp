@@ -1644,6 +1644,7 @@ void CDVBridgeGLES::Reset()
 {
   Summary("reset");
   Cancel();
+  cb1_hdr10plus_analysis_clear_scene(m_hdr10plusAnalysis);
   m_rawELCache.clear();
   m_firstFrame = true;
   DVBRIDGE::StreamTelemetry::ClearOutput();
@@ -2212,7 +2213,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::BeginHDR10Plus()
   {
     const pl_rect2d area{static_cast<int>(margins[0]), static_cast<int>(margins[2]),
         rgb->params.w - static_cast<int>(margins[1]), rgb->params.h - static_cast<int>(margins[3])};
-    const auto status = cb1_hdr10plus_analysis_submit(m_hdr10plusAnalysis, rgb, area, m_pendingIdentity);
+    const auto status = cb1_hdr10plus_analysis_submit(m_hdr10plusAnalysis, rgb, area,
+        m_pendingIdentity, m_hdr10plusVersion);
     if (status == CB1_HDR10PLUS_ANALYSIS_PENDING)
     {
       if (DVBRIDGE::DiagnosticsEnabled()) ++m_hdr10plusSubmits;
@@ -2243,6 +2245,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PollHDR10Plus()
     fingerprint.Compute(reinterpret_cast<const char*>(statistics.maxscl),sizeof(statistics.maxscl));
     m_hdr10plusAnalyzed.Observe({m_pendingIdentity.stream,m_pendingIdentity.picture,m_pendingIdentity.revision},fingerprint);
     m_hdr10plusLight={statistics.average_maxrgb,statistics.maxscl[0],statistics.maxscl[1],statistics.maxscl[2]};
+  }
+  if (status == CB1_HDR10PLUS_ANALYSIS_READY)
+  {
+    const auto* dovi = reinterpret_cast<const AVDOVIMetadata*>(m_pendingMetadata.Data());
+    cb1_hdr10plus_analysis_stage_scene(m_hdr10plusAnalysis, &statistics,
+        m_committedMode != DVBRIDGE_MODE_HDR10PLUS || av_dovi_get_color(dovi)->scene_refresh_flag);
   }
   AVDynamicHDRPlus metadata{};
   if (status != CB1_HDR10PLUS_ANALYSIS_READY || !cb1_dv_hdr10plus_metadata_for_version(&metadata,
@@ -3198,6 +3206,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   {
     if (submission.hdr10plusAccepted)
     {
+      cb1_hdr10plus_analysis_commit_scene(m_hdr10plusAnalysis);
       if (DVBRIDGE::DiagnosticsEnabled() && submission.hdr10plus)
       {
         Crc32 fingerprint;
