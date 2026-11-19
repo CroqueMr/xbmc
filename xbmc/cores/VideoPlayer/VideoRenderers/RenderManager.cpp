@@ -182,17 +182,12 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     m_presentevent.notifyAll();
   }
 
-  if (!m_stateEvent.Wait(1000ms))
-  {
-    CLog::Log(LOGWARNING, "CRenderManager::Configure - timeout waiting for configure");
-    std::unique_lock lock(m_statelock);
-    return false;
-  }
-
+  const bool finished = m_stateEvent.Wait(1000ms);
   std::unique_lock lock(m_statelock);
   if (m_renderState != STATE_CONFIGURED)
   {
-    CLog::Log(LOGWARNING, "CRenderManager::Configure - failed to configure");
+    CLog::Log(LOGWARNING, "CRenderManager::Configure - {}",
+              finished ? "failed to configure" : "timeout waiting for configure");
     return false;
   }
 
