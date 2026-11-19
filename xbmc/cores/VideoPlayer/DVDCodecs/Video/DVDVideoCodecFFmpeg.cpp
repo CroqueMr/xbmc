@@ -1957,7 +1957,12 @@ unsigned CDVDVideoCodecFFmpeg::GetHDR10AIBufferCount() const
       m_hints.hdrType, mode == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
       !m_hints.dovi.rpu_present_flag;
   const double fps = m_hints.fpsscale > 0 ? double(m_hints.fpsrate) / m_hints.fpsscale : 0;
-  return DVBRIDGE::HDR10AIBuffers::Count(hdr10,mode,fps,m_interlaced);
+  // AV1 HLG can enter the lookahead route while already decoding. Allocate
+  // that pool when the VA context opens so a live switch never replays its GOP.
+  const auto poolMode = m_hints.codec == AV_CODEC_ID_AV1 &&
+      m_hints.hdrType == StreamHdrType::HDR_TYPE_HLG ?
+      DVBRIDGE::HDR10SourceMode::ReferenceDV : mode;
+  return DVBRIDGE::HDR10AIBuffers::Count(hdr10,poolMode,fps,m_interlaced);
 }
 #endif
 

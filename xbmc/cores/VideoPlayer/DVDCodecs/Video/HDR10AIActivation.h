@@ -16,13 +16,13 @@ public:
   {
     m_stream = stream;
     m_revision = revision;
-    m_waitSince = now;
+    m_started = m_waitSince = now;
     m_spent = 0;
     m_deadline = 0;
     m_waitScheduled = false;
     m_active = stream && revision;
     m_waiting = m_active;
-    m_native = m_event = m_prepared = false;
+    m_native = m_event = m_prepared = m_presented = false;
     m_paused = false;
     m_inputPending = false;
   }
@@ -32,17 +32,33 @@ public:
     if (!m_active || m_native || !m_inputPending) return;
     m_inputPending = false;
     m_waiting = true;
-    m_waitSince = m_paused ? m_pauseSince : now;
+    m_started = m_waitSince = m_paused ? m_pauseSince : now;
   }
   void SetPaused(bool paused, uint64_t now)
   {
     if (paused == m_paused) return;
     if (paused) m_pauseSince = now;
-    else if (m_waiting && now >= m_pauseSince) m_waitSince += now - m_pauseSince;
+    else if (now >= m_pauseSince)
+    {
+      if (m_waiting) m_waitSince += now - m_pauseSince;
+      m_started += now - m_pauseSince;
+    }
     m_paused = paused;
   }
 
   void SetPresentationDeadline(uint64_t deadline) { m_deadline = deadline; }
+
+  void AnalysisCompleted(cb1_ai_identity id, uint64_t now)
+  {
+    // Priming can process many pictures. Keep the stall limit, and bound the
+    // whole priming interval even when pictures continue to finish.
+    if (!Matches(id) || m_presented || m_prepared || m_inputPending || m_native || m_paused ||
+        now < m_started || now - m_started >= 3000 ||
+        now < m_waitSince || now - m_waitSince >= 1000 - m_spent)
+      return;
+    m_waitSince = now;
+    m_spent = 0;
+  }
 
   Decision Observe(cb1_ai_status status, cb1_ai_identity id, uint64_t now, bool required = true)
   {
@@ -55,6 +71,8 @@ public:
     if (m_inputPending)
       return Decision::Wait;
     if (m_paused && now >= m_pauseSince) now = m_pauseSince;
+    if (!m_presented && now >= m_started && now - m_started >= 3000)
+      return Fallback();
     if (m_waiting)
     {
       if (now < m_waitSince && !m_waitScheduled)
@@ -97,6 +115,7 @@ public:
     m_prepared = false;
     if (!success)
       Fallback();
+    m_presented = success;
     return success;
   }
 
@@ -138,8 +157,8 @@ private:
     return Decision::Native;
   }
 
-  uint64_t m_stream{}, m_revision{}, m_waitSince{}, m_spent{}, m_pauseSince{}, m_deadline{};
+  uint64_t m_stream{}, m_revision{}, m_started{}, m_waitSince{}, m_spent{}, m_pauseSince{}, m_deadline{};
   cb1_ai_identity m_identity{};
-  bool m_active{}, m_waiting{}, m_native{}, m_event{}, m_prepared{}, m_paused{}, m_waitScheduled{}, m_inputPending{};
+  bool m_active{}, m_waiting{}, m_native{}, m_event{}, m_prepared{}, m_presented{}, m_paused{}, m_waitScheduled{}, m_inputPending{};
 };
 }

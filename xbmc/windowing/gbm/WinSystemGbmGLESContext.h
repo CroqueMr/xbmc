@@ -155,6 +155,7 @@ public:
   {
     return CB1AsyncAvailable() && m_dvBridge->AsyncPreparationActive();
   }
+  bool CB1AdaptiveScanout() const;
   std::optional<double> CB1PresentationAge() const;
   // Kodi presentation timestamp and KMS completion time of the latest presented CB1 picture.
   std::optional<std::pair<double, uint64_t>> CB1PresentedPicture() const;

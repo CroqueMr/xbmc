@@ -2237,12 +2237,18 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   else if (policy.mode == DVBRIDGE_MODE_ENHANCED_DV)
   {
     auto status = DVBRIDGE_DV_UNSUPPORTED;
-    if (allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
-        geometry.width == geometry.target_width && geometry.height == geometry.target_height)
+    const bool fullRaster = !geometry.x && !geometry.y &&
+        geometry.width == geometry.target_width && geometry.height == geometry.target_height;
+    const bool emptyOverlay = m_nativeOverlayEnabled && m_nativeOverlay.rect[0] == m_nativeOverlay.rect[2];
+    // A placed picture can keep its native reconstruction with GUI. The core
+    // composites the overlay in the final draw instead of prepacking the image.
+    const bool placedRows = (!m_overlayVisible || m_nativeOverlayEnabled) &&
+        dvbridge_adaptive_placed_rows(geometry) >= 0;
+    if (allowPacked && m_directUsable && m_scanout && (fullRaster || placedRows))
     {
       status = dvbridge_render_dv_policy_prepare_packed(m_renderer,&policy,&m_pendingIdentity,
           &bl.frame,metadata.Data(),metadata.Size(),base.pts,elPts,geometry,m_scanout,true,
-          m_nativeOverlayEnabled ? &m_nativeOverlay : nullptr);
+          m_nativeOverlayEnabled && !(placedRows && emptyOverlay && !m_overlayVisible) ? &m_nativeOverlay : nullptr);
       m_direct = status == DVBRIDGE_DV_READY || status == DVBRIDGE_DV_PENDING;
       if (m_direct && m_nativeOverlayEnabled) m_nativeOverlayPrimed = true;
       if (status == DVBRIDGE_DV_UNSUPPORTED)

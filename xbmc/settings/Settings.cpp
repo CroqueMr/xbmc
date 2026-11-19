@@ -220,14 +220,15 @@ bool CSettings::Load(const TiXmlElement* root, bool& updated)
 
 #ifdef HAVE_DVBRIDGE
   std::unique_ptr<TiXmlElement> migrated;
-  bool hasHDR10PlusPreference = false, hasSDRTarget = false;
+  bool hasHDR10PlusPreference = false;
+  bool hasSDRPreference = false;
   for (const auto* setting = root->FirstChildElement("setting"); setting;
        setting = setting->NextSiblingElement("setting"))
   {
     const char* id = setting->Attribute("id");
     if (!id) continue;
     hasHDR10PlusPreference |= std::string_view(id) == "dvbridge.hdr10plussource";
-    hasSDRTarget |= std::string_view(id) == "dvbridge.sdrpreset";
+    hasSDRPreference |= std::string_view(id) == "dvbridge.sdrpreset";
   }
   for (const auto* setting = root->FirstChildElement("setting"); setting;
        setting = setting->NextSiblingElement("setting"))
@@ -239,7 +240,8 @@ bool CSettings::Load(const TiXmlElement* root, bool& updated)
                                std::string_view(value) == "3";
     const auto legacy = legacyHDR10Plus ? std::optional<int>{0} :
             std::string_view(id) == "dvbridge.outputmode" &&
-            (std::string_view(value) == "3" || (!hasSDRTarget && std::string_view(value) == "6")) ?
+            // The SDR preset first shipped alongside the reuse of value 6.
+            (std::string_view(value) == "3" || (!hasSDRPreference && std::string_view(value) == "6")) ?
             std::optional<int>{5} : std::nullopt;
     if (!legacy) continue;
     if (!migrated) migrated.reset(root->Clone()->ToElement());
