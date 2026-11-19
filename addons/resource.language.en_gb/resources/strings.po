@@ -26199,7 +26199,7 @@ msgid "Switch when sustained rendering headroom is insufficient. Off keeps Maste
 msgstr ""
 
 msgctxt "#40971"
-msgid "Source pixels unchanged. HDR10+ curve and saturation are not translated. Requires full-source analysis."
+msgid "Pixels unchanged. No HDR10+ curve or saturation."
 msgstr ""
 
 msgctxt "#41012"
