@@ -2013,7 +2013,7 @@ DVBRIDGE::OutputSelection CWinSystemGbmGLESContext::SelectedDVOutput(const Video
 #endif
 bool CWinSystemGbmGLESContext::CanRetainHDR10Output(const VideoPicture& picture) const
 {
-  return picture.hdrType == StreamHdrType::HDR_TYPE_HDR10 && !picture.doviSourceInfo.profile &&
+  return !picture.doviSourceInfo.profile &&
       picture.stereoMode.empty() && picture.colorBits >= 10 &&
       picture.colorBits == static_cast<unsigned>(GetOutputBitDepth()) &&
       !DVBridgeRequested(&picture) && !m_dvBridge && !HasPendingDVOutputSurface() &&

@@ -1466,16 +1466,26 @@ bool CWinSystemGbm::CanKeepHDR10Signal(const VideoPicture& picture) const
       KODI::UTILS::GetColorimetry(picture) != m_colorimetry || !m_queuedColorspace)
     return false;
 
-  const auto* connector = drm->GetConnector();
+  auto* connector = drm->GetConnector();
   const auto* crtc = drm->GetCrtc();
-  return connector && crtc && crtc->GetPropertyValue("ACTIVE") == 1 &&
+  if (!connector || !crtc)
+    return false;
+
+  // An HDR10+ source can retain the static PQ signal when the output cannot send HDR10+.
+  if (picture.hdrType != StreamHdrType::HDR_TYPE_HDR10 &&
+      (picture.hdrType != StreamHdrType::HDR_TYPE_HDR10PLUS ||
+       (connector->SupportsProperty("HDR10PLUS_METADATA") &&
+        (!m_info || m_info->HDR10PlusVersion() >= 0))))
+    return false;
+
+  return crtc->GetPropertyValue("ACTIVE") == 1 &&
       connector->GetPropertyValue("HDR_OUTPUT_METADATA") == m_hdrBlob.Get() &&
       connector->GetPropertyValue("Colorspace") == m_queuedColorspace;
 }
 
 bool CWinSystemGbm::PresentHDR10Handoff(const VideoPicture& picture)
 {
-  if (picture.hdrType != StreamHdrType::HDR_TYPE_HDR10 || !CanKeepHDR10Signal(picture))
+  if (!CanKeepHDR10Signal(picture))
     return false;
 
   const auto drm = std::static_pointer_cast<CDRMAtomic>(m_DRM);
