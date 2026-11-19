@@ -16,6 +16,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/DVStreamTelemetry.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
+#include "messaging/ApplicationMessenger.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
 #include "settings/SettingConditions.h"
@@ -227,6 +228,7 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
     for(const auto& [name,value] : options[selected].properties)
       if (name=="disabled" && value.asBoolean()) return true;
     const auto& choice=choices[selected];
+    bool reprime = false;
     {
       std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
       if (settingsMenu)
@@ -249,7 +251,12 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
         if (!DVBRIDGE::activeOutputSelectors)
           DVBRIDGE::activeOutputSelectors=DVBRIDGE::ReadDefaultOutputSelectors();
         auto& active=*DVBRIDGE::activeOutputSelectors;
-        if (hlgSource) active.hlgSource=static_cast<DVBRIDGE::HLGSourceMode>(choice.output);
+        if (hlgSource)
+        {
+          const auto next = static_cast<DVBRIDGE::HLGSourceMode>(choice.output);
+          reprime = next == DVBRIDGE::HLGSourceMode::ReferenceDV && active.hlgSource != next;
+          active.hlgSource = next;
+        }
         else if (hdr10PlusSource) active.hdr10PlusSource=static_cast<DVBRIDGE::HDR10SourceMode>(choice.output);
         else if (hdr10Source) active.hdr10Source=static_cast<DVBRIDGE::HDR10SourceMode>(choice.output);
         else {active.output=static_cast<DVBRIDGE::OutputMode>(choice.output);active.method=choice.method;}
@@ -259,6 +266,12 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
 #endif
     }
     if (settingsMenu) settings->Save();
+    if (reprime)
+    {
+      const auto player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+      if (player->CanSeek() && !player->IsInMenu() && player->GetPlaySpeed() == 1.0f)
+        CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_SEEK_TIME, player->GetTime());
+    }
     return true;
   }
 }

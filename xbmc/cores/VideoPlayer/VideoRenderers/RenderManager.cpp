@@ -435,6 +435,7 @@ bool CRenderManager::ExecuteHDR10AIQueuePreparation(
     {
       m_aiStartPts = DVD_NOPTS_VALUE;
       m_aiGuiReady = false;
+      m_lateframes = 0;
     }
     if (outcome.ready) m_aiQueuePreparationStale = false;
     m_aiQueueReady = outcome.ready;
@@ -1508,10 +1509,10 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
 void CRenderManager::PrepareNextRender()
 {
 #ifdef CB1_HAS_HDR10_AI
-  if (!m_aiQueueReady && m_aiStartPts == DVD_NOPTS_VALUE) return;
-  const bool priming = m_pRenderer && m_pRenderer->HDR10AILookahead() &&
-      (!m_showVideo || (m_aiFullscreenRequested && !m_aiGuiReady));
-  if (priming && m_aiGuiReady) return;
+  if (!m_aiQueueReady && !m_aiGuiReady) return;
+  const bool aiLookahead = m_pRenderer && m_pRenderer->HDR10AILookahead();
+  const bool priming = aiLookahead && !m_aiGuiReady;
+  if (!m_showVideo && m_aiGuiReady && aiLookahead) return;
 #endif
   if (m_queued.empty())
   {
@@ -1528,11 +1529,7 @@ void CRenderManager::PrepareNextRender()
       )
     return;
 
-  const double frameOnScreen =
-#ifdef CB1_HAS_HDR10_AI
-      priming ? m_Queue[m_queued.front()].pts :
-#endif
-      m_dvdClock.GetClock();
+  const double frameOnScreen = m_dvdClock.GetClock();
   const double frametime =
       1.0 / static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) *
       DVD_TIME_BASE;

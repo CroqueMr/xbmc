@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "HDR10AISource.h"
+#include "utils/DVBridgeDiagnosticState.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -35,6 +36,7 @@ cb1_ai_status HDR10AISource::Collect()
   {
     m_job = false;
     m_lastSubmitted = m_jobIdentity.picture;
+    m_activation.AnalysisCompleted(m_jobIdentity, DVBRIDGE::DiagnosticNowMs());
     m_lease.reset();
   }
   return RecordStatus("analysis-collect",status);
@@ -188,7 +190,8 @@ HDR10AISource::Decision HDR10AISource::Prediction(DVBRIDGE::SourceBinding bindin
   RecordStatus("prediction",status,false);
   const auto elapsed=static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now()-started).count());
-  const auto completed=now+std::min(elapsed,std::numeric_limits<uint64_t>::max()-now);
+  const auto completed=std::max(DVBRIDGE::DiagnosticNowMs(),
+      now+std::min(elapsed,std::numeric_limits<uint64_t>::max()-now));
   const auto decision = m_activation.Observe(status,Identity(binding),completed,required);
   if (decision == Decision::Prepare)
   {
