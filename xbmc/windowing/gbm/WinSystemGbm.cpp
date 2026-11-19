@@ -209,6 +209,13 @@ bool CWinSystemGbm::InitWindowSystem()
   if (connector)
   {
     std::vector<uint8_t> edid = connector->GetEDID();
+#ifdef HAVE_DVBRIDGE
+    std::lock_guard lock(m_lldvEdidMutex);
+    m_lldvEdid = edid;
+    m_lldvDisplay = DVBRIDGE::ReadLldvDisplay(edid.data(), edid.size());
+    m_lldvEdidConnector = *connector->GetConnectorId();
+    ++m_lldvEdidGeneration;
+#endif
     if (!edid.empty())
     {
       m_info = UTILS::CDisplayInfo::Create(edid);
@@ -963,17 +970,29 @@ bool CWinSystemGbm::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool bl
 bool CWinSystemGbm::RefreshDisplayInfoForVideo()
 {
   auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
-  if (!connector) return false;
-  auto edid = connector->GetEDID(true);
+  const auto id = connector && connector->IsConnected() ? *connector->GetConnectorId() : 0;
+  auto edid = id ? connector->GetEDID(true) : std::vector<uint8_t>{};
+  bool lldvChanged;
+  {
+    std::lock_guard lock(m_lldvEdidMutex);
+    lldvChanged = id != m_lldvEdidConnector || edid != m_lldvEdid;
+    if (lldvChanged)
+    {
+      m_lldvEdid = edid;
+      m_lldvDisplay = DVBRIDGE::ReadLldvDisplay(edid.data(), edid.size());
+      m_lldvEdidConnector = id;
+      ++m_lldvEdidGeneration;
+    }
+  }
   if (edid == m_displayEdid)
-    return false;
+    return lldvChanged;
   // An absent or invalid EDID withdraws the previous sink's capabilities.
   auto information = edid.empty() ? nullptr : UTILS::CDisplayInfo::Create(edid);
   if (!information && !m_info)
-    return false;
+    return lldvChanged;
   m_displayEdid = information ? std::move(edid) : std::vector<uint8_t>{};
   m_info = std::move(information);
-  DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge display refresh: connector={} changed=true",connector->GetId());
+  DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge display refresh: connector={} changed=true",id);
   return true;
 }
 
@@ -1570,6 +1589,7 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
 
   const auto status = GetLldvConnectorStatus();
   if (!packed.connectorId || packed.connectorId != status.connectorId ||
+      packed.edidGeneration != status.edidGeneration || status.display.status != LldvEdidStatus::Ready ||
       (packed.format != LldvFormat::Y422_10 && packed.format != LldvFormat::Y422_12) ||
       (packed.forced && (packed.format != LldvFormat::Y422_10 || !status.forced42210)) ||
       LldvFormatReason(status.sink, packed.format, status.driverFormats,
@@ -1601,6 +1621,14 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
       drm->AllowModeset();
   }
   const bool accepted = drm->FlipPageTransactional(ready ? bo : nullptr, false, async && stable);
+  if (ready && !stable)
+  {
+    std::lock_guard lock(m_lldvEdidMutex);
+    m_lldvRejected = accepted ? LldvTransport{} : packed;
+  }
+  if (!accepted && !stable)
+    CLog::Log(LOGWARNING, "CB1 LLDV: DRM commit refused connector={} edid_generation={} format={} forced={} staged={}",
+              packed.connectorId, packed.edidGeneration, name, packed.forced, ready);
   if (!drm->HasPendingCB1Page()) surface.CompleteTransactionalBuffer(accepted);
   return accepted;
 }
@@ -1620,9 +1648,19 @@ CWinSystemGbm::SDRBT2020Support CWinSystemGbm::GetSDRBT2020Support() const
 DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
 {
   DVBRIDGE::LldvConnectorStatus status;
-  if (const auto* display = GetDisplayInfo())
-    status.sink = display->GetDolbyVisionCaps();
   auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (connector && connector->IsConnected())
+  {
+    std::lock_guard lock(m_lldvEdidMutex);
+    status.connectorId = *connector->GetConnectorId();
+    status.edidGeneration = m_lldvEdidGeneration;
+    if (status.connectorId == m_lldvEdidConnector)
+      status.display = m_lldvDisplay;
+    if (status.connectorId == m_lldvRejected.connectorId &&
+        status.edidGeneration == m_lldvRejected.edidGeneration)
+      status.rejected = m_lldvRejected.format;
+    status.sink = status.display.sink;
+  }
   if (connector && connector->IsConnected() && connector->SupportsProperty("CB1_LLDV_FORMAT"))
   {
     const auto native10 =

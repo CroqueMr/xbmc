@@ -431,17 +431,34 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.OutputStage", transaction ?
         std::string(data.transaction.stage) : "");
     SetProperty("DV.ReferenceWarning", data.referenceWarning ? "Consider Reference" : "");
-    SetProperty("DV.TVProfile", active && data.output.effective==8 ?
+    SetProperty("DV.TVProfile", lldv ? StringUtils::Format("EDID v{} · {:.0f} nits",
+        data.output.lldv->edidVersion, data.output.target) : active && data.output.effective==8 ?
         StringUtils::Format("{} / {:g} nits / {:g}",
             data.output.gamut == 3 ? "BT.2020" : "BT.709", data.output.target, data.output.sdrGamma) :
-        active && (data.output.lldv || data.output.effective==3 || data.output.effective==4 || data.output.effective==6) ?
+        active && (data.output.effective==3 || data.output.effective==4 || data.output.effective==6) ?
         StringUtils::Format("{}{} / {:g} nits",
             data.output.panel==1 || data.output.panel==2 ? localizer.Get(40833+data.output.panel)+" · " : "",
             data.output.gamut==1 ? "BT.709" : data.output.gamut==2 ? "P3-D65" : "BT.2020",
-            data.output.lldv || data.output.effective==3 ? static_cast<double>(data.output.target) : data.output.manualPeak) : "");
+            data.output.effective==3 ? static_cast<double>(data.output.target) : data.output.manualPeak) : "");
     SetProperty("DV.DisplayBlack", (active && (data.output.lldv || (hdr10 && data.output.effective==3) ||
         data.output.effective==8)) ?
         StringUtils::Format("{:g} nits", data.output.displayBlack) : "");
+    for (unsigned i = 0; i < 3; ++i)
+    {
+      constexpr const char* keys[] = {"DV.LldvRed", "DV.LldvGreen", "DV.LldvBlue"};
+      std::string value;
+      if (lldv)
+      {
+        const auto& display = *data.output.lldv;
+        const auto j = i * 2;
+        value = StringUtils::Format("{:.4f}, {:.4f}", display.primaries[j], display.primaries[j + 1]);
+        if (display.reportedPrimaries[j] != display.primaries[j] ||
+            display.reportedPrimaries[j + 1] != display.primaries[j + 1])
+          value = StringUtils::Format("{:.4f}, {:.4f} â†’ {}", display.reportedPrimaries[j],
+                                      display.reportedPrimaries[j + 1], value);
+      }
+      SetProperty(keys[i], value);
+    }
     SetProperty("DV.HDR10Policy", hdr10 ? CDVPlaybackInfo::Policy(data.output) : "");
     SetProperty("DV.HDR10Target", hdr10 && data.output.effective!=3 ? StringUtils::Format("{:g} nits", data.output.target) : "");
     SetProperty("DV.HDR10TargetLabel", hdr10 && data.output.effective!=3 ? (data.output.effective==2 ? "Source reference" :

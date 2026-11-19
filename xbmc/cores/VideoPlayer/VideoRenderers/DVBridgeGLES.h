@@ -355,6 +355,7 @@ private:
   DVBRIDGE::DiagnosticFailures m_auditCreative;
   DVBRIDGE::DiagnosticFailures m_auditCMv40;
   uint64_t m_cmv40LogStream{};
+  uint64_t m_lldvEdidGeneration{};
   uint64_t m_auditStream{},m_auditSource{},m_auditPolicy{};
   int m_auditSerial{},m_auditRequestedSerial{},m_auditPreparedSerial{},m_auditCommittedSerial{};
   uint64_t m_prepares{0}, m_directFrames{0}, m_presentations{0}, m_failedPresentations{0};

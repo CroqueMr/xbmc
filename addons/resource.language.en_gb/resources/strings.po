@@ -26617,3 +26617,87 @@ msgstr ""
 msgctxt "#41276"
 msgid "Dolby Vision active area"
 msgstr ""
+
+msgctxt "#41280"
+msgid "Display EDID unavailable"
+msgstr ""
+
+msgctxt "#41281"
+msgid "Display EDID incomplete"
+msgstr ""
+
+msgctxt "#41282"
+msgid "Display EDID invalid"
+msgstr ""
+
+msgctxt "#41283"
+msgid "TV does not announce Dolby Vision"
+msgstr ""
+
+msgctxt "#41284"
+msgid "Unsupported or ambiguous Dolby Vision EDID block"
+msgstr ""
+
+msgctxt "#41285"
+msgid "TV does not announce Low-Latency Dolby Vision"
+msgstr ""
+
+msgctxt "#41286"
+msgid "Invalid LLDV luminance in EDID"
+msgstr ""
+
+msgctxt "#41287"
+msgid "Invalid LLDV primaries in EDID"
+msgstr ""
+
+msgctxt "#41288"
+msgid "LLDV availability"
+msgstr ""
+
+msgctxt "#41289"
+msgid "Available"
+msgstr ""
+
+msgctxt "#41290"
+msgid "Dolby Vision EDID"
+msgstr ""
+
+msgctxt "#41291"
+msgid "Low-Latency only"
+msgstr ""
+
+msgctxt "#41292"
+msgid "Standard and Low-Latency"
+msgstr ""
+
+msgctxt "#41293"
+msgid "Standard only"
+msgstr ""
+
+msgctxt "#41294"
+msgid "EDID peak / black"
+msgstr ""
+
+msgctxt "#41295"
+msgid "EDID primaries"
+msgstr ""
+
+msgctxt "#41296"
+msgid "Driver transport"
+msgstr ""
+
+msgctxt "#41297"
+msgid "Compatible HDMI mode available after a mode switch"
+msgstr ""
+
+msgctxt "#41298"
+msgid "Driver rejected the last HDMI commit for this format"
+msgstr ""
+
+msgctxt "#41299"
+msgid "HDMI timing"
+msgstr ""
+
+msgctxt "#41300"
+msgid "EDID target gamut exceeds BT.2020"
+msgstr ""

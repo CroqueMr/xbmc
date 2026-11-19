@@ -94,19 +94,19 @@
         </setting>
         <setting id="dvbridge.expertpeak" type="number" label="41030" help="41031">
           <requirement>HAVE_DVBRIDGE</requirement><level>0</level><default>0</default>
-          <dependencies><dependency type="visible"><or><and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and><condition setting="dvbridge.outputmode" operator="is">7</condition></or></dependency></dependencies>
+          <dependencies><dependency type="visible"><and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and></dependency></dependencies>
           <constraints><minimum>0</minimum><maximum>10000</maximum><step>0.1</step></constraints>
           <control type="edit" format="string" />
         </setting>
         <setting id="dvbridge.expertblack" type="integer" label="41032" help="41033">
           <requirement>HAVE_DVBRIDGE</requirement><level>0</level><default>0</default>
-          <dependencies><dependency type="visible"><or><and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and><condition setting="dvbridge.outputmode" operator="is">7</condition></or></dependency></dependencies>
+          <dependencies><dependency type="visible"><and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and></dependency></dependencies>
           <constraints><options><option label="41034">0</option><option label="41035">1</option><option label="41036">2</option><option label="41037">3</option></options></constraints>
           <control type="list" format="string" />
         </setting>
         <setting id="dvbridge.expertblackcustom" type="number" label="41038" help="41039">
           <requirement>HAVE_DVBRIDGE</requirement><level>0</level><default>0</default>
-          <dependencies><dependency type="visible"><and><or><and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and><condition setting="dvbridge.outputmode" operator="is">7</condition></or><condition setting="dvbridge.expertblack" operator="is">3</condition></and></dependency></dependencies>
+          <dependencies><dependency type="visible"><and><and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and><condition setting="dvbridge.expertblack" operator="is">3</condition></and></dependency></dependencies>
           <constraints><minimum>0</minimum><maximum>0.5</maximum><step>0.0001</step></constraints>
           <control type="edit" format="string" />
         </setting>
@@ -116,7 +116,7 @@
         </setting>
         <setting id="dvbridge.expertgamut" type="integer" label="41040" help="41041">
           <requirement>HAVE_DVBRIDGE</requirement><level>0</level><default>2</default>
-          <dependencies><dependency type="visible"><or><and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and><condition setting="dvbridge.outputmode" operator="is">7</condition></or></dependency></dependencies>
+          <dependencies><dependency type="visible"><and><condition setting="dvbridge.outputmode" operator="is">1</condition><condition setting="dvbridge.hdr10method" operator="is">1</condition></and></dependency></dependencies>
           <constraints><options><option label="40839">2</option><option label="40840">3</option><option label="40838">1</option></options></constraints>
           <control type="list" format="string" />
         </setting>
