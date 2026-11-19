@@ -112,6 +112,7 @@ public:
   bool CreateGUI();
   bool InitWindow(RESOLUTION res = RES_INVALID);
 
+  bool SetExitCode(int exitCode);
   bool Stop(int exitCode);
   const std::string& CurrentFile();
   CFileItem& CurrentFileItem();
@@ -248,6 +249,7 @@ private:
   unsigned int m_ProcessedExternalCalls = 0;      /*!< counts calls which are processed during one "door open" cycle in FrameMove */
   unsigned int m_ProcessedExternalDecay = 0;      /*!< counts to close door after a few frames of no python activity */
   int m_ExitCode{EXITCODE_QUIT};
+  bool m_ExitCodeSet = false;
   std::shared_ptr<CFileItem> m_itemCurrentFile; //!< Currently playing file
   CEvent m_playerEvent;
 };
