@@ -144,14 +144,35 @@ void CDRMAtomic::StageHDR10Plus(std::optional<std::array<uint8_t, 31>> packet, u
       edid == m_hdr10plusRejectedEdid ? std::nullopt : std::move(packet);
 }
 
+void CDRMAtomic::AcceptHDR10Plus(bool enabled)
+{
+  m_hdr10plusActive = enabled;
+  m_hdr10plusClearRequired = false;
+  if (!m_connector || !m_connector->SupportsProperty("CB1_HDR10PLUS_STATUS")) return;
+  const auto status = m_connector->ReadPropertyValue("CB1_HDR10PLUS_STATUS");
+  const auto depth = m_connector->ReadPropertyValue("CB1_OUTPUT_BPC");
+  if ((!enabled && status == 0) || (enabled && status == 1 && depth.value_or(0) >= 10)) return;
+  m_hdr10plusActive = false;
+  m_hdr10plusClearRequired = true;
+  if (m_hdr10plusRejectedGeneration != m_hdr10plusGeneration)
+    CLog::Log(LOGWARNING, "HDR10+ transport was not confirmed by the driver; clearing dynamic metadata");
+  m_hdr10plusRejectedGeneration = m_hdr10plusGeneration;
+  m_hdr10plusRejectedEdid = m_connector->GetPropertyValue("EDID").value_or(0);
+}
+
 bool CDRMAtomic::PrepareHDR10Plus(int& flags, bool& frameMetadata)
 {
   auto packet = std::exchange(m_hdr10plusPacket, std::nullopt);
   frameMetadata = false;
   if (!m_connector || !m_connector->SupportsProperty("HDR10PLUS_METADATA"))
-    return !m_hdr10plusActive;
-  if (!packet && !m_hdr10plusActive) return true;
+    return !m_hdr10plusActive && !m_hdr10plusClearRequired;
+  const bool inherited = !m_hdr10plusActive &&
+      m_connector->GetPropertyValue("HDR10PLUS_METADATA").value_or(0) != 0;
+  if (!packet && !m_hdr10plusActive && !m_hdr10plusClearRequired && !inherited) return true;
   frameMetadata = true;
+  // Commit-coupled packet output must wait for the primary's render fence.
+  if (m_connector->SupportsProperty("CB1_HDR10PLUS_STATUS"))
+    flags &= ~DRM_MODE_ATOMIC_NONBLOCK;
   if (packet)
   {
     m_req->hdr10plusBlob = CDRMPropertyBlob(m_fd, packet->data(), packet->size());
@@ -160,7 +181,8 @@ bool CDRMAtomic::PrepareHDR10Plus(int& flags, bool& frameMetadata)
   if (!AddProperty(m_connector, "HDR10PLUS_METADATA", packet ? m_req->hdr10plusBlob.Get() : 0))
     return false;
   m_req->hdr10plus = packet.has_value();
-  if (packet.has_value() != m_hdr10plusActive) flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
+  if (packet.has_value() != m_hdr10plusActive || m_hdr10plusClearRequired || inherited)
+    flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
   return true;
 }
 
@@ -197,6 +219,8 @@ bool CDRMAtomic::PrepareSDRRestore(int& flags)
   m_req->sdrRestore = true;
   flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
   if (!AddProperty(m_connector, "HDR_OUTPUT_METADATA", 0)) return false;
+  if (m_connector->SupportsProperty("DVBRIDGE_HDR10_DEEP_COLOR") &&
+      !AddProperty(m_connector, "DVBRIDGE_HDR10_DEEP_COLOR", 0)) return false;
   if (m_connector->SupportsProperty("Colorspace"))
   {
     const auto value = m_sdrRestoreColorspace ? m_sdrRestoreColorspace :
@@ -425,7 +449,7 @@ void CDRMAtomic::FinishRequest(bool accepted)
         CLog::Log(LOGINFO, "SDR output restoration accepted after retry");
       SetSDRRestorePending(false);
     }
-    if (m_req->hdr10plus) m_hdr10plusActive = *m_req->hdr10plus;
+    if (m_req->hdr10plus) AcceptHDR10Plus(*m_req->hdr10plus);
     if (m_req->signalMode)
       m_committedMode = *m_req->signalMode;
     if (m_signalDirty && DVBRIDGE::DiagnosticsEnabled())
@@ -714,6 +738,7 @@ void CDRMAtomic::DestroyDrm()
   ResetCB1PresentationTime();
   m_hdr10plusPacket.reset();
   m_hdr10plusActive = false;
+  m_hdr10plusClearRequired = false;
   m_hdr10plusGeneration = 0;
   m_hdr10plusRejectedGeneration = 0;
   m_hdr10plusRejectedEdid = 0;

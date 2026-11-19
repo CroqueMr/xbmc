@@ -47,6 +47,7 @@ public:
   bool SetProperty(std::string_view name, uint64_t value);
   bool SupportsProperty(std::string_view name);
   std::optional<uint64_t> GetPropertyValue(std::string_view name) const;
+  std::optional<uint64_t> ReadPropertyValue(std::string_view name) const;
   // Read-only inventory status for diagnostics; never re-query DRM for a log.
   bool HasPropertyInventory() const
   {

@@ -129,6 +129,18 @@ std::optional<uint64_t> CDRMObject::GetPropertyValue(std::string_view name) cons
   return m_props->prop_values[std::ranges::distance(m_propsInfo.begin(), property)];
 }
 
+std::optional<uint64_t> CDRMObject::ReadPropertyValue(std::string_view name) const
+{
+  const uint32_t id = GetPropertyId(name);
+  if (!id) return {};
+  std::unique_ptr<drmModeObjectProperties, DrmModeObjectPropertiesDeleter> values(
+      drmModeObjectGetProperties(m_fd, m_id, m_type));
+  if (!values) return {};
+  for (uint32_t i = 0; i < values->count_props; ++i)
+    if (values->props[i] == id) return values->prop_values[i];
+  return {};
+}
+
 bool CDRMObject::CachePropertyValue(uint32_t propertyId, uint64_t value)
 {
   for (size_t i = 0; i < m_propsInfo.size(); i++)

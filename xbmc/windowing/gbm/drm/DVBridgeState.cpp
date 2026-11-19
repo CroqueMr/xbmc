@@ -78,6 +78,7 @@ bool CDVBridgeState::Capture(CDRMAtomic& drm, uint64_t ownVsif, bool legacyVsif)
   {
     const Setting native[] = {
       {connector,"DVBRIDGE_DV_STANDARD_LAB",1,true,false},
+      {connector,"DVBRIDGE_HDR10_DEEP_COLOR",0,false,false},
       {connector,"HDR_OUTPUT_METADATA",0,false,true},
       {connector,"max bpc",8,true,false},
       {connector,"Broadcast RGB",0,true,false,"Full"},
@@ -108,6 +109,7 @@ bool CDVBridgeState::Capture(CDRMAtomic& drm, uint64_t ownVsif, bool legacyVsif)
     const uint64_t one = uint64_t{1} << 32;
     const Setting vendor[] = {
       {connector,"HDR_OUTPUT_METADATA",0,true,true},
+      {connector,"DVBRIDGE_HDR10_DEEP_COLOR",0,false,false},
       {connector,"max bpc",8,true,false},
       {connector,"dithering mode",0,true,false,"off"},
       {connector,"Colorspace",0,true,false,"Default"},

@@ -37,12 +37,16 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
   }
   if (!caps.sourceKnown || !caps.isDV || preferences.output == OutputMode::Disabled)
     return result;
+  auto policy = preferences.Policy();
+  // Display configuration is known before the first GPU import.
+  if (preferences.output == OutputMode::HDR10 && policy.mode == DVBRIDGE_MODE_HDR10_EXPERT &&
+      !preferences.ProfileValid())
+    return {OutputRoute::Vanilla, {}, OutputReason::TVProfileRequired};
   if (!caps.processingKnown)
   {
     result.reason = OutputReason::NoGPUProcessing;
     return result;
   }
-  auto policy = preferences.Policy();
   if (policy.mode == DVBRIDGE_MODE_HDR10PLUS && !caps.hdr10plus)
   {
     if (!caps.hdr10 || !caps.processing[DVBRIDGE_MODE_HDR10_BASIC].usable)
