@@ -208,7 +208,8 @@ enum ViewMode
   ViewModeStretch16x9Nonlin,
   ViewModeZoom120Width,
   ViewModeZoom110Width,
-  ViewModeAuto
+  ViewModeAuto,
+  ViewModeActiveArea
 };
 
 class CVideoSettings

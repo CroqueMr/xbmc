@@ -116,6 +116,7 @@ protected:
   ESCALINGMETHOD SelectScalingMethod() const;
   void UpdateVideoFilter();
   void CheckVideoParameters(int index);
+  void UpdateActiveArea(int index);
   AVColorPrimaries GetSrcPrimaries(AVColorPrimaries srcPrimaries, unsigned int width, unsigned int height);
 
   // textures

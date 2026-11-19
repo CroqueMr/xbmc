@@ -26613,3 +26613,7 @@ msgstr ""
 msgctxt "#41275"
 msgid "The active HDMI driver cannot signal BT.2020 RGB."
 msgstr ""
+
+msgctxt "#41276"
+msgid "Dolby Vision active area"
+msgstr ""
