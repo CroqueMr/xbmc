@@ -244,12 +244,17 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
     m_old_crtc = nullptr;
   }
 
+  const bool dvTransport = (flags & DRM_MODE_ATOMIC_ALLOW_MODESET) && strict && !m_dvRestoring &&
+      m_req->requestedDV.value_or(
+          m_connector->GetPropertyValue("DVBRIDGE_DV_STANDARD_LAB").value_or(0));
+  const auto* mode = dvTransport ? GetDVTransportMode() : m_mode;
+
   if (flags & DRM_MODE_ATOMIC_ALLOW_MODESET)
   {
     if (!AddProperty(m_connector, "CRTC_ID", m_crtc->GetCrtcId()))
       return reject("connector-crtc", EINVAL);
 
-    modeBlob = CDRMPropertyBlob(m_fd, m_mode, sizeof(*m_mode));
+    modeBlob = CDRMPropertyBlob(m_fd, mode, sizeof(*mode));
     if (!modeBlob.IsValid())
       return reject("mode-blob", 0);
 
@@ -257,7 +262,7 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
       return reject("mode-property", EINVAL);
     // Follow the request actually accepted, including ordinary old-mode fallback.
     // Transport admission consumes this receipt even when diagnostics are disabled.
-    m_req->signalMode = *m_mode;
+    m_req->signalMode = *mode;
 
     if (!AddProperty(m_crtc, "ACTIVE", m_active ? 1 : 0))
       return reject("active-property", EINVAL);
@@ -411,16 +416,19 @@ void CDRMAtomic::FinishRequest(bool accepted)
 
 bool CDRMAtomic::IsSelectedModeCommitted() const
 {
-  return m_mode && m_committedMode.clock == m_mode->clock &&
-      m_committedMode.hdisplay == m_mode->hdisplay &&
-      m_committedMode.hsync_start == m_mode->hsync_start &&
-      m_committedMode.hsync_end == m_mode->hsync_end &&
-      m_committedMode.htotal == m_mode->htotal && m_committedMode.hskew == m_mode->hskew &&
-      m_committedMode.vdisplay == m_mode->vdisplay &&
-      m_committedMode.vsync_start == m_mode->vsync_start &&
-      m_committedMode.vsync_end == m_mode->vsync_end &&
-      m_committedMode.vtotal == m_mode->vtotal && m_committedMode.vscan == m_mode->vscan &&
-      m_committedMode.vrefresh == m_mode->vrefresh && m_committedMode.flags == m_mode->flags;
+  const auto* mode = m_connector &&
+      m_connector->GetPropertyValue("DVBRIDGE_DV_STANDARD_LAB").value_or(0) ?
+      GetDVTransportMode() : m_mode;
+  return mode && m_committedMode.clock == mode->clock &&
+      m_committedMode.hdisplay == mode->hdisplay &&
+      m_committedMode.hsync_start == mode->hsync_start &&
+      m_committedMode.hsync_end == mode->hsync_end &&
+      m_committedMode.htotal == mode->htotal && m_committedMode.hskew == mode->hskew &&
+      m_committedMode.vdisplay == mode->vdisplay &&
+      m_committedMode.vsync_start == mode->vsync_start &&
+      m_committedMode.vsync_end == mode->vsync_end &&
+      m_committedMode.vtotal == mode->vtotal && m_committedMode.vscan == mode->vscan &&
+      m_committedMode.vrefresh == mode->vrefresh && m_committedMode.flags == mode->flags;
 }
 
 CDRMAtomic::~CDRMAtomic()

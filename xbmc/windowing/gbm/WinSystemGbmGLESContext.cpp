@@ -730,6 +730,7 @@ bool CWinSystemGbmGLESContext::SetGuiCompositing(int colorTransfer)
     m_dvPQSubtitleFbo.Cleanup();
     m_dvPQSubtitleWidth = m_dvPQSubtitleHeight = 0;
     m_dvPQSubtitleDraws = 0;
+    m_dvPQGuiMergeAttempted = m_dvPQGuiComposed = false;
     m_dvPQSubtitleRendering = m_dvPQSubtitleCleared = m_dvNativeGui = false;
 #endif
     m_guiFbo.Cleanup();
@@ -798,6 +799,7 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
     return true;
 
 #ifdef HAVE_DVBRIDGE
+  m_dvPQGuiMergeAttempted = m_dvPQGuiComposed = false;
   m_dvSubtitleBounds = {};
   ++m_dvGUIContentGeneration;
   m_dvSubtitleDraws = 0;
@@ -994,7 +996,11 @@ void CWinSystemGbmGLESContext::CompositeGui()
     m_compositeShader->Disable();
   }
 #endif
-  if (!m_guiFboClean)
+  if (!m_guiFboClean
+#ifdef HAVE_DVBRIDGE
+      && !(hasPQSubtitles && m_dvPQGuiComposed)
+#endif
+  )
   {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_guiFbo.Texture());
@@ -1760,10 +1766,10 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
     return true; // Configure must reach UploadTexture before source-dependent activation.
   m_dvSelection = SelectedDVOutput(picture);
   if (!PollRejectedDVSurface()) return false;
-  const bool transaction = DVBridgeRequested(picture) || m_dvContext || m_dvState.Captured();
+  if (HasPendingDVOutputSurface() || m_dvOrdinaryFrame) return false;
+  const bool transaction = DVBridgeRequested(picture) || m_hdrConversion || m_dvState.Captured();
   if (transaction)
   {
-    if (HasPendingDVOutputSurface()) return false;
     // Same-format policy/frame work bypasses this actual transport transition.
     const bool active = m_dvSelection.route == DVBRIDGE::OutputRoute::NativeDV ?
         m_dvState.Captured() : m_hdrConversion;
@@ -1904,8 +1910,8 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
       source.compatibility == 1 || source.compatibility == 2 || source.compatibility == 4;
   const bool strictMaster=preferences.output==DVBRIDGE::OutputMode::MasterReference &&
       !preferences.allowMasterFallback;
-  if (m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla && capabilities.processingKnown &&
-      (!ordinaryBL || strictMaster) &&
+  if (capabilities.isDV && m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla &&
+      capabilities.processingKnown && (!ordinaryBL || strictMaster) &&
       preferences.output != DVBRIDGE::OutputMode::Disabled &&
       !(source.el && !picture.doviEnhancement))
   {
@@ -1943,7 +1949,8 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
         ConfigureHDR10Conversion(picture) : BeginDVBridge();
     if (!ready) { RejectDVOutputSurface(); return false; }
   }
-  else if (!StageOrdinaryDVOutput(&picture)) return false;
+  else if ((HasPendingDVOutputSurface() || m_dvOrdinaryFrame) &&
+           !StageOrdinaryDVOutput(&picture)) return false;
   m_dvConfiguredOutput = m_dvSelection.policy.mode;
   return true;
 }
@@ -2123,17 +2130,18 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   }
   m_preparedSourceStream = layer.binding.stream;
   m_preparedSourcePts = layer.pts;
+  const bool mergedPQGUI = ComposeDVPQGUI();
   const bool subtitlesOnly = !capturing && m_guiWillRender && m_guiFbo.IsValid() &&
       m_guiFboWidth == m_nWidth && m_guiFboHeight == m_nHeight && m_compositeShader &&
       m_dvSubtitleDraws && m_dvSubtitleDraws == GetGUIElementCount() &&
       (!m_dvPQSubtitleDraws || m_dvPQSubtitleDraws == m_dvSubtitleDraws);
-  const bool pqSubtitles = subtitlesOnly && m_dvPQSubtitleDraws;
+  const bool pqSubtitles = (subtitlesOnly || mergedPQGUI) && m_dvPQSubtitleDraws;
   const bool enhancedSubtitles = subtitlesOnly && metadata.Data() &&
       m_dvSelection.policy.mode == DVBRIDGE_MODE_ENHANCED_DV;
   const bool fullGUI = m_guiWillRender && GetGUIElementCount() &&
-      CDVBridgeGLES::CanComposeSDRGUI(preferences.optimizedDV ||
+      (mergedPQGUI || CDVBridgeGLES::CanComposeSDRGUI(preferences.optimizedDV ||
           m_dvSelection.policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE,m_hdrConversion,capturing && !masterCapture,
-          m_guiFboWidth,m_guiFboHeight,m_dvPQSubtitleDraws);
+          m_guiFboWidth,m_guiFboHeight,m_dvPQSubtitleDraws));
   // The TV masks L5 margins. Keep controls/subtitles in letterbox bars visible.
   m_dvBridge->SetOverlayVisible((m_guiWillRender && GetGUIElementCount()) || m_dvOverlays);
   // Prime the subtitle shader once; empty frames retain the lean native shader.
@@ -2333,6 +2341,126 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
     }
   }
   return m_dvFrame || reused;
+}
+
+bool CWinSystemGbmGLESContext::ComposeDVPQGUI()
+{
+  // Resolve the actual current policy here, after BeginDVBridge, not during GUI rendering.
+  if (m_dvSelection.policy.mode != DVBRIDGE_MODE_MASTER_REFERENCE || m_hdrConversion ||
+      !m_dvState.Captured() || !m_guiWillRender || !m_dvPQSubtitleDraws ||
+      GetGUIElementCount() <= m_dvPQSubtitleDraws || !m_compositeShader ||
+      !m_guiFbo.IsValid() || !m_dvPQSubtitleFbo.IsValid() ||
+      m_guiFboWidth != m_nWidth || m_guiFboHeight != m_nHeight ||
+      m_dvPQSubtitleWidth != m_guiFboWidth || m_dvPQSubtitleHeight != m_guiFboHeight)
+    return false;
+  // One merge per GUI redraw. Preparation retries must not compound translucency.
+  if (m_dvPQGuiMergeAttempted)
+    return m_dvPQGuiComposed;
+  // An existing GL error is not evidence that this transfer completed.
+  if (glGetError() != GL_NO_ERROR)
+    return false;
+  m_dvPQGuiMergeAttempted = true;
+
+  GLint draw, read, viewport[4], program, active, array, vao;
+  GLint blend[6], textures[3], samplers[3];
+  GLboolean mask[4];
+  constexpr GLenum caps[]{GL_BLEND, GL_DEPTH_TEST, GL_STENCIL_TEST, GL_SCISSOR_TEST,
+      GL_DITHER, GL_CULL_FACE, GL_RASTERIZER_DISCARD, GL_SAMPLE_ALPHA_TO_COVERAGE, GL_SAMPLE_COVERAGE};
+  GLboolean enabled[std::size(caps)];
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+  glGetIntegerv(GL_VIEWPORT, viewport);
+  glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+  glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+  glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &array);
+  glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+  glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+  constexpr GLenum blendNames[]{GL_BLEND_SRC_RGB, GL_BLEND_DST_RGB, GL_BLEND_SRC_ALPHA,
+      GL_BLEND_DST_ALPHA, GL_BLEND_EQUATION_RGB, GL_BLEND_EQUATION_ALPHA};
+  for (unsigned i = 0; i < std::size(blend); ++i)
+    glGetIntegerv(blendNames[i], &blend[i]);
+  for (unsigned i = 0; i < 3; ++i)
+  {
+    glActiveTexture(GL_TEXTURE0 + i);
+    glGetIntegerv(GL_TEXTURE_BINDING_2D, &textures[i]);
+    glGetIntegerv(GL_SAMPLER_BINDING, &samplers[i]);
+    glBindSampler(i, 0);
+  }
+  for (unsigned i = 0; i < std::size(caps); ++i)
+  {
+    enabled[i] = glIsEnabled(caps[i]);
+    glDisable(caps[i]);
+  }
+
+  const bool bound = m_dvPQSubtitleFbo.BeginRender();
+  GLuint transferVao = 0, transferBuffer = 0;
+  bool drawn = false;
+  if (bound)
+  {
+    // Both textures use GUI-FBO orientation; do not apply the video-PQ flip.
+    const float w = m_guiFboWidth, h = m_guiFboHeight;
+    GLfloat projection[]{2.0f / w, 0, 0, 0, 0, -2.0f / h, 0, 0,
+                        0, 0, -1, 0, -1, 1, 0, 1};
+    const GLfloat vertices[][4]{{0, 0, 0, 1}, {w, 0, 1, 1}, {0, h, 0, 0}, {w, h, 1, 0}};
+    glViewport(0, 0, m_guiFboWidth, m_guiFboHeight);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, m_guiFbo.Texture());
+    // Native output requires GLES3. A private VAO keeps caller attributes untouched.
+    glGenVertexArrays(1, &transferVao);
+    glGenBuffers(1, &transferBuffer);
+    const bool allocated = glGetError() == GL_NO_ERROR;
+    if (transferVao && transferBuffer && allocated)
+    {
+      glBindVertexArray(transferVao);
+      glBindBuffer(GL_ARRAY_BUFFER, transferBuffer);
+      glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
+      glEnable(GL_BLEND);
+      glBlendEquation(GL_FUNC_ADD);
+      // Shader emits straight PQ. Accumulate premultiplied PQ and coverage over PGS.
+      glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+      m_compositeShader->SetInputPQ(false);
+      m_compositeShader->SetProjection(projection);
+      const GLint pos = m_compositeShader->GetPosLoc(), tex = m_compositeShader->GetTexLoc();
+      glVertexAttribPointer(pos, 2, GL_FLOAT, GL_FALSE, sizeof(vertices[0]), nullptr);
+      glVertexAttribPointer(tex, 2, GL_FLOAT, GL_FALSE, sizeof(vertices[0]),
+                            reinterpret_cast<const void*>(2 * sizeof(GLfloat)));
+      glEnableVertexAttribArray(pos);
+      glEnableVertexAttribArray(tex);
+      if (m_compositeShader->Enable() && glGetError() == GL_NO_ERROR)
+      {
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        drawn = glGetError() == GL_NO_ERROR;
+      }
+      m_compositeShader->Disable();
+      // The shader stores a pointer; do not leave it pointing at this stack projection.
+      m_compositeShader->SetProjection(nullptr);
+    }
+  }
+
+  for (unsigned i = 0; i < 3; ++i)
+  {
+    glActiveTexture(GL_TEXTURE0 + i);
+    glBindTexture(GL_TEXTURE_2D, textures[i]);
+    glBindSampler(i, samplers[i]);
+  }
+  glActiveTexture(active);
+  glBindVertexArray(vao);
+  glBindBuffer(GL_ARRAY_BUFFER, array);
+  glDeleteBuffers(1, &transferBuffer);
+  glDeleteVertexArrays(1, &transferVao);
+  glUseProgram(program);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
+  glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+  glColorMask(mask[0], mask[1], mask[2], mask[3]);
+  glBlendFuncSeparate(blend[0], blend[1], blend[2], blend[3]);
+  glBlendEquationSeparate(blend[4], blend[5]);
+  for (unsigned i = 0; i < std::size(caps); ++i)
+    if (enabled[i]) glEnable(caps[i]); else glDisable(caps[i]);
+  const bool restored = glGetError() == GL_NO_ERROR;
+  m_dvPQGuiComposed = drawn && restored;
+  return m_dvPQGuiComposed;
 }
 
 void CWinSystemGbmGLESContext::RecordDVSubtitle(const CRect& rect, unsigned texture)

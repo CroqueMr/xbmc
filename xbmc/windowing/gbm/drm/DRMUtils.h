@@ -72,6 +72,7 @@ public:
   CDRMCrtc* GetCrtc() const { return m_crtc; }
   CDRMConnector* GetConnector() const { return m_connector; }
   const drmModeModeInfo* GetSelectedMode() const { return m_mode; }
+  const drmModeModeInfo* GetDVTransportMode() const;
   std::vector<outputformat>& GetOutputFormats() { return m_output_formats; }
   bool FindGuiPlane(uint32_t format, uint64_t modifier);
   bool FindVideoPlane(uint32_t format, uint64_t modifier);
