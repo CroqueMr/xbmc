@@ -9,6 +9,7 @@
 #pragma once
 
 #include "ActiveAESink.h"
+#include "cores/AudioEngine/Interfaces/AE.h"
 #include "cores/AudioEngine/Engines/ActiveAE/ActiveAEBuffer.h"
 #include "cores/AudioEngine/Interfaces/AESound.h"
 #include "cores/AudioEngine/Interfaces/AEStream.h"
@@ -200,7 +201,10 @@ public:
   float GetMaxDelay() const;
   float GetWaterLevel();
   void SetSuspended(bool state);
-  void SetCurrentSinkFormat(const AEAudioFormat& SinkFormat);
+  void SetCurrentSinkFormat(const AEAudioFormat& SinkFormat,
+                            AE::SinkMode mode = AE::SinkMode::Unknown);
+  AE::SinkInfo GetCurrentSinkInfo();
+  void InvalidateCurrentSinkInfo();
   void SetSinkCacheTotal(float time) { m_sinkCacheTotal = time; }
   void SetSinkLatency(float time) { m_sinkLatency = time; }
   void SetSinkNeedIec(bool needIEC) { m_sinkNeedIecPack = needIEC; }
@@ -214,6 +218,7 @@ protected:
   AEDelayStatus m_sinkDelay;
   bool m_suspended;
   AEAudioFormat m_sinkFormat;
+  AE::SinkMode m_sinkMode{AE::SinkMode::Unknown};
   bool m_pcmOutput;
   bool m_sinkNeedIecPack{false};
   CCriticalSection m_lock;
@@ -275,6 +280,7 @@ public:
   void DefaultDeviceChange() override;
   void DeviceCountChange(const std::string& driver) override;
   bool GetCurrentSinkFormat(AEAudioFormat &SinkFormat) override;
+  bool GetCurrentSinkInfo(AE::SinkInfo& info) override;
 
   void RegisterAudioCallback(IAudioCallback* pCallback) override;
   void UnregisterAudioCallback(IAudioCallback* pCallback) override;
@@ -354,6 +360,7 @@ protected:
   bool m_bStateMachineSelfTrigger;
   std::chrono::milliseconds m_extTimeout;
   bool m_extError;
+  bool m_sinkInitFailed{false};
   unsigned int m_extErrorRetries{0};
   bool m_extDrain;
   XbmcThreads::EndTime<> m_extDrainTimer;

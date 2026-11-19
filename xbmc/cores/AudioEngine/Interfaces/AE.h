@@ -75,6 +75,16 @@ struct SampleConfig
   int dither_bits;
 };
 
+namespace AE
+{
+enum class SinkMode { Unknown, PCM, Passthrough, Transcoded };
+struct SinkInfo
+{
+  AEAudioFormat format;
+  SinkMode mode{SinkMode::Unknown};
+};
+}
+
 /*!
  * \brief IAE Interface
  */
@@ -288,6 +298,7 @@ public:
    * \return Returns true on success, else false.
    */
   virtual bool GetCurrentSinkFormat(AEAudioFormat &SinkFormat) { return false; }
+  virtual bool GetCurrentSinkInfo(AE::SinkInfo& info) { return false; }
 
 private:
   friend class IAEStreamDeleter;

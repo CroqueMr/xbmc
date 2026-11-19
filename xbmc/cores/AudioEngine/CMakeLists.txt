@@ -15,6 +15,7 @@ set(SOURCES AEResampleFactory.cpp
             Utils/AELimiter.cpp
             Utils/AEPackIEC61937.cpp
             Utils/AEStreamInfo.cpp
+            Utils/AEAudioSourceInfo.cpp
             Utils/AEUtil.cpp
             Utils/PackerMAT.cpp)
 
@@ -48,6 +49,7 @@ set(HEADERS AEResampleFactory.h
             Utils/AERingBuffer.h
             Utils/AEStreamData.h
             Utils/AEStreamInfo.h
+            Utils/AEAudioSourceInfo.h
             Utils/AEUtil.h
             Utils/PackerMAT.h)
 
