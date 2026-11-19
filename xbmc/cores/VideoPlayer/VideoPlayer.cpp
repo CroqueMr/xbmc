@@ -1149,6 +1149,8 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
       valid = true;
       break;
     }
+    if (m_bAbortRequest)
+      return;
   }
   if (!valid)
   {
@@ -1486,6 +1488,7 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
 
 void CVideoPlayer::Prepare()
 {
+  m_errorDetail = 0;
 #ifdef HAVE_DVBRIDGE
   DVBRIDGE::SelectOutputSettings();
 #endif
@@ -1553,6 +1556,8 @@ void CVideoPlayer::Prepare()
 
   if (!discStateRestored)
     OpenDefaultStreams();
+  if (m_bAbortRequest)
+    return;
 
   // Update stack and offsets in fileItem (for Blurays/DVDs)
   m_pInputStream->UpdateStack(fileItem);
@@ -3160,12 +3165,13 @@ void CVideoPlayer::OnExit()
   m_bStop = true;
 
   bool error = m_error;
+  const int errorDetail = m_errorDetail;
   bool close = m_bCloseRequest;
   m_outboundEvents->Submit([=]() {
     if (close)
       cb->OnPlayBackStopped();
     else if (error)
-      cb->OnPlayBackError();
+      cb->OnPlayBackError(errorDetail);
     else
       cb->OnPlayBackEnded();
   });
@@ -3749,7 +3755,13 @@ void CVideoPlayer::HandleMessages()
       CLog::Log(LOGDEBUG, "CVideoPlayer - CDVDMsg::PLAYER_ABORT");
       m_bAbortRequest = true;
 #ifdef HAVE_DVBRIDGE
-      if (const auto error = std::dynamic_pointer_cast<CDVDMsgBool>(pMsg); error && error->m_value)
+      if (const auto error = std::dynamic_pointer_cast<CDVDMsgInt>(pMsg))
+      {
+        m_error = true;
+        m_errorDetail = error->m_value;
+      }
+      else if (const auto error = std::dynamic_pointer_cast<CDVDMsgBool>(pMsg);
+               error && error->m_value)
         m_error = true;
 #endif
     }
@@ -4583,6 +4595,27 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
 
   if (hint.flags & AV_DISPOSITION_ATTACHED_PIC)
     return false;
+
+#ifdef HAVE_DVBRIDGE
+  if (m_CurrentVideo.id < 0 && hint.stereo_mode.empty() &&
+      (hint.dovi.dv_profile || hint.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION))
+  {
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    const auto mode = DVBRIDGE::FrameOutputSettings().Policy().mode;
+    if (window && (mode == DVBRIDGE_MODE_HDR10_BASIC || mode == DVBRIDGE_MODE_HDR10_EXPERT) &&
+        window->GetDVOutputCapabilities(nullptr, true).HDR10DepthLimited())
+    {
+      constexpr auto reason = DVBRIDGE::OutputReason::HDR10LinkDepthTooLow;
+      CLog::Log(LOGERROR, "Dolby Vision playback unavailable: profile={} reason={}",
+                hint.dovi.dv_profile, static_cast<int>(reason));
+      m_error = true;
+      m_errorDetail = CDVPlaybackInfo::ReasonLabel(reason);
+      m_bAbortRequest = true;
+      return false;
+    }
+  }
+#endif
 
   // set desired refresh rate
   if (m_CurrentVideo.id < 0 && m_playerOptions.fullscreen &&

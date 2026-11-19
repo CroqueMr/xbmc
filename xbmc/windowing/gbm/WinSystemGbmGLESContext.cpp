@@ -66,6 +66,7 @@ extern "C"
 #include <unistd.h>
 #ifdef HAVE_DVBRIDGE
 #include "DVBridgeCapture.h"
+#include <fstream>
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "guilib/GUIComponent.h"
@@ -416,6 +417,9 @@ void CWinSystemGbmGLESContext::PresentRender(bool rendered, bool videoLayer)
     return;
 
   PresentFrame(rendered, videoLayer);
+#ifdef HAVE_DVBRIDGE
+  RefreshHDR10LinkDepth();
+#endif
   if (m_dispReset && m_dispResetTimer.IsTimePast()
 #ifdef HAVE_DVBRIDGE
       && m_modeAnnouncement.Pending() == CHeldModeAnnouncement::Step::NONE
@@ -538,13 +542,15 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     {
       submitted = m_dvBridge->CaptureSubmission();
       submitted.sourceSideData = m_videoSourceSideData;
-      const bool asynchronous = CreateCB1GPUFence(submitted);
-      if (!asynchronous && !m_dvBridge->Advanced()) glFinish();
-      if (m_eglContext.TrySwapBuffers())
+      const bool asynchronous = !m_pascalHDRActive && CreateCB1GPUFence(submitted);
+      if (!m_pascalHDRActive && !asynchronous && !m_dvBridge->Advanced()) glFinish();
+      auto carrier = m_pascalHDRActive ? m_pascalHDRScanout->Blit() : nullptr;
+      if (m_pascalHDRActive ? static_cast<bool>(carrier) : m_eglContext.TrySwapBuffers())
       {
         auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
         auto& surface = m_GBM->GetDevice().GetSurface();
-        auto* bo = surface.LockTransactionalBuffer();
+        auto* bo = carrier ? surface.AdoptTransactionalBuffer(carrier.get(), carrier) :
+                             surface.LockTransactionalBuffer();
         const bool valid = drm && bo &&
             (m_sdrConversion || (drm->GetConnector()->SupportsProperty("DVBRIDGE_HDR10_DEEP_COLOR") ?
              drm->AddProperty(drm->GetConnector(), "DVBRIDGE_HDR10_DEEP_COLOR", 1) :
@@ -558,8 +564,9 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         CompleteCB1Mode(presented,true);
         submitted.hdr10plusAccepted = presented && drm && drm->HDR10PlusActive();
         if (!drm || !drm->HasPendingCB1Page()) surface.CompleteTransactionalBuffer(presented);
+        if (carrier && presented) m_pascalHDRScanout->Presented();
       }
-      else if (asynchronous)
+      else if (asynchronous || m_pascalHDRActive)
         std::dynamic_pointer_cast<CDRMAtomic>(m_DRM)->FlipPageTransactional(nullptr);
     }
     if (m_dvBridge && m_dvBridge->Presented(presented,submitted))
@@ -1535,6 +1542,7 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
 {
   if (eglGetCurrentContext() == EGL_NO_CONTEXT ||
       eglGetCurrentContext() != m_eglContext.GetEGLContext()) return;
+  RefreshHDR10LinkDepth();
   auto caps = GetDVOutputCapabilities(nullptr);
   caps.nativeDV = SupportsNativeDVOutput();
   caps.hdr10 = SupportsHDR10Conversion();
@@ -1704,6 +1712,7 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
 {
   std::lock_guard lock(m_dvCapabilityMutex);
   auto caps = m_dvCapabilities;
+  caps.hdr10MaxBpc = m_hdr10MaxBpc.load();
   caps.playerLed = DVBRIDGE::SelectLldvTransport(m_dvLldvStatus,
       preferences.lldvFormat, allowModeSwitch).connectorId != 0;
   if (allowModeSwitch)
@@ -2045,6 +2054,27 @@ DVBRIDGE::OutputReason CWinSystemGbmGLESContext::ConsumeDVPlaybackFailure(DVBRID
   return m_dvFatalReason;
 }
 
+void CWinSystemGbmGLESContext::RefreshHDR10LinkDepth()
+{
+  auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (!connector || connector->GetType().rfind("HDMI", 0) != 0 ||
+      !connector->SupportsProperty("max bpc"))
+  {
+    m_hdr10MaxBpc = 0;
+    return;
+  }
+
+  // Native DV and LLDV temporarily own an 8-bit scanout. HDR10 setup stages
+  // the saved connector depth when it releases that transport.
+  const auto restored = m_dvState.Before("max bpc");
+  auto depth = GetEffectiveMaxBpc(restored);
+  if (restored && *restored != 0)
+    depth = std::min(depth, *restored);
+  if (const auto range = connector->GetRangePropertyLimits("max bpc"); range && depth != 0)
+    depth = std::min(depth, range->second);
+  m_hdr10MaxBpc = depth;
+}
+
 bool CWinSystemGbmGLESContext::SupportsHDR10Conversion(bool requireCurrentMode)
 {
   if (!IsHDRDisplay() || !GetDisplayHDRCapabilities().SupportsHDR10())
@@ -2091,6 +2121,44 @@ bool CWinSystemGbmGLESContext::ConfigureSDRConversion(const VideoPicture& pictur
   m_hdr10SessionStream = 0;
   m_failedHDR10SetupRestore = false;
   return true;
+}
+
+bool CWinSystemGbmGLESContext::PrepareHDR10Scanout()
+{
+  if (m_dvSelection.route != DVBRIDGE::OutputRoute::HDR10)
+    return false;
+  const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  auto* connector = drm ? drm->GetConnector() : nullptr;
+  if (!connector || !connector->GetType().starts_with("HDMI") ||
+      !connector->SupportsProperty("DVBRIDGE_HDR10_DEEP_COLOR"))
+    return false;
+  std::string driverVersion;
+  std::ifstream("/sys/module/nvidia/version") >> driverVersion;
+  if (!driverVersion.starts_with("580."))
+    return false;
+
+  if (!m_pascalHDRScanout)
+  {
+    try
+    {
+      m_pascalHDRScanout = CPascalHDR10Scanout::Create(
+          m_GBM->GetDevice().Get(), *drm, m_nWidth, m_nHeight);
+    }
+    catch (const std::exception& error)
+    {
+      CLog::LogF(LOGWARNING, "R580 HDR10 scanout import failed: {}", error.what());
+    }
+    CLog::LogF(m_pascalHDRScanout ? LOGINFO : LOGWARNING,
+              "R580 10-bit HDR10 scanout probe: {}",
+              m_pascalHDRScanout ? "passed" : "unavailable");
+  }
+  m_pascalHDRActive = static_cast<bool>(m_pascalHDRScanout);
+  return m_pascalHDRActive;
+}
+
+unsigned int CWinSystemGbmGLESContext::HDR10Framebuffer() const
+{
+  return m_pascalHDRActive ? m_pascalHDRScanout->Framebuffer() : 0;
 }
 
 bool CWinSystemGbmGLESContext::ConfigureHDR10Conversion(const VideoPicture& picture)
@@ -2324,7 +2392,7 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
   if (!m_dvBridge)
   {
     m_dvBridge = std::make_unique<CDVBridgeGLES>(playerLed);
-    if (!m_dvBridge->Initialize(false, hdr10,m_dvContext,sdr))
+    if (!m_dvBridge->Initialize(false, hdr10, m_dvContext, sdr, HDR10Framebuffer()))
       return failure("renderer-init");
     m_dvBridge->SetHDR10PlusVersion(hdr10plusVersion);
   }
@@ -2439,15 +2507,24 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
     if (linkChange && m_modeAnnouncement.Pending() == CHeldModeAnnouncement::Step::NONE)
       m_modeAnnouncement.Held();
     m_GBM->GetDevice().UseDVOutputLifetime();
+    m_priorPascalHDRActive = m_pascalHDRActive;
+    m_pascalHDRActive = false;
     UseDVOutputSurfaceTransaction(true);
     const bool staged = CWinSystemGbmEGLContext::SetVideoOutput(picture);
     UseDVOutputSurfaceTransaction(false);
-    if (!staged) return false;
+    if (!staged)
+    {
+      if (!HasPendingDVOutputSurface())
+        m_pascalHDRActive = m_priorPascalHDRActive;
+      return false;
+    }
     m_hdr10Signal.reset();
     const bool requested = DVBridgeRequested(picture);
     const bool hdr10 = m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10 ||
         m_dvSelection.route == DVBRIDGE::OutputRoute::SDR;
-    if (requested && m_dvBridge && !m_dvBridge->RebindOutputSurface(hdr10, m_dvSelection.route == DVBRIDGE::OutputRoute::SDR))
+    if (requested && m_dvBridge &&
+        !m_dvBridge->RebindOutputSurface(hdr10, m_dvSelection.route == DVBRIDGE::OutputRoute::SDR,
+                                         HDR10Framebuffer()))
     {
       RejectDVOutputSurface();
       return false;
@@ -2692,8 +2769,10 @@ bool CWinSystemGbmGLESContext::PollRejectedDVSurface()
     return false;
   }
   // Ordinary restoration may retain a 10-bit drawable without CB1 processing.
+  m_pascalHDRActive = m_priorPascalHDRActive;
   if (m_dvBridge && m_dvPriorConfiguredOutput &&
-      !m_dvBridge->RebindOutputSurface(m_dvPriorHDRConversion, m_dvPriorSDRConversion))
+      !m_dvBridge->RebindOutputSurface(m_dvPriorHDRConversion, m_dvPriorSDRConversion,
+                                       HDR10Framebuffer()))
   {
     m_dvRollbackFailed = true;
     return false;
@@ -3406,6 +3485,7 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
   m_hdr10BasicSignal.reset();
   m_hdr10Signal.reset();
   m_hdr10SessionStream = 0;
+  m_pascalHDRActive = false;
   m_hdrConversion = false;
   m_sdrConversion = false;
   CompleteCB1ConnectorRestore();
@@ -3425,6 +3505,7 @@ bool CWinSystemGbmGLESContext::DestroyWindowSystem()
     return false;
   m_dvBridge.reset();
   if (!RetireDVContext()) return false;
+  m_pascalHDRScanout.reset();
   if (!CWinSystemGbmEGLContext::DestroyWindowSystem()) return false;
   std::lock_guard lock(m_dvCapabilityMutex);
   const auto generation = m_dvCapabilities.generation + 1;
@@ -3461,6 +3542,7 @@ bool CWinSystemGbmGLESContext::DestroyWindow()
   if (HasPendingDVOutputSurface() &&
       (!m_dvOrdinaryFrame || !CompleteDVOutputSurface(false))) return false;
   m_dvOrdinaryFrame = false;
+  m_pascalHDRScanout.reset();
   if (!CWinSystemGbmEGLContext::DestroyWindow()) return false;
   ObserveDVImport({}, {}, false);
   return true;

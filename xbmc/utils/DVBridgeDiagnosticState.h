@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #pragma once
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +20,18 @@ inline bool DiagnosticsEnabled()
     return !setting || setting[0] != '0' || setting[1] != '\0';
   }();
   return enabled;
+}
+
+inline std::atomic<bool> detailedDiagnostics{true};
+
+inline void SetDetailedDiagnostics(bool enabled)
+{
+  detailedDiagnostics.store(enabled, std::memory_order_relaxed);
+}
+
+inline bool DetailedDiagnosticsEnabled()
+{
+  return DiagnosticsEnabled() && detailedDiagnostics.load(std::memory_order_relaxed);
 }
 
 inline uint64_t DiagnosticNowMs()

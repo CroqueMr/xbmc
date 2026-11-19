@@ -19,6 +19,9 @@
 #include "settings/SettingsContainer.h"
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingsManager.h"
+#ifdef HAVE_DVBRIDGE
+#include "utils/DVBridgeDiagnosticState.h"
+#endif
 #include "utils/Map.h"
 #include "utils/StringUtils.h"
 #include "utils/URIUtils.h"
@@ -113,6 +116,9 @@ CLog::~CLog()
 void CLog::OnSettingsLoaded()
 {
   const std::shared_ptr<CSettings> settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+#ifdef HAVE_DVBRIDGE
+  DVBRIDGE::SetDetailedDiagnostics(settings->GetInt(CSettings::SETTING_DEBUG_CB1LOGDETAIL) != 0);
+#endif
   m_componentLogEnabled = settings->GetBool(CSettings::SETTING_DEBUG_EXTRALOGGING);
   SetComponentLogLevel(settings->GetList(CSettings::SETTING_DEBUG_SETEXTRALOGLEVEL));
 }
@@ -123,6 +129,13 @@ void CLog::OnSettingChanged(const std::shared_ptr<const CSetting>& setting)
     return;
 
   const std::string& settingId = setting->GetId();
+#ifdef HAVE_DVBRIDGE
+  if (settingId == CSettings::SETTING_DEBUG_CB1LOGDETAIL)
+  {
+    DVBRIDGE::SetDetailedDiagnostics(std::static_pointer_cast<const CSettingInt>(setting)->GetValue() != 0);
+    return;
+  }
+#endif
   if (settingId == CSettings::SETTING_DEBUG_EXTRALOGGING)
     m_componentLogEnabled = std::static_pointer_cast<const CSettingBool>(setting)->GetValue();
   else if (settingId == CSettings::SETTING_DEBUG_SETEXTRALOGLEVEL)
@@ -142,7 +155,11 @@ void CLog::Initialize(const std::string& path)
                                                 SettingOptionsLoggingComponentsFiller);
   settingsManager->RegisterSettingsHandler(this);
   settingsManager->RegisterCallback(
-      this, {CSettings::SETTING_DEBUG_EXTRALOGGING, CSettings::SETTING_DEBUG_SETEXTRALOGLEVEL});
+      this, {CSettings::SETTING_DEBUG_EXTRALOGGING, CSettings::SETTING_DEBUG_SETEXTRALOGLEVEL,
+#ifdef HAVE_DVBRIDGE
+             CSettings::SETTING_DEBUG_CB1LOGDETAIL,
+#endif
+            });
 
   if (path.empty())
     return;

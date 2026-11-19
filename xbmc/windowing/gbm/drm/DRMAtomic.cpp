@@ -16,6 +16,7 @@
 #include "settings/Settings.h"
 #include "utils/log.h"
 #include "utils/DVBridgeDiagnosticLog.h"
+#include "utils/DVBridgeOverlayTrace.h"
 #include "DVBridgeKernelLogReader.h"
 #include "utils/DVBridgeEdid.h"
 #include "utils/DVBridgePresentation.h"
@@ -56,7 +57,8 @@ uint64_t DVNowNs()
 
 void CollectDVKernelLog()
 {
-  DVBRIDGE::CollectKernelLog();
+  if (DVBRIDGE::DetailedDiagnosticsEnabled())
+    DVBRIDGE::CollectKernelLog();
 }
 }
 
@@ -130,7 +132,9 @@ void CDRMAtomic::RefreshDVLink()
 
 void CDRMAtomic::ReportDVCommit(const char* stage) noexcept try
 {
-  DVBRIDGE::DiagnosticLog(LOGINFO,
+  if (std::string_view(stage) != "atomic-commit" && !DVBRIDGE::DetailedDiagnosticsEnabled())
+    return;
+  DVBRIDGE::DiagnosticEssentialLog(LOGINFO,
       "DVBridge activation: stage={} result=accepted requested_dv={} restoring={}", stage,
       m_req && m_req->requestedDV ? std::to_string(*m_req->requestedDV) : "unavailable",m_dvRestoring);
 }
@@ -411,7 +415,13 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (auditCommit)
     ReportDVCommit("atomic-test");
   if (strict && m_cb1TimingInput >= 0) m_cb1SubmittedNs = DVNowNs();
-  ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags, nullptr);
+  {
+    DVBRIDGE::OverlayTimer timing(DVBRIDGE::OverlayStage::Commit);
+    ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags, nullptr);
+    const int error = errno;
+    timing.Finish();
+    errno = error;
+  }
   if (ret < 0)
   {
     const int error = errno;
@@ -431,7 +441,7 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
       ReportDVCommit("atomic-commit");
     }
     if (DVBRIDGE::DiagnosticsEnabled() && m_dvFailures.Recovered(DVNowMs()))
-      DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge output recovered: failures={} recoveries={}",
+      DVBRIDGE::DiagnosticEssentialLog(LOGINFO, "DVBridge output recovered: failures={} recoveries={}",
           m_dvFailures.Count(), m_dvFailures.Recoveries());
   }
   FinishRequest(true);
@@ -532,7 +542,11 @@ bool CDRMAtomic::CompleteCB1Page(int timeoutMs)
   if (!m_cb1Pending) return true;
   if (m_cb1Uncertain) return false;
   pollfd fence{m_cb1OutFence, POLLIN, 0};
+  DVBRIDGE::OverlayTimer timing(DVBRIDGE::OverlayStage::FenceWait);
   const int ready = poll(&fence, 1, timeoutMs);
+  const int pollError = errno;
+  timing.Finish();
+  errno = pollError;
   if (!ready || (ready < 0 && errno == EINTR)) return false;
   sync_file_info info{};
   if (ready < 0 || !(fence.revents & POLLIN) ||
@@ -858,7 +872,7 @@ void CDRMAtomic::ReportSignalState() noexcept try
   if (m_signalKnown && state == m_signalState)
     return;
   const auto error = m_connector ? m_connector->PropertyInventoryError() : std::nullopt;
-  if (DVBRIDGE::DiagnosticLog(LOGINFO,
+  if (DVBRIDGE::DiagnosticEssentialLog(LOGINFO,
       "DVBridge signal: origin=accepted-commit-cache connector={} crtc={} dv_property={} dv_value={} hdr_property={} hdr_value={} colorspace_property={} colorspace_value={} max_bpc_property={} max_bpc_ceiling={} rgb_property={} rgb_value={} active_property={} active_value={} mode={}x{} clock_khz={} inventory_error={} nv_vsif_property={} nv_vsif_value={} dither_property={} dither_value={} color_format_property={} color_format_value={}",
       state[0], state[1], dv.Presence(),dv.Value(),hdr.Presence(),hdr.Value(),
       color.Presence(),color.Value(),bpc.Presence(),bpc.Value(),rgb.Presence(),rgb.Value(),
