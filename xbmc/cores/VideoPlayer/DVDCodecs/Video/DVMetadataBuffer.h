@@ -31,6 +31,7 @@ struct SourceInfo
   unsigned maxCLL{}, maxFALL{};
   unsigned compatibility{};
   uint64_t informationGeneration{};
+  bool frameRpu{};
 };
 // Native source epochs and preference changes share a monotonic revision domain.
 inline std::atomic<uint64_t> nativeRevision{1};
