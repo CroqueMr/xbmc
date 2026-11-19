@@ -195,6 +195,7 @@ protected:
   bool IsGuiLayer();
 
   bool Configure();
+  void CancelPendingConfigure();
   void CreateRenderer();
   void DeleteRenderer();
 

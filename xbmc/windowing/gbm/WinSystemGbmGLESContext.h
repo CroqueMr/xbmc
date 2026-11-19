@@ -179,6 +179,7 @@ public:
   bool EndDVBridge();
   void DiscardDVBridgeFrame();
   bool StopDVBridgePlayback();
+  bool DeferRendererForOutputRestore();
   bool SetVideoOutput(const VideoPicture* picture) override;
   bool DestroyWindowSystem() override;
   bool DestroyWindow() override;

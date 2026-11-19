@@ -3782,6 +3782,17 @@ void CWinSystemGbmGLESContext::DiscardDVBridgeFrame()
   m_cb1FramePending = m_dvFrame = m_dvNativeGui = false;
 }
 
+bool CWinSystemGbmGLESContext::DeferRendererForOutputRestore()
+{
+  if (!m_dvStopPending || m_dvRollbackFailed)
+    return false;
+  // A successor no longer needs to wait for the idle GUI's refresh rate change.
+  if (m_modeHold.Holding() == CModeChangeHold::Kind::STOP)
+    m_modeHold.Cancel();
+  CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  return true;
+}
+
 bool CWinSystemGbmGLESContext::StopDVBridgePlayback()
 {
   if (!m_dvStopPending && HoldCB1Stop())

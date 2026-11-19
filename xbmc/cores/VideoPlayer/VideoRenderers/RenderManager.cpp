@@ -190,6 +190,8 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   std::unique_lock lock(m_statelock);
   if (m_renderState != STATE_CONFIGURED)
   {
+    if (!finished)
+      CancelPendingConfigure();
     CLog::Log(LOGWARNING, "CRenderManager::Configure - {}",
               finished ? "failed to configure" : "timeout waiting for configure");
     return false;
@@ -198,12 +200,28 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
   return true;
 }
 
+// The caller holds m_statelock. A late GUI tick must not configure a cancelled picture.
+void CRenderManager::CancelPendingConfigure()
+{
+  if (m_renderState != STATE_CONFIGURING)
+    return;
+
+  std::unique_lock lock(m_presentlock);
+  m_pConfigPicture.reset();
+  m_renderState = STATE_UNCONFIGURED;
+  m_presentstep = PRESENT_IDLE;
+  m_presentevent.notifyAll();
+  m_stateEvent.Set();
+}
+
 bool CRenderManager::Configure()
 {
   // lock all interfaces
   std::unique_lock lock(m_statelock);
   std::unique_lock lock2(m_presentlock);
   std::unique_lock lock3(m_datalock);
+  if (m_renderState != STATE_CONFIGURING)
+    return false;
 
 #if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
   auto* vaapi = dynamic_cast<CRendererVAAPIGLES*>(m_pRenderer);
@@ -219,6 +237,14 @@ bool CRenderManager::Configure()
 #endif
     DeleteRenderer();
   }
+
+#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && defined(HAS_GLES)
+  // The old renderer can request an asynchronous restore in its destructor.
+  // Leave this picture queued until the GUI presents the restored output.
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+          CServiceBroker::GetWinSystem()); window && window->DeferRendererForOutputRestore())
+    return false;
+#endif
 
   CreateRenderer();
   if (m_pRenderer)
@@ -773,6 +799,7 @@ void CRenderManager::UnInit()
   }
 
   std::unique_lock lock(m_statelock);
+  CancelPendingConfigure();
 
   m_overlays.UnInit();
   m_debugRenderer.Dispose();
