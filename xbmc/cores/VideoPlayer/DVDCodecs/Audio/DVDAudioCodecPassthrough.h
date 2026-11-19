@@ -18,6 +18,7 @@
 #include <vector>
 
 class CProcessInfo;
+class CSettingBool;
 class CPackerMAT;
 
 class CDVDAudioCodecPassthrough : public CDVDAudioCodec
@@ -40,6 +41,10 @@ private:
   int GetData(uint8_t** dst);
   unsigned int PackTrueHD();
   CAEStreamParser m_parser;
+  std::shared_ptr<const CSettingBool> m_dolbyDialnorm;
+  std::shared_ptr<const CSettingBool> m_trueHdDialnorm;
+  std::shared_ptr<const CSettingBool> m_dtsDialnorm;
+  bool m_knownJoc = false;
   uint8_t* m_buffer = nullptr;
   unsigned int m_bufferSize = 0;
   unsigned int m_dataSize = 0;

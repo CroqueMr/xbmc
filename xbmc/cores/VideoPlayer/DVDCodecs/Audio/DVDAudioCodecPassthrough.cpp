@@ -10,7 +10,11 @@
 
 #include "DVDCodecs/DVDCodecs.h"
 #include "DVDStreamInfo.h"
+#include "ServiceBroker.h"
 #include "cores/AudioEngine/Utils/PackerMAT.h"
+#include "settings/Settings.h"
+#include "settings/SettingsComponent.h"
+#include "settings/lib/Setting.h"
 #include "utils/log.h"
 
 #include <algorithm>
@@ -85,6 +89,27 @@ bool CDVDAudioCodecPassthrough::Open(CDVDStreamInfo &hints, CDVDCodecOptions &op
   m_backlogSize = 0;
   m_currentPts = DVD_NOPTS_VALUE;
   m_nextPts = DVD_NOPTS_VALUE;
+  // Keep references to the native settings so changes take effect on the next packet.
+  // A codec can be destroyed while Kodi is dispatching settings callbacks.
+  m_dolbyDialnorm.reset();
+  m_trueHdDialnorm.reset();
+  m_dtsDialnorm.reset();
+  m_knownJoc = false;
+  if (const auto component = CServiceBroker::GetSettingsComponent())
+  {
+    const auto settings = component->GetSettings();
+    const auto getBool = [&settings](const char* id)
+    { return std::dynamic_pointer_cast<const CSettingBool>(settings->GetSetting(id)); };
+
+    if (hints.codec == AV_CODEC_ID_AC3 || hints.codec == AV_CODEC_ID_EAC3)
+      m_dolbyDialnorm = getBool(CSettings::SETTING_AUDIOOUTPUT_DOLBYDIALNORM);
+    if (hints.codec == AV_CODEC_ID_EAC3)
+      m_knownJoc = hints.profile == AV_PROFILE_EAC3_DDP_ATMOS;
+    if (hints.codec == AV_CODEC_ID_TRUEHD)
+      m_trueHdDialnorm = getBool(CSettings::SETTING_AUDIOOUTPUT_TRUEHDDIALNORM);
+    if (hints.codec == AV_CODEC_ID_DTS)
+      m_dtsDialnorm = getBool(CSettings::SETTING_AUDIOOUTPUT_DTSDIALNORM);
+  }
   return true;
 }
 
@@ -105,6 +130,10 @@ void CDVDAudioCodecPassthrough::Dispose()
 
 bool CDVDAudioCodecPassthrough::AddData(const DemuxPacket &packet)
 {
+  const bool dolby = m_dolbyDialnorm && m_dolbyDialnorm->GetValue();
+  m_parser.SetDialnorm(dolby, m_knownJoc,
+                       m_trueHdDialnorm && m_trueHdDialnorm->GetValue(),
+                       m_dtsDialnorm && m_dtsDialnorm->GetValue());
   if (m_backlogSize)
   {
     m_dataSize = m_bufferSize;

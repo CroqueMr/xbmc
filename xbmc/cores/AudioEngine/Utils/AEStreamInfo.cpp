@@ -11,6 +11,7 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <bit>
 #include <string.h>
 
 #define DTS_PREAMBLE_14BE 0x1FFFE800
@@ -208,6 +209,422 @@ int CAEStreamParser::AddData(uint8_t* data,
   }
 }
 
+namespace
+{
+constexpr unsigned int AC3_CRC_POLYNOMIAL = 0x18005;
+
+unsigned int Ac3FrameSize(unsigned int rateCode, unsigned int sizeCode)
+{
+  const unsigned int bitrate = AC3Bitrates[sizeCode >> 1];
+  return 2 * (rateCode == 1 ? 320 * bitrate / 147 + (sizeCode & 1)
+                            : bitrate * (rateCode == 0 ? 2 : 3));
+}
+
+class HeaderBits
+{
+public:
+  HeaderBits(const uint8_t* data, unsigned int limit, unsigned int position = 0)
+    : m_data(data), m_limit(limit), m_position(position)
+  {
+  }
+
+  unsigned int Read(unsigned int count)
+  {
+    if (!Skip(count))
+      return 0;
+
+    unsigned int value = 0;
+    for (unsigned int bit = m_position - count; bit < m_position; ++bit)
+      value = (value << 1) | ((m_data[bit / 8] >> (7 - bit % 8)) & 1);
+    return value;
+  }
+
+  bool Skip(unsigned int count)
+  {
+    if (!Valid() || count > m_limit - m_position)
+    {
+      m_valid = false;
+      return false;
+    }
+    m_position += count;
+    return true;
+  }
+
+  void SkipOptional(unsigned int count)
+  {
+    if (Read(1))
+      Skip(count);
+  }
+
+  unsigned int Position() const { return m_position; }
+  bool Valid() const { return m_valid && m_position <= m_limit; }
+
+private:
+  const uint8_t* m_data;
+  unsigned int m_limit;
+  unsigned int m_position;
+  bool m_valid = true;
+};
+
+void SetHeaderBits(uint8_t* data, unsigned int position, unsigned int count, unsigned int value)
+{
+  for (unsigned int offset = 0; offset < count; ++offset)
+  {
+    const unsigned int bit = position + offset;
+    const unsigned int mask = 1U << (7 - bit % 8);
+    data[bit / 8] = (data[bit / 8] & ~mask) | (((value >> (count - offset - 1)) & 1) * mask);
+  }
+}
+
+uint16_t SwapCrc(uint16_t crc)
+{
+  return (crc >> 8) | (crc << 8);
+}
+
+// AC-3 CRC1 precedes the data it protects. Multiply the residual by the inverse
+// of the distance from CRC1 to the end of the first protected region.
+unsigned int MultiplyAc3Crc(unsigned int a, unsigned int b)
+{
+  unsigned int result = 0;
+  while (a)
+  {
+    if (a & 1)
+      result ^= b;
+    a >>= 1;
+    b <<= 1;
+    if (b & (1 << 16))
+      b ^= AC3_CRC_POLYNOMIAL;
+  }
+  return result;
+}
+
+unsigned int Ac3CrcInverse(unsigned int bits)
+{
+  unsigned int result = 1;
+  unsigned int power = AC3_CRC_POLYNOMIAL >> 1;
+  while (bits)
+  {
+    if (bits & 1)
+      result = MultiplyAc3Crc(result, power);
+    power = MultiplyAc3Crc(power, power);
+    bits >>= 1;
+  }
+  return result;
+}
+
+// Follow the E-AC-3 BSI fields up to addbsi (ETSI TS 102 366, Annex E).
+// Extension type A in addbsi marks JOC even when the container lacks a profile.
+bool ReadEac3Joc(HeaderBits& bits,
+                 unsigned int mode,
+                 bool lfe,
+                 unsigned int rateCode,
+                 unsigned int blocks,
+                 bool converted,
+                 bool& joc)
+{
+  if (bits.Read(1)) // mixmdate
+  {
+    if (mode > 2)
+      bits.Skip(2 + ((mode & 1) ? 6 : 0) + ((mode & 4) ? 6 : 0));
+    if (lfe)
+      bits.SkipOptional(5);
+    if (!converted)
+    {
+      bits.SkipOptional(6); // program scale
+      if (!mode)
+        bits.SkipOptional(6);
+      bits.SkipOptional(6); // external program scale
+      switch (bits.Read(2))
+      {
+        case 1:
+          bits.Skip(5);
+          break;
+        case 2:
+          bits.Skip(12);
+          break;
+        case 3:
+          bits.Skip((bits.Read(5) + 2) * 8);
+          break;
+      }
+      if (mode < 2)
+      {
+        bits.SkipOptional(14);
+        if (!mode)
+          bits.SkipOptional(14);
+      }
+      if (bits.Read(1))
+      {
+        for (unsigned int i = 0; i < blocks; ++i)
+        {
+          if (blocks == 1 || bits.Read(1))
+            bits.Skip(5);
+        }
+      }
+    }
+  }
+  if (bits.Read(1)) // infomdate
+  {
+    bits.Skip(5 + (mode == 2 ? 4 : 0) + (mode >= 6 ? 2 : 0));
+    bits.SkipOptional(8);
+    if (!mode)
+      bits.SkipOptional(8);
+    if (rateCode != 3)
+      bits.Skip(1);
+  }
+  if (!converted && blocks != 6)
+    bits.Skip(1); // convsync
+  if (converted && (blocks == 6 || bits.Read(1)))
+    bits.Skip(6); // frmsizecod
+  if (bits.Read(1))
+  {
+    const unsigned int bytes = bits.Read(6) + 1;
+    const bool extensionA = (bits.Read(8) & 1) != 0;
+    if ((extensionA && bytes < 2) || !bits.Skip((bytes - 1) * 8))
+      return false;
+    joc |= extensionA;
+  }
+  return bits.Valid();
+}
+
+void NeutralizeDolbyDialnorm(uint8_t* frame, unsigned int size, bool knownJoc)
+{
+  // Preserve JOC. Updating the frame CRC does not repair protected Atmos metadata.
+  if (knownJoc || size < 12 || frame[0] != 0x0b || frame[1] != 0x77)
+    return;
+
+  const unsigned int bsid = frame[5] >> 3;
+  if (bsid > 16)
+    return;
+
+  // The parser can coalesce the primary frame with an E-AC-3 dependent frame.
+  // Derive the primary layout and length from its own header.
+  const bool enhanced = bsid > 10;
+  unsigned int primarySize;
+  if (enhanced)
+    primarySize = ((((frame[2] & 7) << 8) | frame[3]) + 1) * 2;
+  else
+  {
+    const unsigned int rateCode = frame[4] >> 6;
+    const unsigned int sizeCode = frame[4] & 63;
+    if (rateCode == 3 || sizeCode > 37)
+      return;
+    primarySize = Ac3FrameSize(rateCode, sizeCode);
+  }
+  if (primarySize < 12 || primarySize != size)
+    return; // A dependent substream can carry Atmos metadata.
+
+
+  const unsigned int mode = enhanced ? (frame[4] >> 1) & 7 : frame[6] >> 5;
+  unsigned int first = 45;
+  if (!enhanced)
+    first = 52 + ((mode & 1) && mode != 1 ? 2 : 0) + (mode & 4 ? 2 : 0) +
+            (mode == 2 ? 2 : 0);
+
+  HeaderBits bits(frame, (size - 2) * 8, first);
+  const unsigned int firstValue = bits.Read(5);
+  bits.SkipOptional(8); // compre and compr
+  if (!enhanced)
+  {
+    bits.SkipOptional(8); // langcode and langcod
+    bits.SkipOptional(7); // audprodie, mixlevel and roomtyp
+  }
+  const unsigned int second = bits.Position();
+  const unsigned int secondValue = mode ? 31 : bits.Read(5);
+  if (!mode && enhanced)
+    bits.SkipOptional(8);
+  if (!bits.Valid() || (firstValue == 31 && secondValue == 31))
+    return;
+
+  if (enhanced)
+  {
+    const unsigned int streamType = frame[2] >> 6;
+    const unsigned int substream = (frame[2] >> 3) & 7;
+    const unsigned int rateCode = frame[4] >> 6;
+    const unsigned int code = (frame[4] >> 4) & 3;
+    if ((streamType != 0 && streamType != 2) || substream ||
+        (rateCode == 3 && code == 3))
+      return;
+    bool joc = false;
+    if (!ReadEac3Joc(bits, mode, (frame[4] & 1) != 0, rateCode,
+                     rateCode == 3 ? 6 : AC3BlkCod[code], streamType == 2, joc) ||
+        joc)
+      return;
+  }
+
+  const AVCRC* table = av_crc_get_table(AV_CRC_16_ANSI);
+  if (av_crc(table, 0, frame + 2, size - 2) != 0)
+    return;
+  const uint8_t original[] = {frame[5], frame[6], frame[7]};
+  SetHeaderBits(frame, first, 5, 31);
+  if (!mode)
+    SetHeaderBits(frame, second, 5, 31);
+
+  if (enhanced)
+  {
+    // Apply the CRC delta to the encoder's stored CRC, as in T4c.
+    const uint8_t delta[] = {static_cast<uint8_t>(original[0] ^ frame[5]),
+                             static_cast<uint8_t>(original[1] ^ frame[6]),
+                             static_cast<uint8_t>(original[2] ^ frame[7])};
+    uint32_t crc = av_crc(table, 0, delta, sizeof(delta));
+    for (unsigned int i = 8; i < size - 2; ++i)
+      crc = table[static_cast<uint8_t>(crc)] ^ (crc >> 8);
+    crc = ((frame[size - 2] << 8) | frame[size - 1]) ^ SwapCrc(crc);
+    if (crc == 0x0b77)
+    {
+      frame[size - 3] ^= 1;
+      crc ^= 0x8005;
+    }
+    frame[size - 2] = crc >> 8;
+    frame[size - 1] = crc & 0xff;
+    return;
+  }
+
+  const unsigned int firstRegion = ((size >> 2) + (size >> 4)) << 1;
+  const uint16_t crc1 = MultiplyAc3Crc(
+      Ac3CrcInverse(firstRegion * 8 - 16),
+      SwapCrc(av_crc(table, 0, frame + 4, firstRegion - 4)));
+  frame[2] = crc1 >> 8;
+  frame[3] = crc1 & 0xff;
+  uint16_t crc2 = SwapCrc(av_crc(table, 0, frame + firstRegion, size - firstRegion - 2));
+  if (crc2 == 0x0b77)
+  {
+    frame[size - 3] ^= 1;
+    crc2 ^= 0x8005;
+  }
+  frame[size - 2] = crc2 >> 8;
+  frame[size - 1] = crc2 & 0xff;
+}
+
+uint16_t DtsHeaderCrc(const uint8_t* data, unsigned int length)
+{
+  uint16_t crc = 0xffff;
+  for (unsigned int i = 0; i < length; ++i)
+  {
+    crc ^= static_cast<uint16_t>(data[i]) << 8;
+    for (unsigned int bit = 0; bit < 8; ++bit)
+      crc = (crc << 1) ^ (crc & 0x8000 ? 0x1021 : 0);
+  }
+  return crc;
+}
+
+void NeutralizeDtsExtension(uint8_t* data, unsigned int size)
+{
+  HeaderBits prefix(data, size * 8);
+  if (prefix.Read(32) != DTS_PREAMBLE_HD)
+    return;
+  prefix.Skip(8);
+  const unsigned int index = prefix.Read(2);
+  const bool wide = prefix.Read(1);
+  const unsigned int frameSizeBits = wide ? 20 : 16;
+  const unsigned int headerSize = prefix.Read(wide ? 12 : 8) + 1;
+  const unsigned int frameSize = prefix.Read(frameSizeBits) + 1;
+  if (!prefix.Valid() || headerSize < 7 || headerSize > frameSize || frameSize != size ||
+      DtsHeaderCrc(data + 5, headerSize - 5) != 0)
+    return;
+
+  HeaderBits bits(data, (headerSize - 2) * 8, prefix.Position());
+  const bool staticFields = bits.Read(1);
+  if (staticFields)
+  {
+    bits.Skip(5); // reference clock and frame duration
+    bits.SkipOptional(36); // timestamp
+    if (bits.Read(3) != 0 || bits.Read(3) != 0)
+      return; // one presentation and one asset
+    const unsigned int mask = bits.Read(index + 1);
+    bits.Skip(std::popcount(mask) * 8);
+    if (bits.Read(1))
+      return; // mixing metadata
+  }
+  bits.Skip(frameSizeBits); // asset size
+  const unsigned int descriptorStart = bits.Position();
+  const unsigned int descriptorSize = bits.Read(9) + 1;
+  const unsigned int descriptorEnd = descriptorStart + descriptorSize * 8;
+  if (descriptorEnd > (headerSize - 2) * 8)
+    return;
+  HeaderBits asset(data, descriptorEnd, bits.Position());
+  asset.Skip(3); // asset index
+  if (staticFields)
+  {
+    asset.SkipOptional(4); // type
+    asset.SkipOptional(24); // language
+    if (asset.Read(1))
+      asset.Skip((asset.Read(10) + 1) * 8); // text
+    asset.Skip(9); // bit depth and maximum sample rate
+    const unsigned int channels = asset.Read(8) + 1;
+    if (asset.Read(1)) // one-to-one channels to speakers
+    {
+      asset.Skip((channels > 2 ? 1 : 0) + (channels > 6 ? 1 : 0));
+      if (asset.Read(1))
+        asset.Skip((asset.Read(2) + 1) * 4); // speaker activity mask
+      if (asset.Read(3))
+        return; // speaker remapping
+    }
+    else
+      asset.Skip(3); // representation type
+  }
+  asset.SkipOptional(8); // DRC
+  if (!asset.Read(1))
+    return;
+  const unsigned int dialnorm = asset.Position();
+  if (!asset.Read(5) || !asset.Valid())
+    return;
+  SetHeaderBits(data, dialnorm, 5, 0);
+  const uint16_t crc = DtsHeaderCrc(data + 5, headerSize - 7);
+  data[headerSize - 2] = crc >> 8;
+  data[headerSize - 1] = crc & 0xff;
+}
+
+void NeutralizeDtsDialnorm(uint8_t* data, unsigned int size)
+{
+  if (size < 16)
+    return;
+  HeaderBits bits(data, size * 8);
+  if (bits.Read(32) != DTS_PREAMBLE_16BE)
+    return;
+  bits.Skip(6);
+  const bool crcPresent = bits.Read(1);
+  bits.Skip(7);
+  const unsigned int coreSize = bits.Read(14) + 1;
+  if (coreSize < 16 || coreSize > size)
+    return;
+
+  // The core DNG can be changed only when the core header has no CRC.
+  if (!crcPresent)
+  {
+    bits.Skip(15 + 5 + 8 + 12);
+    SetHeaderBits(data, bits.Position(), 4, 0);
+  }
+  if (coreSize < size)
+    NeutralizeDtsExtension(data + coreSize, size - coreSize);
+}
+} // namespace
+
+void CAEStreamParser::NeutralizeTrueHdDialnorm(uint8_t* data, unsigned int size)
+{
+  if (size < 36 || data[4] != 0xf8 || data[5] != 0x72 || data[6] != 0x6f ||
+      data[7] != 0xba || !(data[21] & 0x80) || !(data[29] & 1) || !(data[30] >> 4))
+    return;
+
+  const unsigned int majorEnd = 34 + 2 * (data[30] >> 4);
+  if (majorEnd > size || (((data[0] & 15U) << 8) | data[1]) * 2 != size ||
+      ((data[30] & 15) == 15 && (data[31] & 0x80)))
+    return;
+
+  const auto majorCrc = [this, data, majorEnd]()
+  {
+    return av_crc(m_crcTrueHD, 0, data + 4, majorEnd - 8) ^
+           ((data[majorEnd - 3] << 8) | data[majorEnd - 4]);
+  };
+  if (majorCrc() != static_cast<unsigned int>((data[majorEnd - 1] << 8) | data[majorEnd - 2]))
+    return;
+
+  data[30] |= 15;
+  data[31] |= 0x80;
+  const uint16_t crc = majorCrc();
+  data[majorEnd - 2] = crc & 0xff;
+  data[majorEnd - 1] = crc >> 8;
+}
+
 void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
 {
   // if the caller wants the packet
@@ -227,6 +644,16 @@ void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
 
     // copy the data into the buffer and update the size
     memcpy(*buffer, m_buffer, size);
+    if (m_dolbyDialnorm &&
+        (m_info.m_type == CAEStreamInfo::STREAM_TYPE_AC3 ||
+         m_info.m_type == CAEStreamInfo::STREAM_TYPE_EAC3))
+      NeutralizeDolbyDialnorm(*buffer, size, m_knownJoc);
+    else if (m_trueHdDialnorm && m_info.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
+      NeutralizeTrueHdDialnorm(*buffer, size);
+    else if (m_dtsDialnorm && m_info.m_type >= CAEStreamInfo::STREAM_TYPE_DTS_512 &&
+             (m_info.m_type <= CAEStreamInfo::STREAM_TYPE_DTSHD_CORE ||
+              m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD_MA))
+      NeutralizeDtsDialnorm(*buffer, size);
     if (bufferSize)
       *bufferSize = size;
   }
@@ -336,20 +763,7 @@ bool CAEStreamParser::TrySyncAC3(uint8_t* data,
       return false;
 
     // get the details we need to check crc1 and framesize
-    unsigned int bitRate = AC3Bitrates[frmsizecod >> 1];
-    unsigned int framesize = 0;
-    switch (fscod)
-    {
-      case 0:
-        framesize = bitRate * 2;
-        break;
-      case 1:
-        framesize = (320 * bitRate / 147 + (frmsizecod & 1 ? 1 : 0));
-        break;
-      case 2:
-        framesize = bitRate * 4;
-        break;
-    }
+    const unsigned int framesize = Ac3FrameSize(fscod, frmsizecod) / 2;
 
     m_fsize = framesize << 1;
     m_info.m_sampleRate = AC3FSCod[fscod];

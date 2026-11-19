@@ -57,6 +57,13 @@ public:
 
   int AddData(uint8_t *data, unsigned int size, uint8_t **buffer = NULL, unsigned int *bufferSize = 0);
 
+  void SetDialnorm(bool dolby, bool knownJoc, bool trueHd, bool dts)
+  {
+    m_dolbyDialnorm = dolby;
+    m_knownJoc = knownJoc;
+    m_trueHdDialnorm = trueHd;
+    m_dtsDialnorm = dts;
+  }
   void SetCoreOnly(bool value) { m_coreOnly = value; }
   unsigned int IsValid() const { return m_hasSync; }
   unsigned int GetSampleRate() const { return m_info.m_sampleRate; }
@@ -90,6 +97,12 @@ private:
   int m_substreams = 0;       /* used for TrueHD  */
   AVCRC m_crcTrueHD[1024];  /* TrueHD crc table */
 
+  bool m_dolbyDialnorm = false;
+  bool m_knownJoc = false;
+  bool m_trueHdDialnorm = false;
+  bool m_dtsDialnorm = false;
+
+  void NeutralizeTrueHdDialnorm(uint8_t* data, unsigned int size);
   void GetPacket(uint8_t **buffer, unsigned int *bufferSize);
   unsigned int DetectType(uint8_t *data, unsigned int size);
   bool TrySyncAC3(uint8_t *data, unsigned int size, bool resyncing, bool wantEAC3dependent);
