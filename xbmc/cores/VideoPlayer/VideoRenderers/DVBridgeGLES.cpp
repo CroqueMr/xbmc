@@ -203,7 +203,7 @@ ESCALINGMETHOD OutputScalingMethod(const CDVBridgeGLES::Layer& layer,
                 geometry.placement[3] - geometry.placement[1]))
     return layer.scalingMethod;
   const int method = Get(mode != DVBRIDGE_MODE_SDR, layer.scalingMethod);
-  if (method == VS_SCALINGMETHOD_FSR1 || UsesShaderHooks(method))
+  if (method == VS_SCALINGMETHOD_FSR1_RCAS || UsesShaderHooks(method))
     return layer.scalingMethod;
   if (method == VS_SCALINGMETHOD_AUTO)
     return layer.autoScalingMethod;
@@ -303,11 +303,26 @@ private:
       std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> shader;
       if (m_method == VS_SCALINGMETHOD_NEAREST || m_method == VS_SCALINGMETHOD_LINEAR)
         shader = std::make_unique<Shaders::GLES::DefaultFilterShader>();
+      else if (m_method == VS_SCALINGMETHOD_FSR1)
+        shader = std::make_unique<Shaders::GLES::FSR1FilterShader>();
       else
         shader = std::make_unique<Shaders::GLES::ConvolutionFilterShader>(m_method, false);
-      if (!shader->CompileAndLink()) return false;
-      m_shader = std::move(shader);
-      m_compiledMethod = m_method;
+      if (m_method == VS_SCALINGMETHOD_FSR1 && !shader->CompileAndLink())
+      {
+        m_method = VS_SCALINGMETHOD_LINEAR;
+        shader = std::make_unique<Shaders::GLES::DefaultFilterShader>();
+      }
+      else if (m_method == VS_SCALINGMETHOD_FSR1)
+      {
+        m_shader = std::move(shader);
+        m_compiledMethod = m_method;
+      }
+      if (shader)
+      {
+        if (!shader->CompileAndLink()) return false;
+        m_shader = std::move(shader);
+        m_compiledMethod = m_method;
+      }
     }
     const int width = target.planes[0].texture->params.w;
     const int height = target.planes[0].texture->params.h;
@@ -356,6 +371,8 @@ private:
         x1, bottom, 0, image.crop.x1 / sw, y1};
     constexpr GLfloat identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     m_shader->SetWidth(sw); m_shader->SetHeight(sh);
+    if (m_method == VS_SCALINGMETHOD_FSR1)
+      static_cast<Shaders::GLES::FSR1FilterShader*>(m_shader.get())->SetInputSize(sw, sh);
     m_shader->SetSourceTexture(0); m_shader->SetAlpha(1);
     m_shader->SetMatrices(identity, identity);
     if (!m_shader->Enable()) return false;

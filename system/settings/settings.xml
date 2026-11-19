@@ -12,7 +12,7 @@
             <option label="16321">4</option><option label="16326">5</option><option label="16330">6</option>
             <option label="16304">7</option><option label="16315">8</option><option label="16305">9</option>
             <option label="16323">17</option><option label="16322">18</option>
-            <option label="41306">19</option>
+            <option label="41306">19</option><option label="41309">22</option>
             <option label="41307">20</option><option label="41308">21</option>
           </options></constraints>
           <control type="list" format="string" />
@@ -26,6 +26,8 @@
             <option label="16321">4</option><option label="16326">5</option><option label="16330">6</option>
             <option label="16304">7</option><option label="16315">8</option><option label="16305">9</option>
             <option label="16323">17</option><option label="16322">18</option>
+            <option label="41306">19</option><option label="41309">22</option>
+            <option label="41307">20</option><option label="41308">21</option>
           </options></constraints>
           <control type="list" format="string" />
         </setting>

@@ -158,6 +158,12 @@ protected:
   // renderers
   void RenderToFBO(int index, int field);
   void RenderFromFBO();
+#ifdef HAVE_DVBRIDGE
+  bool RunRCAS();
+  CFrameBufferObject m_rcasInput;
+  std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> m_rcasShader;
+  int m_rcasWidth{}, m_rcasHeight{};
+#endif
   void RenderSinglePass(int index, int field); // single pass glsl renderer
 
   // hooks for HwDec rendering

@@ -23,6 +23,11 @@ constexpr bool Enlarges(float width, float height, float targetWidth, float targ
 }
 
 int Get(bool hdr, int kodi);
+constexpr bool UsesFSR1(int method)
+{
+  return method == VS_SCALINGMETHOD_FSR1 || method == VS_SCALINGMETHOD_FSR1_RCAS;
+}
+
 constexpr bool UsesShaderHooks(int method)
 {
   return method == VS_SCALINGMETHOD_FSRCNNX || method == VS_SCALINGMETHOD_ANIME4K;
@@ -47,6 +52,7 @@ constexpr int Label(int method)
     case VS_SCALINGMETHOD_SPLINE36_FAST: return 16323; // Spline36 Fast
     case VS_SCALINGMETHOD_SPLINE36: return 16322; // Spline36
     case VS_SCALINGMETHOD_FSR1: return 41306;
+    case VS_SCALINGMETHOD_FSR1_RCAS: return 41309;
     case VS_SCALINGMETHOD_FSRCNNX: return 41307;
     case VS_SCALINGMETHOD_ANIME4K: return 41308;
     default: return 0;

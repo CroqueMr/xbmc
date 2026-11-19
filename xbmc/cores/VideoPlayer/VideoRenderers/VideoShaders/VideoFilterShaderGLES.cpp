@@ -252,9 +252,9 @@ void ConvolutionFilterShader::Free()
   BaseVideoFilterShader::Free();
 }
 
-FSR1FilterShader::FSR1FilterShader()
+FSR1FilterShader::FSR1FilterShader(bool rcas)
 {
-  PixelShader()->LoadSource("gles_fsr1_easu.frag", OutputDefines());
+  PixelShader()->LoadSource(rcas ? "gles_fsr1_rcas.frag" : "gles_fsr1_easu.frag", OutputDefines());
 }
 
 void FSR1FilterShader::OnCompiledAndLinked()

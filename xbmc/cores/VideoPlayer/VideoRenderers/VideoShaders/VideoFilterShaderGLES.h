@@ -109,7 +109,7 @@ protected:
   class FSR1FilterShader : public BaseVideoFilterShader
   {
   public:
-    FSR1FilterShader();
+    explicit FSR1FilterShader(bool rcas = false);
     void OnCompiledAndLinked() override;
     bool OnEnabled() override;
     bool GetTextureFilter(GLint& filter) override { filter = GL_NEAREST; return true; }

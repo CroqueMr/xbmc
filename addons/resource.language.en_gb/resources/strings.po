@@ -26757,3 +26757,7 @@ msgstr ""
 msgctxt "#41308"
 msgid "Anime4K Fast"
 msgstr ""
+
+msgctxt "#41309"
+msgid "FSR 1 (EASU + RCAS)"
+msgstr ""
