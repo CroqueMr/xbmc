@@ -37,9 +37,11 @@
 #include "threads/IRunnable.h"
 #include <algorithm>
 #include <cstdio>
+#include <string_view>
 
 namespace
 {
+bool ShowLldvFormatMenu(bool forCircuit = false);
 struct Choice { int output,method,label; };
 constexpr Choice dvChoices[]={{4,0,40913},{0,0,40812},
     {5,0,40914},
@@ -289,9 +291,24 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
     if (selected<0 || selected>=count) return true;
     // Admission may change during the dialog's nested event loop.
     if (!settingsMenu && SourceType()!=nativeSource) return true;
-    CSettingConditions::DVOutputOptions(choiceSetting,options);
-    for(const auto& [name,value] : options[selected].properties)
-      if (name=="disabled" && value.asBoolean()) return true;
+    auto& selectedOption = options[selected];
+    const auto refreshChoice = [&] {
+      selectedOption.properties.clear();
+      CSettingConditions::DVOutputOptions(choiceSetting, options);
+    };
+    const auto has = [&](std::string_view name) {
+      return std::ranges::any_of(selectedOption.properties, [name](const auto& property) {
+        return property.first == name && property.second.asBoolean();
+      });
+    };
+    refreshChoice();
+    if (has("disabled")) return true;
+    if (has("cb1ChooseLldv"))
+    {
+      if (!ShowLldvFormatMenu(true) || (!settingsMenu && SourceType()!=nativeSource)) return true;
+      refreshChoice();
+      if (has("disabled") || has("cb1ChooseLldv")) return true;
+    }
     const auto& choice=choices[selected];
     bool reprime = false;
     {
@@ -407,7 +424,7 @@ void ShowSDRGamutMenu()
     settings->Save();
 }
 
-void ShowLldvFormatMenu()
+bool ShowLldvFormatMenu(bool forCircuit)
 {
   using namespace DVBRIDGE;
   const auto status = ReadLldvConnector();
@@ -415,11 +432,10 @@ void ShowLldvFormatMenu()
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   auto* dialog = CServiceBroker::GetGUI()->GetWindowManager().GetWindow<CGUIDialogSelect>(WINDOW_DIALOG_SELECT);
   if (!dialog)
-    return;
+    return false;
 
   const bool usableTiming = status.currentTiming || status.availableTiming;
-  const auto preferred =
-      ChooseLldvFormat(status.sink, status.driverFormats, usableTiming, status.forced42210);
+  const auto preferred = ChooseLldvFormat(status.sink, status.driverFormats & LLDV_422, usableTiming);
   const auto requiresForcing = [&status](LldvFormat format) {
     return LldvRequiresForcing(format, status.driverFormats, status.forced42210);
   };
@@ -431,10 +447,12 @@ void ShowLldvFormatMenu()
   dialog->SetUseDetails(!estuary);
   dialog->EnableButton(!estuary, 41320);
 
-  const int summary = LldvUnavailableLabel(status, 0, true);
+  const int summary = LldvUnavailableLabel(status, saved, true);
+  const bool chooseFormat = summary && (!LldvUnavailableLabel(status, 0, true) ||
+      !LldvUnavailableLabel(status, LLDV_FORCE_422_10, true));
   std::string summaryText = strings.Get(summary ? 41322 : 41321);
   if (summary)
-    summaryText += '\n' + strings.Get(summary);
+    summaryText += '\n' + strings.Get(chooseFormat ? LLDV_CHOOSE_FORMAT_LABEL : summary);
   dialog->SetProperty("CB1.LldvStatus", summaryText);
 
   std::string details, labels, values;
@@ -475,9 +493,10 @@ void ShowLldvFormatMenu()
   for (int i = 0; i <= static_cast<int>(LldvFormat::Y444_12); ++i)
   {
     const auto format = static_cast<LldvFormat>(i);
-    const int reason = LldvUnavailableLabel(status, i, true);
-    const bool disabled = format != LldvFormat::Auto && reason != 0;
     const bool forced = requiresForcing(format);
+    const int reason = LldvUnavailableLabel(status, forced ? LLDV_FORCE_422_10 : i, true);
+    const bool disabled = reason != 0 &&
+        (format != LldvFormat::Auto || forCircuit || status.active != LldvFormat::Auto);
     const auto label = strings.Get(LldvFormatLabel(format, !estuary && forced));
     CFileItem item(disabled ? "[COLOR grey]" + label + "[/COLOR]" : label);
     item.SetProperty("disabled", disabled);
@@ -503,19 +522,24 @@ void ShowLldvFormatMenu()
     }
     dialog->Add(item);
   }
-  dialog->SetSelected(saved);
+  dialog->SetSelected(static_cast<int>(LldvFormatPreference(saved)));
   dialog->Open();
   for (const char* key : {"CB1.LldvStatus", "CB1.LldvDetails", "CB1.LldvDetailLabels",
                           "CB1.LldvDetailValues"})
     dialog->SetProperty(key, CVariant{});
   const auto current = ReadLldvConnector();
   const int choice = dialog->GetSelectedItem();
-  if (dialog->IsConfirmed() && choice >= 0 && choice <= static_cast<int>(LldvFormat::Y444_12) &&
-      (choice == static_cast<int>(LldvFormat::Auto) ||
-       (current.connectorId == status.connectorId && current.edidGeneration == status.edidGeneration &&
-        !LldvUnavailableLabel(current, choice, true))) &&
-      settings->SetInt("dvbridge.lldvformatvalue", choice))
-    settings->Save();
+  if (!dialog->IsConfirmed() || choice < 0 || choice > static_cast<int>(LldvFormat::Y444_12))
+    return false;
+  const auto format = static_cast<LldvFormat>(choice);
+  const int preference = requiresForcing(format) ? LLDV_FORCE_422_10 : choice;
+  if ((current.connectorId != status.connectorId || current.edidGeneration != status.edidGeneration) ||
+      ((format != LldvFormat::Auto || forCircuit || current.active != LldvFormat::Auto) &&
+       LldvUnavailableLabel(current, preference, current.active == LldvFormat::Auto)) ||
+      !settings->SetInt("dvbridge.lldvformatvalue", preference))
+    return false;
+  settings->Save();
+  return true;
 }
 } // namespace
 

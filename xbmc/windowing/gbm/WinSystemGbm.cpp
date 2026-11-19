@@ -13,7 +13,6 @@
 #include "ServiceBroker.h"
 #include "VideoSyncGbm.h"
 
-#include <fstream>
 #include "cores/VideoPlayer/VideoReferenceClock.h"
 #include "drm/DRMAtomic.h"
 #ifdef HAVE_DVBRIDGE
@@ -213,15 +212,6 @@ bool CWinSystemGbm::InitWindowSystem()
     std::vector<uint8_t> edid = connector->GetEDID();
 #ifdef HAVE_DVBRIDGE
     std::lock_guard lock(m_lldvEdidMutex);
-    m_lldvAmdDriverDisabled = false;
-    if (auto* version = drmGetVersion(m_DRM->GetFileDescriptor()))
-    {
-      char enabled{};
-      if (version->name && std::string_view(version->name) == "amdgpu" &&
-          (std::ifstream("/sys/module/amdgpu/parameters/dv_lldv") >> enabled))
-        m_lldvAmdDriverDisabled = enabled == 'N';
-      drmFreeVersion(version);
-    }
     m_lldvEdid = edid;
     m_lldvDisplay = DVBRIDGE::ReadLldvDisplay(edid.data(), edid.size());
     m_lldvEdidConnector = *connector->GetConnectorId();
@@ -1758,8 +1748,6 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
         status.edidGeneration == m_lldvRejected.edidGeneration)
       status.rejected = m_lldvRejected.format;
     status.sink = status.display.sink;
-    status.amdDriverDisabled = m_lldvAmdDriverDisabled && connector->GetType() == "HDMI-A" &&
-                               !connector->SupportsProperty("CB1_LLDV_FORMAT");
   }
   if (status.connectorId && connector->SupportsProperty("CB1_LLDV_FORMAT"))
   {

@@ -1930,16 +1930,19 @@ DVBRIDGE::OutputCapabilities CWinSystemGbmGLESContext::GetDVOutputCapabilities(
   std::lock_guard lock(m_dvCapabilityMutex);
   auto caps = m_dvCapabilities;
   caps.hdr10MaxBpc = m_hdr10MaxBpc.load();
-  caps.playerLed = DVBRIDGE::SelectLldvTransport(m_dvLldvStatus,
-      preferences.lldvFormat, allowModeSwitch).connectorId != 0;
+  const auto lldvTransport = DVBRIDGE::SelectLldvTransport(m_dvLldvStatus,
+      preferences.lldvFormat, allowModeSwitch);
+  caps.playerLed = lldvTransport.connectorId != 0;
   caps.lldvDisplay = m_dvLldvStatus.display;
   caps.lldvEdidGeneration = m_dvLldvStatus.edidGeneration;
-  caps.lldvRgb10Scanout = DVBRIDGE::LldvFormatPreference(preferences.lldvFormat) !=
-      DVBRIDGE::LldvFormat::Y422_12 && m_dvLldvStatus.rgb10Scanout;
+  caps.lldvRgb10Scanout = lldvTransport.rgb10Scanout;
   caps.lldvUnavailableLabel = DVBRIDGE::LldvUnavailableLabel(m_dvLldvStatus,
       preferences.lldvFormat, allowModeSwitch);
   if (allowModeSwitch)
   {
+    if (!caps.playerLed && (!DVBRIDGE::LldvUnavailableLabel(m_dvLldvStatus, 0, true) ||
+        !DVBRIDGE::LldvUnavailableLabel(m_dvLldvStatus, DVBRIDGE::LLDV_FORCE_422_10, true)))
+      caps.lldvUnavailableLabel = DVBRIDGE::LLDV_CHOOSE_FORMAT_LABEL;
     caps.nativeDV = m_dvAvailableNativeDV;
     caps.hdr10 = m_dvAvailableHDR10;
   }
