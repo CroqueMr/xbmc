@@ -498,7 +498,7 @@ bool ShowLldvFormatMenu(bool forCircuit)
   dialog->SetProperty("CB1.LldvDetails", details);
   dialog->SetProperty("CB1.LldvDetailLabels", labels);
   dialog->SetProperty("CB1.LldvDetailValues", values);
-  for (int i = 0; i <= static_cast<int>(LldvFormat::Rgb10); ++i)
+  for (int i = 0; i <= static_cast<int>(LldvFormat::Y444_12); ++i)
   {
     const auto format = static_cast<LldvFormat>(i);
     const bool forced = requiresForcing(format);
@@ -535,14 +535,14 @@ bool ShowLldvFormatMenu(bool forCircuit)
     dialog->Add(item);
   }
   const auto selected = LldvFormatPreference(saved);
-  dialog->SetSelected(selected <= LldvFormat::Rgb10 ? static_cast<int>(selected) : 0);
+  dialog->SetSelected(selected <= LldvFormat::Y444_12 ? static_cast<int>(selected) : 0);
   dialog->Open();
   for (const char* key : {"CB1.LldvStatus", "CB1.LldvDetails", "CB1.LldvDetailLabels",
                           "CB1.LldvDetailValues"})
     dialog->SetProperty(key, CVariant{});
   const auto current = ReadLldvConnector();
   const int choice = dialog->GetSelectedItem();
-  if (!dialog->IsConfirmed() || choice < 0 || choice > static_cast<int>(LldvFormat::Rgb10))
+  if (!dialog->IsConfirmed() || choice < 0 || choice > static_cast<int>(LldvFormat::Y444_12))
     return false;
   const auto format = static_cast<LldvFormat>(choice);
   const int preference = preferenceFor(format);

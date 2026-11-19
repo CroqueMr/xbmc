@@ -1672,20 +1672,15 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
   if (!packed.connectorId || packed.connectorId != status.connectorId ||
       packed.edidGeneration != status.edidGeneration || status.display.status != LldvEdidStatus::Ready ||
       !(LldvBit(packed.format) & LLDV_IMPLEMENTED) ||
-      (packed.format == LldvFormat::Rgb10 && packed.rgbScanoutBits != 10) ||
-      (packed.rgbScanoutBits == 10 && packed.format != LldvFormat::Rgb10 &&
-       (!status.rgb10Scanout || packed.forced)) ||
-      (packed.rgbScanoutBits == 16 && (!status.rgb16Scanout || packed.format != LldvFormat::Y422_12)) ||
-      (packed.forced && (packed.format != LldvFormat::Y422_10 || !status.forced42210)) ||
+      packed.rgbScanoutBits != LldvScanoutBits(status, packed.format) ||
+      packed.forced != LldvRequiresForcing(packed.format, status.driverFormats, status.forced42210) ||
       (packed.format == LldvFormat::Y422_12 && (status.packed42212 || status.rgb16Scanout) &&
        !dvbridge_lldv_422_12(status.sink)) ||
       LldvFormatReason(status.sink, packed.format, status.driverFormats,
                        status.currentTiming, packed.forced) != LldvReason::Ready)
     return reject();
 
-  const char* name = packed.format == LldvFormat::Rgb10 ? "RGB 10 bits RGB10" :
-      packed.rgbScanoutBits == 16 ? "YCbCr 4:2:2 12 bits RGB16" :
-      packed.rgbScanoutBits == 10 ? "YCbCr 4:2:2 10 bits RGB10 lab" :
+  const char* name = packed.rgbScanoutBits > 8 ? LldvNativeEnumName(packed.format) :
       packed.forced ? "YCbCr 4:2:2 10 bits forced" :
       packed.format == LldvFormat::Y422_10 ? "YCbCr 4:2:2 10 useful bits" :
       status.packed42212 ? "YCbCr 4:2:2 12 bits packed" : "YCbCr 4:2:2 12 bits";
@@ -1760,29 +1755,60 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
   }
   if (status.connectorId && connector->SupportsProperty("CB1_LLDV_FORMAT"))
   {
+    using namespace DVBRIDGE;
     const auto native10 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 useful bits");
     const auto output12 = connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 12 bits");
     const auto packed12 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 12 bits packed");
-    const auto rgb16 =
-        connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 12 bits RGB16");
-    status.rgb16Scanout = rgb16.has_value() && HasLldvRgb16Scanout();
-    status.packed42212 = packed12.has_value() && !status.rgb16Scanout && !output12;
-    const auto rgb10 = connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 bits RGB10 lab");
-    status.rgb10Scanout = rgb10.has_value() && HasLldvRgb10Scanout() &&
-        (!connector->SupportsProperty("CB1_NATIVE_LLDV_422") ||
-         connector->ReadPropertyValue("CB1_NATIVE_LLDV_422") == 1);
-    const auto nativeRgb10 = connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "RGB 10 bits RGB10");
-    if (nativeRgb10 && HasLldvRgb10Scanout())
-      status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Rgb10);
     const auto forced10 =
         connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", "YCbCr 4:2:2 10 bits forced");
-    if (native10 || status.rgb10Scanout)
-      status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_10);
-    if (output12 || status.packed42212 || status.rgb16Scanout)
-      status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_12);
+    const bool exactFormats = connector->SupportsProperty("CB1_NATIVE_LLDV_FORMATS");
+    const uint64_t nativeFormats = exactFormats ?
+        connector->ReadPropertyValue("CB1_NATIVE_LLDV_FORMATS").value_or(0) : 0;
+    const bool native422 = !connector->SupportsProperty("CB1_NATIVE_LLDV_422") ||
+        connector->ReadPropertyValue("CB1_NATIVE_LLDV_422") == 1;
+    const auto active = connector->ReadPropertyValue("CB1_LLDV_FORMAT");
+
+    for (const auto format : LLDV_PREFERRED)
+    {
+      const auto value = connector->GetPropertyEnumValue("CB1_LLDV_FORMAT", LldvNativeEnumName(format));
+      if (!value)
+        continue;
+      const bool tenBits = LldvUses10Bits(format);
+      const bool capable = exactFormats ? *value < 64 && (nativeFormats & (uint64_t{1} << *value)) :
+          format == LldvFormat::Y422_10 ? native422 :
+          format == LldvFormat::Y422_12 || format == LldvFormat::Rgb10;
+      if (capable && (tenBits ? HasLldvRgb10Scanout() : HasLldvRgb16Scanout()))
+      {
+        status.driverFormats |= LldvBit(format);
+        if (format == LldvFormat::Y422_10) status.rgb10Scanout = true;
+        if (format == LldvFormat::Y422_12) status.rgb16Scanout = true;
+      }
+      if (active == value &&
+          ((format != LldvFormat::Y422_12 &&
+            !connector->SupportsProperty("CB1_NATIVE_LLDV_ACTIVE")) ||
+           connector->ReadPropertyValue("CB1_NATIVE_LLDV_ACTIVE") == (exactFormats ? *value : 1)))
+      {
+        status.active = format;
+        status.activeRgbScanoutBits = tenBits ? 10 : 16;
+      }
+    }
+
+    status.packed42212 = packed12.has_value() && !status.rgb16Scanout && !output12;
+    if (native10) status.driverFormats |= LldvBit(LldvFormat::Y422_10);
+    if (output12 || status.packed42212) status.driverFormats |= LldvBit(LldvFormat::Y422_12);
     status.forced42210 = forced10.has_value();
+
+    if (active && active == native10)
+      status.active = LldvFormat::Y422_10;
+    else if (active && (active == output12 || active == packed12))
+      status.active = LldvFormat::Y422_12;
+    else if (active && active == forced10)
+    {
+      status.active = LldvFormat::Y422_10;
+      status.activeForced = true;
+    }
     status.cta93FractionalOnly =
         connector->GetPropertyValue("CB1_LLDV_CTA93_23976_ONLY").value_or(0);
     const auto usable = [cta93FractionalOnly = status.cta93FractionalOnly](const drmModeModeInfo* mode) {
@@ -1806,36 +1832,6 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
     const auto* atomic = dynamic_cast<const CDRMAtomic*>(m_DRM.get());
     status.timingCommitted = status.currentTiming && atomic && atomic->IsActive() &&
                              !atomic->HasPendingCB1Page() && atomic->IsSelectedModeCommitted();
-    const auto active = connector->ReadPropertyValue("CB1_LLDV_FORMAT");
-    if (active && (active == native10 || active == rgb10))
-    {
-      if (active != rgb10 || !connector->SupportsProperty("CB1_NATIVE_LLDV_ACTIVE") ||
-          connector->ReadPropertyValue("CB1_NATIVE_LLDV_ACTIVE") == 1)
-      {
-        status.active = DVBRIDGE::LldvFormat::Y422_10;
-        status.activeRgbScanoutBits = active == rgb10 ? 10 : 8;
-      }
-    }
-    else if (active && active == rgb16)
-    {
-      if (connector->ReadPropertyValue("CB1_NATIVE_LLDV_ACTIVE") == 1)
-      {
-        status.active = DVBRIDGE::LldvFormat::Y422_12;
-        status.activeRgbScanoutBits = 16;
-      }
-    }
-    else if (active && (active == output12 || active == packed12))
-      status.active = DVBRIDGE::LldvFormat::Y422_12;
-    else if (active && active == nativeRgb10)
-    {
-      status.active = DVBRIDGE::LldvFormat::Rgb10;
-      status.activeRgbScanoutBits = 10;
-    }
-    else if (active && active == forced10)
-    {
-      status.active = DVBRIDGE::LldvFormat::Y422_10;
-      status.activeForced = true;
-    }
   }
   return status;
 }

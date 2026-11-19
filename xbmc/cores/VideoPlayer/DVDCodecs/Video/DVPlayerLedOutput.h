@@ -32,6 +32,10 @@ inline std::optional<StreamSnapshot::Output> PlayerLedOutput(
     return {};
 
   using Trims = VideoProcessingInfo::PlayerLed;
+  const bool y422 = (LldvBit(format) & LLDV_422) != 0;
+  const auto encoding = y422 ? Trims::Encoding::YCbCr422 :
+      (format == LldvFormat::Rgb10 || format == LldvFormat::Rgb12) ? Trims::Encoding::RGB :
+      Trims::Encoding::YCbCr444;
   constexpr unsigned l2 = 1u << 2, l8 = 1u << 8;
   const unsigned family = plan.applied_levels & l8 ? l8 : plan.applied_levels & l2;
   unsigned groups = 0;
@@ -67,7 +71,7 @@ inline std::optional<StreamSnapshot::Output> PlayerLedOutput(
   output.gamut = plan.policy.tv.gamut;
   output.displayBlack = plan.policy.expert_black_nits;
   output.bits = LldvUses10Bits(format) ? 10 : 12;
-  output.minimumLinkBits = format == LldvFormat::Rgb10 ? 10 : 12;
+  output.minimumLinkBits = y422 ? 12 : output.bits;
   output.creativeKnown = true;
   output.creativeApplied = (plan.applied_levels & ~(l2 | l8)) | (groups ? family : 0);
   output.creativeStatus = plan.status;
@@ -76,7 +80,7 @@ inline std::optional<StreamSnapshot::Output> PlayerLedOutput(
   output.lldv = Trims{{plan.analysis[1], plan.analysis[2]}, groups,
                       plan.cmv40_status == CB1_CMV40_APPEND, plan.policy.lldv_edid_version,
                       connector.display.primaries,
-                      connector.display.reported, connector.activeForced, format == LldvFormat::Rgb10};
+                      connector.display.reported, connector.activeForced, encoding};
   return output;
 }
 } // namespace DVBRIDGE

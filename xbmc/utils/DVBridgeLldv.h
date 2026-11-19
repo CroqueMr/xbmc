@@ -191,10 +191,27 @@ constexpr unsigned LldvBit(LldvFormat format)
 }
 
 constexpr unsigned LLDV_422 = LldvBit(LldvFormat::Y422_10) | LldvBit(LldvFormat::Y422_12);
-constexpr unsigned LLDV_IMPLEMENTED = LLDV_422 | LldvBit(LldvFormat::Rgb10);
+constexpr unsigned LLDV_IMPLEMENTED = LLDV_422 |
+    LldvBit(LldvFormat::Rgb10) | LldvBit(LldvFormat::Rgb12) |
+    LldvBit(LldvFormat::Y444_10) | LldvBit(LldvFormat::Y444_12);
 constexpr LldvFormat LLDV_PREFERRED[] = {LldvFormat::Y422_10, LldvFormat::Rgb10,
                                         LldvFormat::Y444_10, LldvFormat::Y422_12,
                                         LldvFormat::Rgb12, LldvFormat::Y444_12};
+
+constexpr const char* LldvNativeEnumName(LldvFormat format)
+{
+  switch (format)
+  {
+    case LldvFormat::Y422_10: return "YCbCr 4:2:2 10 bits RGB10 lab";
+    case LldvFormat::Y422_12: return "YCbCr 4:2:2 12 bits RGB16";
+    case LldvFormat::Rgb10: return "RGB 10 bits RGB10";
+    case LldvFormat::Rgb12: return "RGB 12 bits RGB16";
+    case LldvFormat::Y444_10: return "YCbCr 4:4:4 10 bits RGB10";
+    case LldvFormat::Y444_12: return "YCbCr 4:4:4 12 bits RGB16";
+    case LldvFormat::Auto: return nullptr;
+  }
+  return nullptr;
+}
 
 constexpr bool LldvUses10Bits(LldvFormat format)
 {
@@ -264,6 +281,15 @@ struct LldvConnectorStatus
   bool rgb16Scanout{};
 };
 
+inline unsigned LldvScanoutBits(const LldvConnectorStatus& status, LldvFormat format)
+{
+  if (format == LldvFormat::Y422_10)
+    return status.rgb10Scanout ? 10 : 8;
+  if (format == LldvFormat::Y422_12)
+    return status.rgb16Scanout ? 16 : 8;
+  return LldvUses10Bits(format) ? 10 : 16;
+}
+
 inline unsigned LldvAutomaticFormats(const LldvConnectorStatus& status)
 {
   const unsigned formats = status.driverFormats & LLDV_IMPLEMENTED;
@@ -314,14 +340,9 @@ inline LldvTransport SelectLldvTransport(const LldvConnectorStatus& status, int 
     format = ChooseLldvFormat(status.sink, LldvAutomaticFormats(status), timing);
   if (LldvUnavailableLabel(status, preference, allowModeSwitch) || !(LldvBit(format) & LLDV_IMPLEMENTED))
     return {};
-  unsigned scanoutBits = 8;
-  if (format == LldvFormat::Rgb10 || (status.rgb10Scanout && format == LldvFormat::Y422_10))
-    scanoutBits = 10;
-  else if (status.rgb16Scanout && format == LldvFormat::Y422_12)
-    scanoutBits = 16;
   return {status.connectorId, format,
           LldvRequiresForcing(format, status.driverFormats, status.forced42210), status.edidGeneration,
-          scanoutBits};
+          LldvScanoutBits(status, format)};
 }
 
 inline const char* LldvCompatibilityReason(const LldvConnectorStatus& status, int preference)
