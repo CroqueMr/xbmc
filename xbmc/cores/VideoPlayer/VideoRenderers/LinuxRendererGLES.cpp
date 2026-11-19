@@ -436,6 +436,16 @@ bool CLinuxRendererGLES::ConfigureVideoOutput(const VideoPicture& picture)
   return true;
 }
 
+#ifdef CB1_HAS_HDR10_AI
+void CLinuxRendererGLES::PreserveHDR10AIOutputOnReconfigure(const VideoPicture& picture)
+{
+  // Growing the software analysis queue must keep native HLG until the DV frame is ready.
+  m_preserveHLGOutput = picture.hdrType == StreamHdrType::HDR_TYPE_HLG &&
+      m_passthroughHDR && !m_dvRequested && picture.videoBuffer->GetFormat() == m_format &&
+      SoftwareHDR10AIBufferCount(picture, m_fps, m_renderOrientation) > m_softwareAIBuffers;
+}
+#endif
+
 bool CLinuxRendererGLES::ConfigChanged(const VideoPicture &picture)
 {
   if (picture.videoBuffer->GetFormat() != m_format)
@@ -1431,6 +1441,9 @@ void CLinuxRendererGLES::UnInit()
   if (m_bConfigured)
   {
     m_hdrFboActive = false;
+#ifdef CB1_HAS_HDR10_AI
+    outputStopped |= m_preserveHLGOutput;
+#endif
     if (!outputStopped)
     {
       CServiceBroker::GetWinSystem()->SetGuiCompositing(false);

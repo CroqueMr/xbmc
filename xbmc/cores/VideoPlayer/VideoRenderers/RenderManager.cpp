@@ -162,6 +162,10 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
 
   {
     std::unique_lock lock(m_statelock);
+#ifdef CB1_HAS_HDR10_AI
+    m_aiSameInputReconfigure = m_renderState == STATE_CONFIGURED &&
+        m_picture.IsSameParams(picture) && m_orientation == orientation && m_NumberBuffers == buffers;
+#endif
     m_picture.SetParams(picture);
     m_nativeDVRate = false;
 #ifdef HAVE_DVBRIDGE
@@ -208,7 +212,13 @@ bool CRenderManager::Configure()
                               : DVHandoff::None;
 #endif
   if (m_pRenderer)
+  {
+#ifdef CB1_HAS_HDR10_AI
+    if (m_aiSameInputReconfigure)
+      m_pRenderer->PreserveHDR10AIOutputOnReconfigure(*m_pConfigPicture);
+#endif
     DeleteRenderer();
+  }
 
   CreateRenderer();
   if (m_pRenderer)

@@ -107,6 +107,7 @@ public:
   // Render info, can be called before configure
   virtual CRenderInfo GetRenderInfo() { return CRenderInfo(); }
 #ifdef CB1_HAS_HDR10_AI
+  virtual void PreserveHDR10AIOutputOnReconfigure(const VideoPicture&) {}
   virtual bool HDR10AIQueueEligible() const { return false; }
   virtual bool HDR10AILookahead() const { return false; }
   virtual bool HDR10AIFramePending() const { return false; }
