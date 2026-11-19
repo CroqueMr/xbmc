@@ -4728,6 +4728,10 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   std::shared_ptr<CDVDInputStream::IMenus> pMenus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
   if(pMenus && pMenus->IsInMenu())
     hint.stills = true;
+#ifdef HAVE_DVBRIDGE
+  if (pMenus && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+    hint.codecOptions |= CODEC_BLURAY_NAVIGATION;
+#endif
 
   if (hint.stereo_mode.empty())
   {
