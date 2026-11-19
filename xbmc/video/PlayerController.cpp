@@ -53,6 +53,27 @@ extern "C"
 using namespace KODI;
 using namespace UTILS;
 
+namespace
+{
+//! "save" and "step" from SubtitleShiftUp/Down(save,step): keep the position, move one step.
+bool HasShiftOption(const CAction& action, const std::string& option)
+{
+  const auto options = StringUtils::Split(action.GetText(), ',');
+  return std::find(options.begin(), options.end(), option) != options.end();
+}
+
+//! A shift with "step" moves the text one thirty-second of the GUI height at once; a held key
+//! still accelerates from one pixel.
+int SubtitleShiftDistance(const CAction& action,
+                          KODI::UTILS::MOVING_SPEED::CMovingSpeed& speed,
+                          const RESOLUTION_INFO& resInfo)
+{
+  if (HasShiftOption(action, "step"))
+    return std::max(1, resInfo.iHeight / 32);
+  return static_cast<int>(speed.GetUpdatedDistance(action.GetID()));
+}
+} // namespace
+
 #ifdef HAVE_DVBRIDGE
 namespace
 {
@@ -460,12 +481,11 @@ bool CPlayerController::OnAction(const CAction &action)
                                                          settings->GetVerticalMarginPerc());
         }
 
-        vs.m_subtitleVerticalPosition -=
-            static_cast<int>(m_movingSpeed.GetUpdatedDistance(ACTION_SUBTITLE_VSHIFT_UP));
+        vs.m_subtitleVerticalPosition -= SubtitleShiftDistance(action, m_movingSpeed, resInfo);
         if (vs.m_subtitleVerticalPosition < resInfo.Overscan.top)
           vs.m_subtitleVerticalPosition = resInfo.Overscan.top;
         appPlayer->SetSubtitleVerticalPosition(vs.m_subtitleVerticalPosition,
-                                               action.GetText() == "save");
+                                               HasShiftOption(action, "save"));
 
         ShowSlider(action.GetID(), 277, static_cast<float>(vs.m_subtitleVerticalPosition),
                    static_cast<float>(resInfo.Overscan.top), 1.0f, static_cast<float>(maxPos));
@@ -503,12 +523,11 @@ bool CPlayerController::OnAction(const CAction &action)
                                                          settings->GetVerticalMarginPerc());
         }
 
-        vs.m_subtitleVerticalPosition +=
-            static_cast<int>(m_movingSpeed.GetUpdatedDistance(ACTION_SUBTITLE_VSHIFT_DOWN));
+        vs.m_subtitleVerticalPosition += SubtitleShiftDistance(action, m_movingSpeed, resInfo);
         if (vs.m_subtitleVerticalPosition > maxPos)
           vs.m_subtitleVerticalPosition = maxPos;
         appPlayer->SetSubtitleVerticalPosition(vs.m_subtitleVerticalPosition,
-                                               action.GetText() == "save");
+                                               HasShiftOption(action, "save"));
 
         ShowSlider(action.GetID(), 277, static_cast<float>(vs.m_subtitleVerticalPosition),
                    static_cast<float>(resInfo.Overscan.top), 1.0f, static_cast<float>(maxPos));
