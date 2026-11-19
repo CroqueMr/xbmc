@@ -1616,6 +1616,12 @@ void CRenderManager::PrepareNextRender()
     m_dvdClock.SetVsyncAdjust(0);
   }
 
+#ifdef CB1_HAS_HDR10_AI
+  // The clock and output latency may still belong to the old picture.
+  // The first selection must use the head whose lookahead is ready.
+  if (priming) renderPts = m_Queue[m_queued.front()].pts;
+#endif
+
   CLog::LogFC(LOGDEBUG, LOGAVTIMING,
               "frameOnScreen: {:f} renderPts: {:f} nextFramePts: {:f} -> diff: {:f}  render: {} "
               "forceNext: {}",
