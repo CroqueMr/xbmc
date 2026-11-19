@@ -466,6 +466,9 @@ public:
   */
   bool ContentLookup() const { return m_doContentLookup; }
 
+  //! An explicitly requested background open of a resolved HTTP(S) media stream.
+  bool IsBackgroundHttpPlayback() const;
+
   /*!
    \brief (Re)set the mime-type for internet files if allowed (m_doContentLookup)
    Some sources do not support HTTP HEAD request to determine i.e. mime type

@@ -61,6 +61,7 @@ protected:
   void UpdateVisibility(const CGUIListItem *item = NULL) override;
   bool UpdateColors(const CGUIListItem* item) override;
   void UpdateInfo(const CGUIListItem *item = NULL) override;
+  CRect CalcRenderRegion() const override;
   void UpdatePageControl();
   void ScrollToOffset(int offset, bool autoScroll = false);
   unsigned int GetRows() const;

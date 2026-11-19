@@ -680,6 +680,9 @@ bool CSystemGUIInfo::GetBool(bool& value,
     case SYSTEM_SUPPORTS_CPU_USAGE:
       value = CServiceBroker::GetCPUInfo()->SupportsCPUUsage();
       return true;
+    case SYSTEM_SUPPORTS_BLUR_FONT: // a skin can fall back where fonts have no blur style
+      value = true;
+      return true;
     case SYSTEM_GET_BOOL:
       value = CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(info.GetData3());
       return true;

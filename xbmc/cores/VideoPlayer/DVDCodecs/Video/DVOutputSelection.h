@@ -57,6 +57,25 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return result;
   auto policy = preferences.Policy();
   result.policy=policy;
+  if (preferences.hdr10TransportFallback)
+  {
+    if (caps.HDR10DepthLimited())
+      return {OutputRoute::Vanilla, policy, OutputReason::HDR10LinkDepthTooLow};
+    if (!caps.hdr10)
+      return {OutputRoute::Vanilla, policy, OutputReason::NoHDR10Transport};
+    auto hdr10 = preferences;
+    hdr10.output = OutputMode::HDR10;
+    hdr10.method = 0;
+    policy = hdr10.Policy();
+    if (!caps.processingKnown)
+      return {OutputRoute::Vanilla, policy, OutputReason::ProcessingPending};
+    const auto& admission = caps.processing[policy.mode];
+    if (!admission.usable)
+      return {OutputRoute::Vanilla, policy, admission.reason != OutputReason::None ?
+          admission.reason : OutputReason::NoGPUProcessing};
+    return {OutputRoute::HDR10, policy, preferences.output == OutputMode::PlayerLed ?
+        OutputReason::NoPlayerLedTransport : OutputReason::NoDVTransport};
+  }
   if (policy.mode == DVBRIDGE_MODE_PLAYER_LED)
   {
     if (!caps.playerLed) result.reason = OutputReason::NoPlayerLedTransport;

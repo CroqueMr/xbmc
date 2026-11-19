@@ -194,14 +194,16 @@ CGUIFont* GUIFontManager::LoadTTF(const std::string& strFontName,
   }
 
   // check if we already have this font file loaded (font object could differ only by color or style)
-  const std::string fontIdent =
-      StringUtils::Format("{}_{:f}_{:f}{}", strFilename, newSize, aspect, border ? "_border" : "");
+  // a blurred font caches its own, larger glyphs
+  const bool blur = (iStyle & FONT_STYLE_BLUR) != 0;
+  const std::string fontIdent = StringUtils::Format(
+      "{}_{:f}_{:f}{}{}", strFilename, newSize, aspect, border ? "_border" : "", blur ? "_blur" : "");
 
   CGUIFontTTF* pFontFile = GetFontFile(fontIdent);
   if (!pFontFile)
   {
     pFontFile = CGUIFontTTF::CreateGUIFontTTF(fontIdent);
-    bool bFontLoaded = pFontFile->Load(strPath, newSize, aspect, 1.0f, border);
+    bool bFontLoaded = pFontFile->Load(strPath, newSize, aspect, 1.0f, border, blur);
 
     if (!bFontLoaded)
     {
@@ -237,6 +239,7 @@ CGUIFont* GUIFontManager::LoadTTF(const std::string& strFontName,
   fontInfo.sourceRes = *sourceRes;
   fontInfo.preserveAspect = preserveAspect;
   fontInfo.border = border;
+  fontInfo.blur = blur;
   m_vecFontInfo.emplace_back(fontInfo);
 
   return pNewFont;
@@ -295,13 +298,15 @@ void GUIFontManager::ReloadTTFFonts(void)
     RescaleFontSizeAndAspect(winSystem->GetGfxContext(), &newSize, &aspect, fontInfo.sourceRes,
                              fontInfo.preserveAspect);
 
-    const std::string fontIdent = StringUtils::Format("{}_{:f}_{:f}{}", strFilename, newSize,
-                                                      aspect, fontInfo.border ? "_border" : "");
+    const std::string fontIdent =
+        StringUtils::Format("{}_{:f}_{:f}{}{}", strFilename, newSize, aspect,
+                            fontInfo.border ? "_border" : "", fontInfo.blur ? "_blur" : "");
     CGUIFontTTF* pFontFile = GetFontFile(fontIdent);
     if (!pFontFile)
     {
       pFontFile = CGUIFontTTF::CreateGUIFontTTF(fontIdent);
-      if (!pFontFile || !pFontFile->Load(strPath, newSize, aspect, 1.0f, fontInfo.border))
+      if (!pFontFile ||
+          !pFontFile->Load(strPath, newSize, aspect, 1.0f, fontInfo.border, fontInfo.blur))
       {
         delete pFontFile;
         // This font could not be re-rasterised, but the rest still can. It
@@ -633,6 +638,8 @@ void GUIFontManager::GetStyle(const TiXmlNode* fontNode, int& iStyle)
         iStyle |= FONT_STYLE_CAPITALIZE;
       else if (i == "lighten")
         iStyle |= FONT_STYLE_LIGHT;
+      else if (i == "blur")
+        iStyle |= FONT_STYLE_BLUR;
     }
   }
 }

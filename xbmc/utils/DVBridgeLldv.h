@@ -171,8 +171,13 @@ inline LldvDisplay ReadLldvDisplay(const uint8_t* edid, size_t size)
 enum class LldvFormat { Auto, Y422_10, Y422_12, Rgb10, Rgb12, Y444_10, Y444_12 };
 enum class LldvReason { Ready, Edid, Display, Driver, Timing };
 
+constexpr int LLDV_FORCE_422_10 = 7; // Saved choice, not an HDMI format or DRM enum.
+constexpr int LLDV_CHOOSE_FORMAT_LABEL = 41340;
+
 constexpr LldvFormat LldvFormatPreference(int value)
 {
+  if (value == LLDV_FORCE_422_10)
+    return LldvFormat::Y422_10;
   return value >= 0 && value <= static_cast<int>(LldvFormat::Y444_12)
              ? static_cast<LldvFormat>(value) : LldvFormat::Auto;
 }
@@ -216,15 +221,12 @@ inline LldvReason LldvFormatReason(dvbridge_sink_caps sink, LldvFormat format,
 }
 
 inline LldvFormat ChooseLldvFormat(dvbridge_sink_caps sink, unsigned driverFormats,
-                                  bool currentTiming, bool forced42210 = false)
+                                  bool currentTiming)
 {
-  const bool readyForced = LldvRequiresForcing(LldvFormat::Y422_10, driverFormats, forced42210) &&
-      LldvFormatReason(sink, LldvFormat::Y422_10, driverFormats, currentTiming, true) ==
-          LldvReason::Ready;
   for (const auto format : LLDV_PREFERRED)
     if (LldvFormatReason(sink, format, driverFormats, currentTiming) == LldvReason::Ready)
-      return readyForced && !LldvUses10Bits(format) ? LldvFormat::Y422_10 : format;
-  return readyForced ? LldvFormat::Y422_10 : LldvFormat::Auto;
+      return format;
+  return LldvFormat::Auto;
 }
 
 // The connector and transport used to pack a particular framebuffer.
@@ -253,7 +255,6 @@ struct LldvConnectorStatus
   LldvDisplay display;
   uint64_t edidGeneration{};
   LldvFormat rejected{LldvFormat::Auto};
-  bool amdDriverDisabled{};
 };
 
 inline int LldvUnavailableLabel(const LldvConnectorStatus& status, int preference,
@@ -262,14 +263,13 @@ inline int LldvUnavailableLabel(const LldvConnectorStatus& status, int preferenc
   if (status.display.status != LldvEdidStatus::Ready)
     return status.display.status == LldvEdidStatus::UnsupportedGamut ? 41300 :
         41280 + static_cast<int>(status.display.status);
-  if (status.amdDriverDisabled) return 41333;
   if (!status.connectorId || (!status.driverFormats && !status.forced42210)) return 41211;
   auto format = LldvFormatPreference(preference);
   if (format == LldvFormat::Auto)
-    format = ChooseLldvFormat(status.sink, status.driverFormats & LLDV_422, true, status.forced42210);
+    format = ChooseLldvFormat(status.sink, status.driverFormats & LLDV_422, true);
   if (format == LldvFormat::Auto) return 41213;
   const auto reason = LldvFormatReason(status.sink, format, status.driverFormats, true,
-                                        status.forced42210);
+      preference == LLDV_FORCE_422_10 && status.forced42210);
   if (reason != LldvReason::Ready) return 41208 + static_cast<int>(reason);
   if (!(LldvBit(format) & LLDV_422)) return 41211;
   if (!(status.currentTiming || (allowModeSwitch && status.availableTiming))) return 41212;
@@ -282,7 +282,7 @@ inline LldvTransport SelectLldvTransport(const LldvConnectorStatus& status, int 
   const bool timing = status.currentTiming || (allowModeSwitch && status.availableTiming);
   auto format = LldvFormatPreference(preference);
   if (format == LldvFormat::Auto)
-    format = ChooseLldvFormat(status.sink, status.driverFormats & LLDV_422, timing, status.forced42210);
+    format = ChooseLldvFormat(status.sink, status.driverFormats & LLDV_422, timing);
   if (LldvUnavailableLabel(status, preference, allowModeSwitch) || !(LldvBit(format) & LLDV_422))
     return {};
   return {status.connectorId, format,
@@ -299,7 +299,6 @@ inline const char* LldvCompatibilityReason(const LldvConnectorStatus& status, in
     case 41210: return "format-not-advertised-by-tv";
     case 41211: return "format-not-supported-by-driver-or-port";
     case 41212: return "hdmi-timing-unavailable";
-    case 41333: return "ll-dv-disabled-by-amdgpu";
     default: return "no-common-format";
   }
 }

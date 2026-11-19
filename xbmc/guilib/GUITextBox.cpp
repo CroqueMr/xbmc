@@ -197,6 +197,17 @@ void CGUITextBox::Process(unsigned int currentTime, CDirtyRegionList &dirtyregio
     CServiceBroker::GetWinSystem()->GetGfxContext().RemoveTransform();
 }
 
+CRect CGUITextBox::CalcRenderRegion() const
+{
+  CRect region = CGUIControl::CalcRenderRegion();
+  const CPoint padding = m_font ? m_font->GetRenderPadding() : CPoint{};
+  region.x1 -= padding.x;
+  region.y1 -= padding.y;
+  region.x2 += padding.x;
+  region.y2 += padding.y;
+  return region;
+}
+
 void CGUITextBox::Render()
 {
   if (CServiceBroker::GetWinSystem()->GetGfxContext().GetRenderOrder() ==
@@ -207,7 +218,9 @@ void CGUITextBox::Render()
   if (m_autoScrollRepeatAnim)
     CServiceBroker::GetWinSystem()->GetGfxContext().SetTransform(m_cachedTextMatrix);
 
-  if (CServiceBroker::GetWinSystem()->GetGfxContext().SetClipRegion(m_posX, m_posY, m_width, m_renderHeight))
+  const CRect clip = CalcRenderRegion();
+  if (CServiceBroker::GetWinSystem()->GetGfxContext().SetClipRegion(
+          clip.x1, clip.y1, clip.Width(), clip.Height()))
   {
     // we offset our draw position to take into account scrolling and whether or not our focused
     // item is offscreen "above" the list.

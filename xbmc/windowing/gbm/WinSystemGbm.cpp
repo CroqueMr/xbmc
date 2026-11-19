@@ -13,7 +13,6 @@
 #include "ServiceBroker.h"
 #include "VideoSyncGbm.h"
 
-#include <fstream>
 #include "cores/VideoPlayer/VideoReferenceClock.h"
 #include "drm/DRMAtomic.h"
 #ifdef HAVE_DVBRIDGE
@@ -213,15 +212,6 @@ bool CWinSystemGbm::InitWindowSystem()
     std::vector<uint8_t> edid = connector->GetEDID();
 #ifdef HAVE_DVBRIDGE
     std::lock_guard lock(m_lldvEdidMutex);
-    m_lldvAmdDriverDisabled = false;
-    if (auto* version = drmGetVersion(m_DRM->GetFileDescriptor()))
-    {
-      char enabled{};
-      if (version->name && std::string_view(version->name) == "amdgpu" &&
-          (std::ifstream("/sys/module/amdgpu/parameters/dv_lldv") >> enabled))
-        m_lldvAmdDriverDisabled = enabled == 'N';
-      drmFreeVersion(version);
-    }
     m_lldvEdid = edid;
     m_lldvDisplay = DVBRIDGE::ReadLldvDisplay(edid.data(), edid.size());
     m_lldvEdidConnector = *connector->GetConnectorId();
@@ -1304,7 +1294,7 @@ bool CWinSystemGbm::SetVideoOutput(const VideoPicture* videoPicture)
                       : m_DRM->FindGuiPlane(current->GetFormat(), current->GetModifier());
 }
 
-void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture)
+void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture, bool sdrToBT709)
 {
   m_queuedColorspace.reset();
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
@@ -1323,7 +1313,13 @@ void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture)
   KODI::UTILS::Colorimetry colorimetry = KODI::UTILS::Colorimetry::DEFAULT;
 
   if (videoPicture)
+  {
     colorimetry = KODI::UTILS::GetColorimetry(*videoPicture);
+    if (sdrToBT709 && videoPicture->hdrType == StreamHdrType::HDR_TYPE_NONE &&
+        videoPicture->color_transfer != AVCOL_TRC_SMPTE2084 &&
+        videoPicture->color_transfer != AVCOL_TRC_ARIB_STD_B67)
+      colorimetry = KODI::UTILS::Colorimetry::BT709_YCC;
+  }
 
   m_colorimetry = colorimetry;
 
@@ -1758,8 +1754,6 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
         status.edidGeneration == m_lldvRejected.edidGeneration)
       status.rejected = m_lldvRejected.format;
     status.sink = status.display.sink;
-    status.amdDriverDisabled = m_lldvAmdDriverDisabled && connector->GetType() == "HDMI-A" &&
-                               !connector->SupportsProperty("CB1_LLDV_FORMAT");
   }
   if (status.connectorId && connector->SupportsProperty("CB1_LLDV_FORMAT"))
   {
