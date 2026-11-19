@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -524,6 +525,8 @@ protected:
   bool OpenInputStream();
   bool OpenDemuxStream();
   void CloseDemuxer();
+  void ProcessBdjPresentation();
+  void ResetBdjPresentation();
   void OpenDefaultStreams(bool reset = true);
   void UpdateHasVideoAudio();
 
@@ -589,6 +592,13 @@ protected:
 
   CCurrentStream m_CurrentAudio;
   CCurrentStream m_CurrentVideo;
+  struct BdjPresentationEvent
+  {
+    double pts;
+    uint32_t seq;
+  };
+  std::deque<BdjPresentationEvent> m_bdjPresentationEvents;
+  bool m_bdjDraining{false};
   CCurrentStream m_CurrentSubtitle;
   CCurrentStream m_CurrentTeletext;
   CCurrentStream m_CurrentRadioRDS;

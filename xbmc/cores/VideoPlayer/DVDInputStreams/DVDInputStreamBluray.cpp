@@ -432,6 +432,9 @@ bool CDVDInputStreamBluray::Open()
     bd_register_argb_overlay_proc (m_bd, this, bluray_overlay_argb_cb, nullptr);
 #endif
 
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+    bd_bdj_set_presentation_timing(m_bd, 1);
+#endif
     if(bd_play(m_bd) <= 0)
     {
       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed play disk {}",
@@ -624,6 +627,10 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
   case BD_EVENT_END_OF_TITLE:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_END_OF_TITLE {}", m_event.param);
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+    m_bdjWaitingForPlaylist = IsBdjTitle();
+    m_bdjEndSequence = m_bdjWaitingForPlaylist ? bd_bdj_pending_seq(m_bd) : 0;
+#endif
     /* when a title ends, playlist WILL eventually change */
     FreeTitleInfo();
     break;
@@ -653,6 +660,10 @@ void CDVDInputStreamBluray::ProcessEvent() {
   }
   case BD_EVENT_PLAYLIST:
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYLIST {}", m_event.param);
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+    m_bdjWaitingForPlaylist = false;
+    m_bdjEndSequence = 0;
+#endif
     m_playlist = m_event.param;
     FreeTitleInfo();
     m_titleInfo = bd_get_playlist_info(m_bd, m_playlist, m_angle);
@@ -742,6 +753,14 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
 
   case BD_EVENT_PLAYLIST_STOP:
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+    if (IsBdjTitle())
+    {
+      m_bdjPlaylistJump = !m_bdjWaitingForPlaylist;
+      m_hold = HOLD_HELD;
+      break;
+    }
+#endif
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYLIST_STOP: flush buffers");
     m_player->OnDiscNavResult(nullptr, BD_EVENT_PLAYLIST_STOP);
     break;
@@ -836,6 +855,69 @@ bool CDVDInputStreamBluray::HoldEvent()
   return false;
 }
 
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+bool CDVDInputStreamBluray::IsBdjTitle() const
+{
+  return m_navmode && m_title && m_title->bdj;
+}
+
+void CDVDInputStreamBluray::StampBdjPending()
+{
+  if (!IsBdjTitle())
+    return;
+  uint32_t seq = bd_bdj_pending_seq(m_bd);
+  if (seq && seq != m_bdjStampedSeq)
+  {
+    m_bdjStampedSeq = seq;
+    m_player->OnDiscNavResult(&seq, BD_EVENT_BDJ_PRESENTATION_STAMP);
+  }
+}
+
+void CDVDInputStreamBluray::PollBdjEvents()
+{
+  if (!IsBdjTitle() || (m_hold != HOLD_NONE && m_hold != HOLD_DATA))
+    return;
+
+  for (unsigned i = 0; i < 64 && bd_get_event(m_bd, &m_event); ++i)
+  {
+    if (HoldEvent())
+      return;
+    ProcessEvent();
+    if (m_hold != HOLD_NONE && m_hold != HOLD_DATA)
+      return;
+  }
+}
+
+void CDVDInputStreamBluray::ReleaseBdjEvents(uint32_t seq)
+{
+  bd_bdj_release(m_bd, seq);
+}
+
+void CDVDInputStreamBluray::ReleaseBdjEnd()
+{
+  if (m_bdjEndSequence)
+  {
+    bd_bdj_release(m_bd, m_bdjEndSequence);
+    m_bdjEndSequence = 0;
+  }
+}
+
+void CDVDInputStreamBluray::ResetBdjPresentation()
+{
+  if (IsBdjTitle())
+    bd_bdj_release_all(m_bd);
+  m_bdjStampedSeq = 0;
+  m_bdjEndSequence = 0;
+}
+
+bool CDVDInputStreamBluray::TakeBdjPlaylistJump()
+{
+  const bool jump = m_bdjPlaylistJump;
+  m_bdjPlaylistJump = false;
+  return jump;
+}
+#endif
+
 int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
 {
   int result = 0;
@@ -851,6 +933,10 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         || m_hold == HOLD_EXIT)
         return -1;
 
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+      if (m_bdjWaitingForPlaylist)
+        return 0;
+#endif
       result = bd_read_ext (m_bd, buf, buf_size, &m_event);
 
       if(result < 0)
@@ -859,6 +945,9 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         return result;
       }
 
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+      StampBdjPending();
+#endif
       if (HoldEvent())
         return result;
 
@@ -866,7 +955,10 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         m_hold = HOLD_NONE;
 
       ProcessEvent();
-
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+      if (m_bdjWaitingForPlaylist || m_hold == HOLD_HELD)
+        return result;
+#endif
     } while(result == 0);
 
   }
@@ -1610,6 +1702,10 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
       return NEXTSTREAM_NONE;
   }
 
+#if defined(BD_BDJ_PRESENTATION_TIMING)
+  if (m_bdjWaitingForPlaylist)
+    return NEXTSTREAM_RETRY;
+#endif
   if(m_hold == HOLD_STILL)
     return NEXTSTREAM_RETRY;
 
