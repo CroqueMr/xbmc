@@ -58,6 +58,7 @@ public:
   AVChromaLocation chroma_position;
   AVColorPrimaries color_primaries; // heuristics applied when original is AVCOL_PRI_UNSPECIFIED
   AVColorPrimaries m_originalColorPrimaries;
+  bool colorPrimariesGuessed = false; // color_primaries came from those heuristics
   AVColorTransferCharacteristic color_transfer;
   unsigned int colorBits = 8;
   std::string stereoMode;

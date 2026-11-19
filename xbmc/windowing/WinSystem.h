@@ -20,6 +20,7 @@
 #include "utils/HDRCapabilities.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -83,6 +84,8 @@ public:
   //! \brief Bits per color channel of the presented output.
   virtual int GetOutputBitDepth() const { return 8; }
   virtual bool HasFloatOutput() const { return false; }
+  // No value means this backend does not report Blu-ray PSR23 display capability.
+  virtual std::optional<uint32_t> GetBluray3DDisplayCapabilities() const { return std::nullopt; }
   virtual bool MoveWindow(int topLeft, int topRight){return false;}
   virtual void FinishModeChange(RESOLUTION res){}
   virtual void FinishWindowResize(int newWidth, int newHeight) {ResizeWindow(newWidth, newHeight, -1, -1);}

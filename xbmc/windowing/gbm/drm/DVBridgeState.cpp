@@ -136,6 +136,8 @@ bool CDVBridgeState::Capture(CDRMAtomic& drm, uint64_t ownVsif, bool legacyVsif)
                 setting.required,setting.blob,setting.enumeration))
         return false;
   }
+  if (!Read(drm,changes,connector,"color format",0,false,false,"RGB"))
+    return false;
   const Setting neutral[] = {
     {crtc,"CTM",0,false,true},{crtc,"GAMMA_LUT",0,false,true},
     {crtc,"DEGAMMA_LUT",0,false,true},{crtc,"VRR_ENABLED",0,false,false},
@@ -168,6 +170,31 @@ bool CDVBridgeState::Capture(CDRMAtomic& drm, uint64_t ownVsif, bool legacyVsif)
     return false;
   m_changes = std::move(changes);m_owner = &drm;m_backend = backend;
   return true;
+}
+
+bool CDVBridgeState::CaptureColorPreferences(CDRMAtomic& drm,
+                                              std::optional<uint64_t> defaultMaxBpc)
+{
+  if (Captured()) return m_owner == &drm;
+  auto* connector = drm.GetConnector();
+  if (!connector) return Reject("connector");
+  std::vector<Change> changes;
+  if (!Read(drm,changes,connector,"Broadcast RGB",0,false,false,"Full") ||
+      !Read(drm,changes,connector,"color format",0,false,false,"RGB") ||
+      !Read(drm,changes,connector,"max bpc",
+            defaultMaxBpc.value_or(connector->GetPropertyValue("max bpc").value_or(0)),
+            false,false,nullptr))
+    return false;
+  m_changes = std::move(changes);
+  m_owner = &drm;
+  return true;
+}
+
+std::optional<uint64_t> CDVBridgeState::Before(const char* name) const
+{
+  for (const auto& change : m_changes)
+    if (change.name == name) return change.before;
+  return std::nullopt;
 }
 
 bool CDVBridgeState::Stage(CDRMAtomic& drm, bool restore)
