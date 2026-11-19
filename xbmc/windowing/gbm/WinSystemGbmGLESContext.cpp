@@ -31,6 +31,7 @@
 #include "cores/VideoPlayer/VideoRenderers/RenderFactory.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
+#include "messaging/ApplicationMessenger.h"
 #include "rendering/gles/GuiCompositeShaderGLES.h"
 #include "rendering/gles/ScreenshotSurfaceGLES.h"
 
@@ -399,6 +400,9 @@ bool CWinSystemGbmGLESContext::Show(bool raise)
 
 bool CWinSystemGbmGLESContext::BeginRender()
 {
+#ifdef CB1_HAS_HDR10_AI
+  m_hdr10HandoffPicture.reset();
+#endif
   // A prepared picture already includes its GUI; wait before drawing it again.
   if (m_cb1FramePending && m_dvFrame)
   {
@@ -671,7 +675,15 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 
   if (rendered || videoLayer)
   {
+#ifdef CB1_HAS_HDR10_AI
+    if (m_hdr10HandoffPending &&
+        (!rendered || !m_hdr10HandoffPicture || m_hdr10HandoffFailures >= 3))
+      return; // Keep the outgoing framebuffer while only the GUI is ready.
+#endif
     bool async = !videoLayer && m_eglFence;
+#ifdef CB1_HAS_HDR10_AI
+    async = async && !m_hdr10HandoffPending;
+#endif
     if (rendered)
     {
       if (GetGfxContext().GetStereoMode() == RenderStereoMode::SPLIT_HORIZONTAL)
@@ -732,6 +744,25 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     AnnounceCB1Mode(false);
     StageNativeHDR10Plus(CServiceBroker::GetGUI()->GetWindowManager().HasVisibleControls() ||
         CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>()->HasVisibleOverlay());
+#endif
+#ifdef CB1_HAS_HDR10_AI
+    if (m_hdr10HandoffPending)
+    {
+      const bool accepted = PresentHDR10Handoff(*m_hdr10HandoffPicture);
+      CompleteCB1Mode(accepted, false);
+      if (accepted)
+      {
+        m_hdr10HandoffPending = false;
+        PublishVideoSource(true, m_videoSourceSideData);
+      }
+      else if (++m_hdr10HandoffFailures == 3)
+      {
+        CLog::Log(LOGERROR, "HDR10 handoff rejected, stopping playback");
+        CServiceBroker::GetAppMessenger()->PostMsg(TMSG_MEDIA_STOP);
+      }
+      CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+      return;
+    }
 #endif
     CWinSystemGbm::FlipPage(rendered, videoLayer, async);
 #ifdef HAVE_DVBRIDGE
@@ -1863,6 +1894,79 @@ DVBRIDGE::OutputSelection CWinSystemGbmGLESContext::SelectedDVOutput(const Video
 #ifndef CB1_L1L3_BUNDLE_DIR
 #define CB1_L1L3_BUNDLE_DIR "/usr/share/cb1/l1l3"
 #endif
+bool CWinSystemGbmGLESContext::CanRetainHDR10Output(const VideoPicture& picture) const
+{
+  return !picture.doviSourceInfo.profile &&
+      picture.stereoMode.empty() && picture.colorBits >= 10 &&
+      picture.colorBits == static_cast<unsigned>(GetOutputBitDepth()) &&
+      !DVBridgeRequested(&picture) && !m_dvBridge && !HasPendingDVOutputSurface() &&
+      !m_dvOrdinaryFrame && !HasPendingDVBridgeRestore() && CanKeepHDR10Signal(picture);
+}
+
+void CWinSystemGbmGLESContext::BeginHDR10Handoff()
+{
+  m_hdr10HandoffPicture.reset();
+  m_hdr10HandoffFailures = 0;
+  m_hdr10HandoffPending = true;
+}
+
+void CWinSystemGbmGLESContext::StageHDR10Handoff(const VideoPicture& picture)
+{
+  if (!m_hdr10HandoffPicture)
+    m_hdr10HandoffPicture = std::make_unique<VideoPicture>();
+  m_hdr10HandoffPicture->SetParams(picture);
+}
+
+bool CWinSystemGbmGLESContext::RetainNativeDVOutput(const VideoPicture& picture)
+{
+  if (!picture.doviSourceInfo.profile || !picture.doviSourceBinding.Valid() ||
+      !picture.stereoMode.empty() || !m_dvBridge || !m_previousSourceStream ||
+      !m_dvState.Captured() || m_dvSelection.route != DVBRIDGE::OutputRoute::NativeDV ||
+      !m_dvConfiguredOutput || m_dvOutputRetiring || m_dvStopPending || m_dvEndPending ||
+      m_dvActivating || m_dvRecoveryPending || m_dvRejectedSurface || m_dvRollbackFailed ||
+      m_dvOrdinaryFrame || m_dvShutdownFence || HasPendingDVOutputSurface())
+    return false;
+
+  const auto preferences = DVBRIDGE::FrameOutputSettings();
+  if (preferences.output != DVBRIDGE::OutputMode::MasterReference ||
+      m_dvSelection.policy.mode != DVBRIDGE_MODE_MASTER_REFERENCE ||
+      m_dvSelection.policy.revision != preferences.revision || !SupportsDVOutputMode())
+    return false;
+
+  const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  if (!drm || !drm->IsSelectedModeCommitted())
+    return false;
+
+  // Only retain the accepted scanout. The successor imports and admits its own BL/EL/RPU.
+  m_dvBridge->Reset();
+  m_cb1FramePending = m_dvFrame = m_dvNativeGui = false;
+  m_dvConfiguredOutput.reset();
+  return true;
+}
+
+bool CWinSystemGbmGLESContext::RetainHDR10DVOutput(const VideoPicture& picture)
+{
+  // Source format and policy can change independently of the current scanout.
+  if (picture.hdrType != StreamHdrType::HDR_TYPE_HDR10 || picture.doviSourceInfo.profile ||
+      !picture.stereoMode.empty() || !picture.doviSourceBinding.Valid() ||
+      !m_dvState.Captured() || m_dvSelection.route != DVBRIDGE::OutputRoute::NativeDV ||
+      m_dvStopPending || m_dvEndPending || m_dvActivating || m_dvRecoveryPending ||
+      m_dvOrdinaryFrame || HasPendingDVOutputSurface() || !HDR10AIFrameCommitted())
+    return false;
+  const auto preferences = DVBRIDGE::FrameOutputSettings();
+  const auto mode = preferences.hdr10Source;
+  if ((mode != DVBRIDGE::HDR10SourceMode::ReferenceDV &&
+       mode != DVBRIDGE::HDR10SourceMode::EnhancedDV) ||
+      !m_dvContext->HDR10AI().Current(m_aiActivation, preferences))
+    return false;
+
+  // Keep the accepted framebuffer and connector state, while resetting
+  // source-dependent renderer history before admitting the next clip.
+  m_dvBridge->Reset();
+  m_cb1FramePending = m_dvFrame = m_dvNativeGui = false;
+  return true;
+}
+
 bool CWinSystemGbmGLESContext::HDR10AILookaheadActive() const
 {
   std::lock_guard lock(m_dvCapabilityMutex);
@@ -2435,6 +2539,10 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
 
 bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
 {
+#ifdef CB1_HAS_HDR10_AI
+  m_hdr10HandoffPending = false;
+  m_hdr10HandoffPicture.reset();
+#endif
   if (picture && DVBRIDGE::DiagnosticsEnabled())
   {
     const auto binding = picture->doviSourceBinding.Valid() ? picture->doviSourceBinding : picture->doviMetadata.Binding();

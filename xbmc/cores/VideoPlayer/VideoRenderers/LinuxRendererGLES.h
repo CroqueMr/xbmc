@@ -93,6 +93,9 @@ public:
 
 protected:
   bool m_frameRendered{false};
+  enum class RetainedOutput { None, NativeDV, HDR10 };
+  bool Configure(const VideoPicture& picture, float fps, unsigned int orientation,
+                 RetainedOutput retainedOutput);
   bool ConfigureVideoOutput(const VideoPicture& picture);
 #ifdef CB1_HAS_HDR10_AI
   bool m_aiOutputPending{false};
@@ -220,6 +223,8 @@ protected:
     AVMasteringDisplayMetadata displayMetadata;
     bool hasLightMetadata{false};
     AVContentLightMetadata lightMetadata;
+    bool hasHDR10LightMetadata{false};
+    StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};
     CDVMetadataBuffer doviMetadata;
 #ifdef HAVE_DVBRIDGE
     std::shared_ptr<AVFrame> doviEnhancement;

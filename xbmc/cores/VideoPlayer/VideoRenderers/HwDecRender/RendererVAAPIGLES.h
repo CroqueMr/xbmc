@@ -42,12 +42,18 @@ public:
   static CBaseRenderer* Create(CVideoBuffer *buffer);
   static void Register(VAAPI::IVaapiWinSystem *winSystem, VADisplay vaDpy, EGLDisplay eglDisplay, bool &general, bool &deepColor);
 
-  bool Configure(const VideoPicture &picture, float fps, unsigned int orientation) override;
+  bool Configure(const VideoPicture& picture, float fps, unsigned int orientation) override;
+  bool Configure(const VideoPicture& picture, float fps, unsigned int orientation,
+                 RetainedOutput retainedOutput);
 
   // Player functions
   bool ConfigChanged(const VideoPicture &picture) override;
 #ifdef CB1_HAS_HDR10_AI
   CRenderInfo GetRenderInfo() override;
+  enum class DVHandoff { None, HDR10AI, Native, HDR10 };
+  DVHandoff RetainDVOutput(const VideoPicture& picture, float fps, unsigned int orientation);
+  bool ConfigureWithHandoff(const VideoPicture& picture, float fps, unsigned int orientation,
+                            DVHandoff handoff);
   bool HDR10AIQueueEligible() const override { return m_aiBuffers > NUM_BUFFERS; }
   bool HDR10AILookahead() const override;
   bool HDR10AIFrameCommitted() const override;

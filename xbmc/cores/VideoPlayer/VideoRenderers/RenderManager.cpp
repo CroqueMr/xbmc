@@ -36,6 +36,9 @@
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/WindowIDs.h"
+#if defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+#include "HwDecRender/RendererVAAPIGLES.h"
+#endif
 #endif
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
@@ -203,20 +206,44 @@ bool CRenderManager::Configure()
   std::unique_lock lock2(m_presentlock);
   std::unique_lock lock3(m_datalock);
 
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+  auto* vaapi = dynamic_cast<CRendererVAAPIGLES*>(m_pRenderer);
+  using DVHandoff = CRendererVAAPIGLES::DVHandoff;
+  const auto retained = vaapi ? vaapi->RetainDVOutput(*m_pConfigPicture, m_fps, m_orientation)
+                              : DVHandoff::None;
+#endif
   if (m_pRenderer)
-  {
     DeleteRenderer();
-  }
 
-  if (!m_pRenderer)
+  CreateRenderer();
+  if (m_pRenderer)
+    m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
+  bool result;
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+  if (retained == DVHandoff::Native || retained == DVHandoff::HDR10)
   {
-    CreateRenderer();
-    if (!m_pRenderer)
-      return false;
+    auto* successor = dynamic_cast<CRendererVAAPIGLES*>(m_pRenderer);
+    result = successor && successor->ConfigureWithHandoff(*m_pConfigPicture, m_fps, m_orientation,
+                                                          retained);
   }
+  else
+#endif
+    result = m_pRenderer && m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
 
-  m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
-  bool result = m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+  if (retained == DVHandoff::HDR10 && !result)
+  {
+    auto* window = CServiceBroker::GetWinSystem();
+    window->SetGuiCompositing(0);
+    window->SetHDR(nullptr);
+    window->SetColorimetry(nullptr);
+    window->SetVideoOutput(nullptr);
+  }
+  else if (retained != DVHandoff::None && !result)
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+            CServiceBroker::GetWinSystem()))
+      window->StopDVBridgePlayback();
+#endif
   if (result)
   {
     CRenderInfo info = m_pRenderer->GetRenderInfo();

@@ -90,6 +90,12 @@ CRendererVAAPIGLES::~CRendererVAAPIGLES()
 
 bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsigned int orientation)
 {
+  return Configure(picture, fps, orientation, RetainedOutput::None);
+}
+
+bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps,
+                                  unsigned int orientation, RetainedOutput retainedOutput)
+{
   CVaapiRenderPicture *pic = dynamic_cast<CVaapiRenderPicture*>(picture.videoBuffer);
   if (pic->procPic.videoSurface != VA_INVALID_ID)
     m_isVAAPIBuffer = true;
@@ -102,6 +108,7 @@ bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsig
       !picture.doviSourceInfo.profile && !(picture.iFlags & DVP_FLAG_INTERLACED) &&
       DVBridgeOrientationSupported(orientation) ? pic->renderBufferCount : NUM_BUFFERS;
   m_aiLookahead=m_aiBuffers>NUM_BUFFERS;
+  SetFps(fps);
 #endif
 
   if (m_isVAAPIBuffer)
@@ -134,7 +141,7 @@ bool CRendererVAAPIGLES::Configure(const VideoPicture& picture, float fps, unsig
     }
   }
 
-  return CLinuxRendererGLES::Configure(picture, fps, orientation);
+  return CLinuxRendererGLES::Configure(picture, fps, orientation, retainedOutput);
 }
 
 #ifdef CB1_HAS_HDR10_AI
@@ -143,6 +150,50 @@ CRenderInfo CRendererVAAPIGLES::GetRenderInfo()
   CRenderInfo info;
   info.max_buffer_size = m_aiBuffers;
   return info;
+}
+
+CRendererVAAPIGLES::DVHandoff CRendererVAAPIGLES::RetainDVOutput(
+    const VideoPicture& picture, float fps, unsigned int orientation)
+{
+  const auto* next = dynamic_cast<const CVaapiRenderPicture*>(picture.videoBuffer);
+  if (!m_isVAAPIBuffer || !next || !next->valid ||
+      next->procPic.videoSurface == VA_INVALID_ID || next->procPic.fourcc != m_vaapiFourcc ||
+      picture.iWidth != m_sourceWidth || picture.iHeight != m_sourceHeight ||
+      picture.colorBits != m_srcColorBits || !DVBridgeOrientationSupported(orientation) ||
+      (picture.iFlags & DVP_FLAG_INTERLACED) || std::abs(fps - m_fps) > 0.001f)
+    return DVHandoff::None;
+
+  auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      CServiceBroker::GetWinSystem());
+  if (!window)
+    return DVHandoff::None;
+
+  if (!m_dvRequested)
+  {
+    if (!m_bConfigured || !m_passthroughHDR ||
+        m_srcFullRange != (picture.color_range == 1) ||
+        m_srcPrimaries != picture.color_primaries || !window->CanRetainHDR10Output(picture))
+      return DVHandoff::None;
+
+    m_bConfigured = false;
+    return DVHandoff::HDR10;
+  }
+
+  const auto handoff = window->RetainNativeDVOutput(picture) ? DVHandoff::Native :
+      m_aiLookahead && next->renderBufferCount > NUM_BUFFERS && window->RetainHDR10DVOutput(picture)
+          ? DVHandoff::HDR10AI : DVHandoff::None;
+  if (handoff != DVHandoff::None)
+    m_dvRequested = m_bConfigured = false; // The successor owns output cleanup.
+  return handoff;
+}
+
+bool CRendererVAAPIGLES::ConfigureWithHandoff(const VideoPicture& picture,
+                                              float fps,
+                                              unsigned int orientation,
+                                              DVHandoff handoff)
+{
+  return Configure(picture, fps, orientation,
+                   handoff == DVHandoff::HDR10 ? RetainedOutput::HDR10 : RetainedOutput::NativeDV);
 }
 
 bool CRendererVAAPIGLES::HDR10AILookahead() const
