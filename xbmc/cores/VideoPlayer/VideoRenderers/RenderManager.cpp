@@ -225,17 +225,26 @@ bool CRenderManager::Configure()
     m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
   bool result;
 #if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
-  if (retained == DVHandoff::Native)
+  if (retained == DVHandoff::Native || retained == DVHandoff::HDR10)
   {
     auto* successor = dynamic_cast<CRendererVAAPIGLES*>(m_pRenderer);
-    result = successor && successor->Configure(*m_pConfigPicture, m_fps, m_orientation, true);
+    result = successor && successor->ConfigureWithHandoff(*m_pConfigPicture, m_fps, m_orientation,
+                                                          retained);
   }
   else
 #endif
     result = m_pRenderer && m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
 
 #if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
-  if (retained != DVHandoff::None && !result)
+  if (retained == DVHandoff::HDR10 && !result)
+  {
+    auto* window = CServiceBroker::GetWinSystem();
+    window->SetGuiCompositing(0);
+    window->SetHDR(nullptr);
+    window->SetColorimetry(nullptr);
+    window->SetVideoOutput(nullptr);
+  }
+  else if (retained != DVHandoff::None && !result)
     if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
             CServiceBroker::GetWinSystem()))
       window->StopDVBridgePlayback();

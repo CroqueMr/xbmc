@@ -280,11 +280,11 @@ unsigned SoftwareHDR10AIBufferCount(const VideoPicture& picture, float fps, unsi
 
 bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps, unsigned int orientation)
 {
-  return Configure(picture, fps, orientation, false);
+  return Configure(picture, fps, orientation, RetainedOutput::None);
 }
 
 bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps,
-                                   unsigned int orientation, bool retainedNativeDV)
+                                   unsigned int orientation, RetainedOutput retainedOutput)
 {
   auto colorimetry = KODI::UTILS::GetColorimetry(picture);
   bool inferred = (picture.color_space == AVCOL_SPC_UNSPECIFIED);
@@ -333,6 +333,16 @@ bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps,
   m_bValidated = false;
 
 #ifdef CB1_HAS_HDR10_AI
+  if (retainedOutput == RetainedOutput::HDR10)
+  {
+    auto& window = static_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext&>(
+        *CServiceBroker::GetWinSystem());
+    m_passthroughHDR = true;
+    m_hdrFboActive = window.IsHdrComposite();
+    m_reloadShaders = true;
+    window.BeginHDR10Handoff();
+    return true;
+  }
   m_softwareAIBuffers = SoftwareHDR10AIBufferCount(picture, fps, orientation);
   m_aiLookahead = HDR10AIQueueEligible();
   m_aiOutputPending = HDR10AILookahead() &&
@@ -348,7 +358,7 @@ bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps,
   }
 #endif
 #ifdef HAVE_DVBRIDGE
-  if (retainedNativeDV)
+  if (retainedOutput == RetainedOutput::NativeDV)
   {
     // The renderer owns cleanup now. Source admission happens after import.
     m_dvRequested = m_hdrFboActive = true;
@@ -500,6 +510,8 @@ void CLinuxRendererGLES::AddVideoPicture(const VideoPicture &picture, int index)
   buf.hasDisplayMetadata = picture.hasDisplayMetadata;
   buf.displayMetadata = picture.displayMetadata;
   buf.lightMetadata = picture.lightMetadata;
+  buf.hasHDR10LightMetadata = picture.hasLightMetadata;
+  buf.hdrType = picture.hdrType;
   if (picture.hasLightMetadata && picture.lightMetadata.MaxCLL)
   {
     buf.hasLightMetadata = picture.hasLightMetadata;
@@ -1965,6 +1977,29 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
   }
   DVBRIDGE::PlaybackNotification::RenderedOrdinary(
       generation);
+#ifdef CB1_HAS_HDR10_AI
+  if (m_passthroughHDR)
+  {
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    if (window && window->HDR10HandoffPending())
+    {
+      const auto& buffer = m_buffers[index];
+      VideoPicture signal{};
+      signal.hdrType = buffer.hdrType;
+      signal.color_transfer = buffer.m_srcColTransfer;
+      signal.color_space = buffer.m_srcColSpace;
+      signal.color_primaries = buffer.m_srcPrimaries;
+      signal.color_range = buffer.m_srcFullRange;
+      signal.colorBits = buffer.m_srcBits;
+      signal.hasDisplayMetadata = buffer.hasDisplayMetadata;
+      signal.displayMetadata = buffer.displayMetadata;
+      signal.hasLightMetadata = buffer.hasHDR10LightMetadata;
+      signal.lightMetadata = buffer.lightMetadata;
+      window->StageHDR10Handoff(signal);
+    }
+  }
+#endif
 #endif
   return true;
 }

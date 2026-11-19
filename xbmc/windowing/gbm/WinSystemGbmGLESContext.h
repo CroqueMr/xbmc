@@ -114,6 +114,10 @@ public:
 #ifdef CB1_HAS_HDR10_AI
   bool HDR10AILookaheadActive() const;
   bool RetainNativeDVOutput(const VideoPicture& picture);
+  bool CanRetainHDR10Output(const VideoPicture& picture) const;
+  void BeginHDR10Handoff();
+  bool HDR10HandoffPending() const { return m_hdr10HandoffPending; }
+  void StageHDR10Handoff(const VideoPicture& picture);
   bool RetainHDR10DVOutput(const VideoPicture& picture);
   bool OwnsHDR10DVOutput() const
   {
@@ -218,6 +222,11 @@ private:
   void StageNativeHDR10Plus(bool overlay);
   std::string m_hdr10plusReason;
   uint64_t m_dvProfileLoggedRevision{},m_dvProfileLoggedStream{};
+#endif
+#ifdef CB1_HAS_HDR10_AI
+  bool m_hdr10HandoffPending{false};
+  unsigned m_hdr10HandoffFailures{0};
+  std::unique_ptr<VideoPicture> m_hdr10HandoffPicture;
 #endif
   void PresentFrame(bool rendered, bool videoLayer);
   bool m_guiCompositing{false};
