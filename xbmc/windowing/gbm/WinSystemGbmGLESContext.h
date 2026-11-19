@@ -97,7 +97,8 @@ public:
       bool allowModeSwitch = false) const;
   bool CanRetainDVSource() const;
   bool CompleteDVModeSwitch(const VideoPicture& picture);
-  std::optional<RESOLUTION> PlayerLedResolution(double fps) const;
+  std::optional<RESOLUTION> PlayerLedResolution(double fps, bool atStartup = false) const;
+  int PlayerLedResolutionReason(RESOLUTION resolution, int preference) const;
   bool LldvSupportsPlaybackTiming(double fps, bool requireCurrentMode = false) const;
   bool DVModeSwitchDeferred()
   {
@@ -219,6 +220,7 @@ private:
 #ifdef HAVE_DVBRIDGE
   bool PresentPlayerLedFrame();
   void PresentPlayerLedCpu(const DVBRIDGE::LldvTransport& transport);
+  void RefreshPlayerLedRejection(const DVBRIDGE::LldvTransport& transport);
   bool CompleteDVBridgePage(int timeoutMs = 0);
   bool FinishPlayerLedFrame(const CDVBridgeGLES::PlayerLedFrame& frame, double pts);
   std::optional<CDVBridgeGLES::PlayerLedFrame> m_playerLedPage;

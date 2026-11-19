@@ -6,6 +6,8 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <utility>
+#include <vector>
 
 namespace DVBRIDGE
 {
@@ -258,7 +260,25 @@ struct LldvTransport
   bool forced{false};
   uint64_t edidGeneration{};
   unsigned rgbScanoutBits{8};
+  bool experimentalPacked12{false};
+
+  constexpr bool operator==(const LldvTransport& other) const
+  {
+    return connectorId == other.connectorId && format == other.format && forced == other.forced &&
+        edidGeneration == other.edidGeneration && rgbScanoutBits == other.rgbScanoutBits &&
+        experimentalPacked12 == other.experimentalPacked12;
+  }
 };
+
+constexpr unsigned LldvTransportBit(const LldvTransport& transport)
+{
+  // Distinguish packed, native deep, forced 10-bit and experimental packed 12-bit.
+  const unsigned path = transport.forced ? 2 : transport.experimentalPacked12 ? 3 :
+      transport.rgbScanoutBits > 8 ? 1 : 0;
+  return 1U << (4 * static_cast<unsigned>(transport.format) + path);
+}
+
+constexpr int LLDV_DRIVER_REJECTED_LABEL = 41298;
 
 struct LldvConnectorStatus
 {
@@ -275,9 +295,12 @@ struct LldvConnectorStatus
   bool availableTiming{false};
   LldvDisplay display;
   uint64_t edidGeneration{};
-  LldvFormat rejected{LldvFormat::Auto};
+  unsigned currentRejected{}, availableRejected{};
+  std::vector<std::pair<int, unsigned>> modeRejections;
   bool cta93FractionalOnly{};
   bool packed42212{};
+  bool output42212{};
+  bool activeExperimentalPacked12{};
   bool rgb16Scanout{};
 };
 
@@ -285,64 +308,97 @@ inline unsigned LldvScanoutBits(const LldvConnectorStatus& status, LldvFormat fo
 {
   if (format == LldvFormat::Y422_10)
     return status.rgb10Scanout ? 10 : 8;
-  if (format == LldvFormat::Y422_12)
-    return status.rgb16Scanout ? 16 : 8;
   return LldvUses10Bits(format) ? 10 : 16;
 }
 
-inline unsigned LldvAutomaticFormats(const LldvConnectorStatus& status)
+struct LldvChoice
 {
-  const unsigned formats = status.driverFormats & LLDV_IMPLEMENTED;
-  // The experimental R615 carrier is an explicit choice, like forced 10-bit.
-  return status.packed42212 || (status.rgb16Scanout && !dvbridge_lldv_422_12(status.sink)) ?
-      formats & ~LldvBit(LldvFormat::Y422_12) : formats;
+  LldvTransport transport;
+  int unavailable{};
+};
+
+inline LldvChoice ResolveLldvTransport(const LldvConnectorStatus& status, int preference,
+                                       bool allowModeSwitch)
+{
+  if (status.display.status != LldvEdidStatus::Ready)
+    return {{}, status.display.status == LldvEdidStatus::UnsupportedGamut ? 41300 :
+        41280 + static_cast<int>(status.display.status)};
+  if (!status.connectorId || (!status.driverFormats && !status.forced42210)) return {{}, 41211};
+
+  const bool timing = status.currentTiming || (allowModeSwitch && status.availableTiming);
+  const unsigned rejected = allowModeSwitch && status.availableTiming ?
+      status.availableRejected : status.currentRejected;
+  const auto check = [&](LldvFormat format, unsigned bits, bool forced = false,
+                         bool packed12 = false) -> LldvChoice {
+    const auto reason = LldvFormatReason(status.sink, format, status.driverFormats, true, forced);
+    if (reason != LldvReason::Ready) return {{}, 41208 + static_cast<int>(reason)};
+    if (!(LldvBit(format) & LLDV_IMPLEMENTED)) return {{}, 41211};
+    if (format == LldvFormat::Y422_12 && (packed12 || bits == 16) &&
+        !dvbridge_lldv_422_12(status.sink))
+      return {{}, 41210};
+    if (!timing) return {{}, 41212};
+    const LldvTransport transport{status.connectorId, format, forced, status.edidGeneration,
+        bits, packed12};
+    if (rejected & LldvTransportBit(transport)) return {{}, LLDV_DRIVER_REJECTED_LABEL};
+    if (packed12 && preference != LLDV_PACKED_422_12)
+      return {{}, LLDV_CHOOSE_FORMAT_LABEL};
+    return {transport, 0};
+  };
+
+  const auto native = [&](LldvFormat format) -> LldvChoice {
+    if (format != LldvFormat::Y422_12)
+      return check(format, LldvScanoutBits(status, format));
+    const auto deep = status.rgb16Scanout ? check(format, 16) : LldvChoice{{}, 41211};
+    if (!deep.unavailable) return deep;
+    if (status.output42212)
+      return check(format, 8);
+    return deep;
+  };
+  const auto format = LldvFormatPreference(preference);
+  if (format != LldvFormat::Auto)
+  {
+    const auto choice = native(format);
+    if (preference == LLDV_FORCE_422_10 && status.forced42210 &&
+        (choice.unavailable == 41211 || choice.unavailable == LLDV_DRIVER_REJECTED_LABEL))
+      return check(format, 8, true);
+    if (format == LldvFormat::Y422_12 && status.packed42212 &&
+        (choice.unavailable == 41211 || choice.unavailable == LLDV_DRIVER_REJECTED_LABEL))
+    {
+      const auto packed = check(format, 8, false, true);
+      return preference == LLDV_PACKED_422_12 || choice.unavailable == 41211 ? packed : choice;
+    }
+    return choice;
+  }
+  // Auto only considers native driver formats. Explicit forcing remains opt-in.
+  int unavailable = 41213;
+  for (const auto candidate : LLDV_PREFERRED)
+  {
+    if (!(status.driverFormats & LldvBit(candidate))) continue;
+    const auto choice = native(candidate);
+    if (!choice.unavailable) return choice;
+    if (choice.unavailable == 41212 || choice.unavailable == LLDV_DRIVER_REJECTED_LABEL)
+      unavailable = choice.unavailable;
+  }
+  return {{}, unavailable};
 }
 
 inline int LldvUnavailableLabel(const LldvConnectorStatus& status, int preference,
                                 bool allowModeSwitch)
 {
-  if (status.display.status != LldvEdidStatus::Ready)
-    return status.display.status == LldvEdidStatus::UnsupportedGamut ? 41300 :
-        41280 + static_cast<int>(status.display.status);
-  if (!status.connectorId || (!status.driverFormats && !status.forced42210)) return 41211;
-  auto format = LldvFormatPreference(preference);
-  if (format == LldvFormat::Auto)
-    format = ChooseLldvFormat(status.sink, LldvAutomaticFormats(status), true);
-  if (format == LldvFormat::Auto) return 41213;
-  if (format == LldvFormat::Y422_12)
-  {
-    if ((status.packed42212 || status.rgb16Scanout) && !dvbridge_lldv_422_12(status.sink))
-      return 41210;
-    if (status.packed42212 && preference != LLDV_PACKED_422_12)
-      return LLDV_CHOOSE_FORMAT_LABEL;
-  }
-  const auto reason = LldvFormatReason(status.sink, format, status.driverFormats, true,
-      preference == LLDV_FORCE_422_10 && status.forced42210);
-  if (reason != LldvReason::Ready) return 41208 + static_cast<int>(reason);
-  if (!(LldvBit(format) & LLDV_IMPLEMENTED)) return 41211;
-  if (!(status.currentTiming || (allowModeSwitch && status.availableTiming))) return 41212;
-  return 0;
-}
-
-inline bool LldvCanChooseFormat(const LldvConnectorStatus& status)
-{
-  return !LldvUnavailableLabel(status, 0, true) ||
-         !LldvUnavailableLabel(status, LLDV_FORCE_422_10, true) ||
-         !LldvUnavailableLabel(status, LLDV_PACKED_422_12, true);
+  return ResolveLldvTransport(status, preference, allowModeSwitch).unavailable;
 }
 
 inline LldvTransport SelectLldvTransport(const LldvConnectorStatus& status, int preference,
                                         bool allowModeSwitch = false)
 {
-  const bool timing = status.currentTiming || (allowModeSwitch && status.availableTiming);
-  auto format = LldvFormatPreference(preference);
-  if (format == LldvFormat::Auto)
-    format = ChooseLldvFormat(status.sink, LldvAutomaticFormats(status), timing);
-  if (LldvUnavailableLabel(status, preference, allowModeSwitch) || !(LldvBit(format) & LLDV_IMPLEMENTED))
-    return {};
-  return {status.connectorId, format,
-          LldvRequiresForcing(format, status.driverFormats, status.forced42210), status.edidGeneration,
-          LldvScanoutBits(status, format)};
+  return ResolveLldvTransport(status, preference, allowModeSwitch).transport;
+}
+
+inline bool LldvCanChooseFormat(const LldvConnectorStatus& status, bool allowModeSwitch)
+{
+  return !LldvUnavailableLabel(status, 0, allowModeSwitch) ||
+         !LldvUnavailableLabel(status, LLDV_FORCE_422_10, allowModeSwitch) ||
+         !LldvUnavailableLabel(status, LLDV_PACKED_422_12, allowModeSwitch);
 }
 
 inline const char* LldvCompatibilityReason(const LldvConnectorStatus& status, int preference)
@@ -354,6 +410,7 @@ inline const char* LldvCompatibilityReason(const LldvConnectorStatus& status, in
     case 41210: return "format-not-advertised-by-tv";
     case 41211: return "format-not-supported-by-driver-or-port";
     case 41212: return "hdmi-timing-unavailable";
+    case LLDV_DRIVER_REJECTED_LABEL: return "atomic-format-rejected";
     case LLDV_CHOOSE_FORMAT_LABEL: return "experimental-format-not-selected";
     default: return "no-common-format";
   }

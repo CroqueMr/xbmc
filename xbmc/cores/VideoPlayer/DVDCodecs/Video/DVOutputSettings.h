@@ -216,6 +216,7 @@ struct OutputSelectors
   HLGSourceMode hlgSource{HLGSourceMode::Native};
   int method{};
   bool hdr10TransportFallback{};
+  bool playerLedStartup{};
   void Apply(OutputPreferences& preferences) const
   {
     preferences.output=output;
@@ -317,6 +318,16 @@ inline OutputPreferences FrameOutputSettings(bool hdr10Plus = false, bool hlg = 
   return next;
 }
 
+inline void UsePlayerLedStartupFallback()
+{
+  std::lock_guard lock(OutputSettingsMutex());
+  if (activeOutputSelectors && activeOutputSelectors->playerLedStartup)
+  {
+    activeOutputSelectors->hdr10TransportFallback = true;
+    activeOutputSelectors->playerLedStartup = false;
+  }
+}
+
 inline void SelectOutputSettings(bool nativeDV = true, bool playerLed = true)
 {
   {
@@ -327,6 +338,7 @@ inline void SelectOutputSettings(bool nativeDV = true, bool playerLed = true)
     {
       case OutputMode::PlayerLed:
         defaults.hdr10TransportFallback = !playerLed;
+        defaults.playerLedStartup = playerLed;
         break;
       case OutputMode::Standard:
       case OutputMode::EnhancedDV:
