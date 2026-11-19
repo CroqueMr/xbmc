@@ -431,7 +431,7 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   if (!m_dvOutputSurface && HasFloatOutput())
   {
     auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-    if (!drm || !drm->TestFramebuffer(m_GBM->GetDevice().GetSurface().LockFrontBuffer().Get()))
+    if (!drm || !drm->TestFramebuffer(m_GBM->GetDevice().GetSurface().GetLockedFrontBuffer()))
       return reject();
   }
   // No new drawable exists when only a same-format policy value changes.

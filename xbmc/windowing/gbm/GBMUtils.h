@@ -143,6 +143,8 @@ public:
        * @return CGBMSurfaceBuffer* A pointer to a CGBMSurfaceBuffer object
        */
       CGBMSurfaceBuffer& LockFrontBuffer();
+      // Reuse the front buffer when the drawable has not swapped again.
+      gbm_bo* GetLockedFrontBuffer() const;
 
       // Blocking atomic presentation only: retain the current scanout on failure.
       gbm_bo* LockTransactionalBuffer();
