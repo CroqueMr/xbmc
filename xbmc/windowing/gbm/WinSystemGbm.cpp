@@ -1764,7 +1764,9 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
     if (native12)
       status.driverFormats |= DVBRIDGE::LldvBit(DVBRIDGE::LldvFormat::Y422_12);
     status.forced42210 = forced10.has_value();
-    const auto usable = [](const drmModeModeInfo* mode) {
+    status.cta93FractionalOnly =
+        connector->GetPropertyValue("CB1_LLDV_CTA93_23976_ONLY").value_or(0);
+    const auto usable = [cta93FractionalOnly = status.cta93FractionalOnly](const drmModeModeInfo* mode) {
       return mode && mode->hdisplay == 3840 && mode->vdisplay == 2160 &&
                            mode->vtotal == 2250 &&
                            ((mode->htotal == 5500 && mode->hsync_start == 5116 && mode->hsync_end == 5204) ||
@@ -1774,6 +1776,7 @@ DVBRIDGE::LldvConnectorStatus CWinSystemGbm::GetLldvConnectorStatus() const
                            mode->vsync_start == 2168 && mode->vsync_end == 2178 &&
                            mode->hskew == 0 && mode->vscan == 0 &&
                            (mode->clock == 297000 || mode->clock == 296703) &&
+                           (!cta93FractionalOnly || (mode->htotal == 5500 && mode->clock == 296703)) &&
                            (mode->flags & ~DRM_MODE_FLAG_PIC_AR_16_9) ==
                                (DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC);
     };

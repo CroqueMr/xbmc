@@ -27,6 +27,7 @@
 #include "utils/StringUtils.h"
 #include "windowing/WinSystem.h"
 #ifdef HAVE_DVBRIDGE
+#include "cores/DataCacheCore.h"
 #include "dialogs/DVPlaybackModes.h"
 #include "cores/VideoPlayer/Interface/StreamInfo.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSelection.h"
@@ -535,6 +536,13 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   caps.hdr10plus=available.hdr10plus;
   caps.playerLed=available.playerLed;
   caps.lldvUnavailableLabel=available.lldvUnavailableLabel;
+  if (menu && window &&
+      (caps.playerLed || caps.lldvUnavailableLabel == DVBRIDGE::LLDV_CHOOSE_FORMAT_LABEL) &&
+      !window->LldvSupportsPlaybackTiming(CServiceBroker::GetDataCacheCore().GetVideoFps(), true))
+  {
+    caps.playerLed = false;
+    caps.lldvUnavailableLabel = 41212; // No compatible HDMI timing.
+  }
   if (caps.isDV && preferences.output==DVBRIDGE::OutputMode::Disabled)
   {
     caps.processingKnown=available.processingKnown;

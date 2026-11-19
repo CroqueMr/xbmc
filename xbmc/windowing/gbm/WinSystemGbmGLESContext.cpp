@@ -1854,6 +1854,13 @@ bool CWinSystemGbmGLESContext::CanRetainDVSource() const
       (preferences.output == DVBRIDGE::OutputMode::HDR10 ? caps.hdr10 : caps.nativeDV);
 }
 
+bool CWinSystemGbmGLESContext::LldvSupportsPlaybackTiming(double fps, bool requireCurrentMode) const
+{
+  std::lock_guard lock(m_dvCapabilityMutex);
+  return !m_dvLldvStatus.cta93FractionalOnly ||
+         ((!requireCurrentMode || m_dvLldvStatus.currentTiming) && std::abs(fps - 24000.0 / 1001) < 0.01);
+}
+
 std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedResolution(double fps) const
 {
   const auto preferences = DVBRIDGE::FrameOutputSettings();

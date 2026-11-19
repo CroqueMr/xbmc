@@ -255,6 +255,7 @@ struct LldvConnectorStatus
   LldvDisplay display;
   uint64_t edidGeneration{};
   LldvFormat rejected{LldvFormat::Auto};
+  bool cta93FractionalOnly{};
 };
 
 inline int LldvUnavailableLabel(const LldvConnectorStatus& status, int preference,
