@@ -180,7 +180,8 @@ bool GetIntegerOptions(const SettingConstPtr& setting,
 
 #ifdef HAVE_DVBRIDGE
   if (setting->GetId()=="dvbridge.outputmode" || setting->GetId()=="dvbridge.hdr10method" ||
-      setting->GetId()=="dvbridge.hdr10source" || setting->GetId()=="dvbridge.hdr10plussource")
+      setting->GetId()=="dvbridge.hdr10source" || setting->GetId()=="dvbridge.hdr10plussource" ||
+      setting->GetId()=="dvbridge.hlgsource")
     CSettingConditions::DVOutputOptions(setting,options);
 #endif
   switch (pSettingInt->GetOptionsSort())

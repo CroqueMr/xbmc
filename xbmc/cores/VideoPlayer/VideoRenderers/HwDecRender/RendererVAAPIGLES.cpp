@@ -235,12 +235,8 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   if (!buffer.doviSourcePicture)
     return false;
   const auto& source = *buffer.doviSourcePicture;
-  bool hdr10 = false;
-#ifdef CB1_HAS_HDR10_AI
-  hdr10 = DVBRIDGE::IsHDR10AIInput(source.hdrType,
-      DVBRIDGE::FrameOutputSettings(source.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS).hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
+  bool hdr10 = DVBRIDGE::IsHDR10Family(source.hdrType) &&
       source.doviSourceBinding.Valid() && !source.doviSourceInfo.profile;
-#endif
   if (!hdr10 && (!buffer.doviMetadata.Data() || buffer.doviPts == DVD_NOPTS_VALUE))
     return false;
   switch (m_vaapiFourcc)
@@ -266,6 +262,7 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   layer.sourceSideData = source.sourceSideData;
   layer.sourceSerial = source.sourceSideData ? source.sourceSideData->Serial() : 0;
   layer.chromaLocation = source.chroma_position;
+  layer.hlg = source.hdrType == StreamHdrType::HDR_TYPE_HLG;
   if (hdr10)
   {
     layer.fullRange = source.color_range != 0;
@@ -339,8 +336,9 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
             layer.binding.stream == binding.stream && layer.binding.revision == binding.revision;
       }) && ((end && layers.size() == queue.size()) ||
              layers.back().pts >= layers.front().pts + 1.0 - 1e-9);
-  const auto preferences = DVBRIDGE::FrameOutputSettings(head->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
-  if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::Native)
+  const auto preferences = DVBRIDGE::FrameOutputSettings(head->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS, head->hdrType == StreamHdrType::HDR_TYPE_HLG);
+  if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::Native ||
+      preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::SDR)
   {
     // Preserve the original locked/native stop and readiness path.
     const bool ready = window->PrepareHDR10AIQueue(*head,layers,end,paused,presentationDeadline);
@@ -360,7 +358,7 @@ HDR10AIQueuePreparation CRendererVAAPIGLES::CaptureHDR10AIQueue(
       },
       [this,index,binding,preferences](const HDR10AIQueuePreparation::Outcome& outcome) {
         const auto& current = m_buffers[index].doviSourcePicture;
-        const auto settings = DVBRIDGE::FrameOutputSettings(current && current->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
+        const auto settings = DVBRIDGE::FrameOutputSettings(current && current->hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS, current && current->hdrType == StreamHdrType::HDR_TYPE_HLG);
         if (!current || !(current->doviSourceBinding == binding) ||
             settings.revision != preferences.revision || !settings.SameValues(preferences))
           return false;

@@ -18,11 +18,12 @@ struct OutputCapabilities
   bool sourceKnown{}, isDV{}, processingKnown{}, nativeDV{}, hdr10{};
   bool stereoSource{};
   uint64_t generation{};
-  std::array<ModeAdmission, 7> processing{};
+  std::array<ModeAdmission, 8> processing{};
+  bool isHLG{}; // Plain HLG only: Dolby Vision RPU/configuration takes precedence.
   bool isHDR10{};
   bool hdr10PlusSource{}; // Native source classification, independent of metadata admission.
   bool isHDR10Plus{}; // Selected decoded picture, not receiver HDR10+ transport.
-  std::array<ModeAdmission, 7> hdr10Processing{};
+  std::array<ModeAdmission, 8> hdr10Processing{};
   bool hdr10plus{};
 };
 }
@@ -41,7 +42,7 @@ struct CDVPlaybackInfo
     if constexpr (requires { output.hdr10PlusDV; }) return output.hdr10PlusDV;
     return false;
   }
-  enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4, HDR10 = 8, HDR10PLUS = 16 };
+  enum : unsigned { HDMI = 1, FEL = 2, CM4 = 4, HDR10 = 8, HDR10PLUS = 16, SDR = 32 };
   inline static std::atomic<unsigned> presented{0};
   static int ReasonLabel(DVBRIDGE::OutputReason reason)
   { return reason == DVBRIDGE::OutputReason::NoHDR10PlusTransport ? 40923 :
@@ -83,6 +84,7 @@ struct CDVPlaybackInfo
       case 4: return "Dolby Vision Adaptive HDR Mapping";
       case 5: return "Dolby Vision Master Reference";
       case 6: return "Dolby Vision Adaptive HDR Mapping";
+      case 8: return "SDR Rendering";
       case 7: return output.flags & HDR10PLUS ? "HDR10+ Rendering" : "HDR10 Rendering";
       default: return output.flags & HDR10 ? "HDR10 Rendering" : "Dolby Vision Reference";
     }
@@ -102,12 +104,14 @@ struct CDVPlaybackInfo
       case 5:return "Dolby Vision Master Reference";
       case 6:return "Dolby Vision Adaptive HDR Mapping";
       case 7:return "HDR10+ Rendering";
+      case 8:return "SDR Rendering";
       default:return "";
     }
   }
 
   template<class Output> static std::string Mode(const Output& output)
   {
+    if (output.effective==8 && (output.flags & SDR)) return "SDR Rendering";
     if (!output.flags) return "Kodi default";
     if (IsHDR10PlusDV(output)) return Policy(output);
     std::string mode = output.flags & HDR10 ? Policy(output) :

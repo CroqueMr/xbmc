@@ -115,6 +115,8 @@ public:
       uint64_t presentationDeadline = 0);
 #endif
   bool RestoreFailedHDR10Setup();
+  bool ConfigureSDRConversion(const VideoPicture& picture);
+  bool SupportsSDRConversion() const;
   bool ConfigureHDR10Conversion(const VideoPicture& picture);
   bool SupportsHDR10Conversion(bool requireCurrentMode = true);
   void SetDVBridgeOverlays(bool visible) { m_dvOverlays = visible; }
@@ -136,6 +138,10 @@ public:
   void EndDVPQSubtitle();
   bool DVPQSubtitlesReady() const { return m_dvPQSubtitleDraws != 0; }
   bool HasDVBridgeScreenshot() const { return m_dvState.Captured() || m_hdrConversion; }
+  bool IsDVBridgeScreenshotSDR() const
+  {
+    return HasDVBridgeScreenshot() && m_sdrConversion;
+  }
   bool ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
   {
     return m_dvFrame && m_dvBridge && m_dvBridge->ReadScreenshot(out);
@@ -227,7 +233,7 @@ private:
   bool StageOrdinaryDVOutput(const VideoPicture* picture);
   bool RecoverDVActivation();
   void ResetDVActivation(const VideoPicture* picture);
-  bool m_dvRecoveryPending{}, m_dvNativeFailed{}, m_dvHDR10Failed{}, m_dvFallbackActive{};
+  bool m_dvRecoveryPending{}, m_dvNativeFailed{}, m_dvHDR10Failed{}, m_dvSDRFailed{}, m_dvFallbackActive{};
   bool m_dvActivating{};
   uint64_t m_dvActivationStream{}, m_dvActivationPolicy{};
   unsigned m_dvAttemptFailures{};
@@ -268,6 +274,8 @@ private:
   bool m_dvEndPending{};
   bool m_dvStopPending{};
   bool m_hdrConversion = false;
+  bool m_sdrConversion = false;
+  bool m_dvPriorSDRConversion = false;
   std::optional<dvbridge_hdr10_session> m_hdr10Session;
   std::unique_ptr<VideoPicture> m_hdr10BasicSignal;
   std::optional<std::array<unsigned, 5>> m_hdr10Signal;

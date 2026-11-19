@@ -16,7 +16,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   accepted.effective=output.effective; accepted.method=output.method;
   accepted.panel=output.panel;
   accepted.gamut=output.gamut; accepted.manualPeak=output.manualPeak;
-  accepted.displayBlack=output.displayBlack;
+  accepted.displayBlack=output.displayBlack; accepted.sdrGamma=output.sdrGamma;
   accepted.revision=output.revision; accepted.stream=output.stream; accepted.picture=output.picture;
   accepted.format=output.format; accepted.width=output.width; accepted.height=output.height;
   accepted.refresh=output.refresh; accepted.fallback=output.fallback;
@@ -42,6 +42,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   if (output.flags & CDVPlaybackInfo::HDMI) info.outputType=VideoOutputType::DolbyVision;
   else if (output.flags & CDVPlaybackInfo::HDR10PLUS) info.outputType=VideoOutputType::HDR10Plus;
   else if (output.flags & CDVPlaybackInfo::HDR10) info.outputType=VideoOutputType::HDR10;
+  else if (output.flags & CDVPlaybackInfo::SDR) info.outputType=VideoOutputType::SDR;
   info.profile=source.profile; info.level=source.level; info.major=source.major; info.minor=source.minor;
   info.compatibility=source.compatibility;
   info.bl=source.bl; info.el=source.el; info.rpu=source.rpu; info.fel=source.fel;
@@ -69,7 +70,8 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   info.transaction.reason=static_cast<VideoProcessingReason>(pending.reason);
   info.transaction.retryCount=pending.retryCount; info.transaction.restored=pending.restored;
   info.transaction.stage=pending.stage;
-  info.transaction.hdr10AI=pending.capabilities.isHDR10 && !pending.capabilities.isDV;
+  info.transaction.hdr10AI=(pending.capabilities.isHDR10 || pending.capabilities.isHLG) &&
+      pending.effective!=8 && !pending.capabilities.isDV;
   info.referenceWarning=source.referenceWarning;
   return info;
 }

@@ -35,6 +35,7 @@ class CDVBridgeGLES
 {
 public:
   void InvalidateScreenshot() { ++m_nativeOverlayRevision; }
+  bool ScreenshotSDR() const { return m_prepared && m_direct && m_effectiveMode==DVBRIDGE_MODE_SDR; }
   bool ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out);
   static constexpr bool CanComposeSDRGUI(bool enabled, bool hdr10, bool capture,
                                          int width, int height, unsigned pqDraws)
@@ -100,6 +101,7 @@ public:
     std::shared_ptr<const VideoSourceSideData> sourceSideData;
     uint64_t sourceSerial{};
     bool fullRange{};
+    bool hlg{};
     pl_hdr_metadata hdr{};
     AVChromaLocation chromaLocation{AVCHROMA_LOC_UNSPECIFIED};
   };
@@ -276,6 +278,7 @@ private:
   bool m_live{}, m_advanced{}, m_dvPolicyActive{}, m_pending{}, m_fallback{};
   bool m_asyncEligible{};
 #ifdef CB1_HAS_HDR10_AI
+  bool m_sourceHLG{};
   bool m_aiFrame{}, m_aiOutputAccepted{};
   std::optional<cb1_hdr10plus_dovi_result> m_aiGuidance;
   uint64_t m_aiRenderSubmitNs{};
