@@ -1775,7 +1775,8 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int frame
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
       ((sdr && hdr10 && red >= 8 && green >= 8 && blue >= 8 && red <= 16 && green <= 16 && blue <= 16) ||
        (!sdr && hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
-       (!sdr && !hdr10 && red == 8 && green == 8 && blue == 8)) &&
+       (!sdr && !hdr10 && red == green && green == blue &&
+        (red == 8 || (m_playerLed && red == 10)))) &&
       samples <= 1 && encoding == GL_LINEAR)
     candidate = pl_opengl_wrap(m_gl->gpu, &output);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
@@ -3049,6 +3050,17 @@ bool CDVBridgeGLES::PackPlayerLed(DVBRIDGE::LldvTransport transport)
       (transport.format != DVBRIDGE::LldvFormat::Y422_10 &&
        transport.format != DVBRIDGE::LldvFormat::Y422_12))
     return Failure("player-led-pack-target");
+
+  if (transport.rgb10Scanout)
+  {
+    m_packed = m_outputBits == 10 && dvbridge_resolve_player_led_rgb10(
+        m_renderer, &m_playerLedPolicy, m_playerLedPicture, m_scanout, true) &&
+        m_context->FenceLastUse();
+    if (!m_packed) return Failure("player-led-rgb10");
+    m_playerLedTransport = transport;
+    m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,m_asyncEligible};
+    return true;
+  }
 
   const auto gpu = m_gl->gpu;
   const int w = m_scanout->params.w, h = m_scanout->params.h;

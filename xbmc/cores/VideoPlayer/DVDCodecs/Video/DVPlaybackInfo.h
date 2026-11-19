@@ -28,6 +28,7 @@ struct OutputCapabilities
   bool hdr10plus{}, playerLed{};
   LldvDisplay lldvDisplay;
   uint64_t lldvEdidGeneration{};
+  bool lldvRgb10Scanout{};
   int lldvUnavailableLabel{41280};
   uint64_t hdr10MaxBpc{}; // Zero means the HDMI ceiling is unknown.
 

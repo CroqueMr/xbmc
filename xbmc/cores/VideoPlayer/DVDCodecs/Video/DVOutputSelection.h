@@ -16,6 +16,7 @@ struct OutputSelection
   OutputReason reason{OutputReason::None};
   int lldvFormat{};
   uint64_t lldvEdidGeneration{};
+  bool lldvRgb10Scanout{};
 };
 
 inline OutputSelection SelectOutput(const OutputPreferences& preferences,
@@ -72,6 +73,7 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
       result.policy.lldv_edid_version = display.sink.version;
       std::copy(display.primaries.begin(), display.primaries.end(), result.policy.lldv_primaries);
       result.lldvEdidGeneration = caps.lldvEdidGeneration;
+      result.lldvRgb10Scanout = caps.lldvRgb10Scanout;
     }
     result.lldvFormat = preferences.lldvFormat;
     return result;

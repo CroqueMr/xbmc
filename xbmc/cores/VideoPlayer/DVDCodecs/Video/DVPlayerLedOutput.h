@@ -22,6 +22,7 @@ inline std::optional<StreamSnapshot::Output> PlayerLedOutput(
       connector.display.status != LldvEdidStatus::Ready ||
       !connector.timingCommitted || packed.format != format ||
       packed.forced != connector.activeForced ||
+      packed.rgb10Scanout != connector.activeRgb10Scanout ||
       plan.status == DVBRIDGE_CREATIVE_INVALID || plan.status == DVBRIDGE_CREATIVE_UNSUPPORTED ||
       (format != LldvFormat::Y422_10 && format != LldvFormat::Y422_12) ||
       (connector.activeForced && format != LldvFormat::Y422_10) ||

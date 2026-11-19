@@ -234,6 +234,7 @@ struct LldvTransport
   LldvFormat format{LldvFormat::Auto};
   bool forced{false};
   uint64_t edidGeneration{};
+  bool rgb10Scanout{false};
 };
 
 struct LldvConnectorStatus
@@ -244,6 +245,8 @@ struct LldvConnectorStatus
   LldvFormat active{LldvFormat::Auto};
   bool forced42210{false};
   bool activeForced{false};
+  bool rgb10Scanout{false};
+  bool activeRgb10Scanout{false};
   uint32_t connectorId{0};
   bool timingCommitted{false};
   bool availableTiming{false};
@@ -281,7 +284,8 @@ inline LldvTransport SelectLldvTransport(const LldvConnectorStatus& status, int 
   if (LldvUnavailableLabel(status, preference, allowModeSwitch) || !(LldvBit(format) & LLDV_422))
     return {};
   return {status.connectorId, format,
-          LldvRequiresForcing(format, status.driverFormats, status.forced42210), status.edidGeneration};
+          LldvRequiresForcing(format, status.driverFormats, status.forced42210), status.edidGeneration,
+          status.rgb10Scanout && format == LldvFormat::Y422_10};
 }
 
 inline const char* LldvCompatibilityReason(const LldvConnectorStatus& status, int preference)
