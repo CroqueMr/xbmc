@@ -423,6 +423,8 @@ void CGUIDialogVideoSettings::InitializeSettings()
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   AddSpinner(groupVideo, HDR, 41303, SettingLevel::Basic, settings->GetInt(HDR), upscalers);
   upscalers.emplace_back(41306, VS_SCALINGMETHOD_FSR1);
+  upscalers.emplace_back(41307, VS_SCALINGMETHOD_FSRCNNX);
+  upscalers.emplace_back(41308, VS_SCALINGMETHOD_ANIME4K);
   AddSpinner(groupVideo, SDR, 41302, SettingLevel::Basic, settings->GetInt(SDR), upscalers);
 #else
   /* remove unsupported methods */

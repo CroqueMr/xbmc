@@ -169,6 +169,10 @@ protected:
   virtual bool BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer);
   dvbridge_geometry DVBridgeGeometry();
   bool m_dvRequested{false};
+  struct ShaderUpscaler;
+  std::unique_ptr<ShaderUpscaler> m_shaderUpscaler;
+  bool RenderShaderUpscaler(int index, int preset);
+
   int m_reportedUpscaler{-2};
   uint64_t m_reportedUpscalerGeneration{};
 #endif

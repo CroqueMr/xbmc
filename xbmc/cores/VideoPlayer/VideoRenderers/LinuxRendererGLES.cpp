@@ -42,7 +42,17 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/HDR10AIBuffers.h"
 #endif
 #include "UpscalerSettings.h"
+#include "filesystem/File.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
+
+extern "C"
+{
+#include <libplacebo/renderer.h>
+#include <libplacebo/shaders/custom.h>
+}
+
+#include <array>
+#include <iterator>
 #endif
 
 #include <algorithm>
@@ -55,6 +65,61 @@ extern "C"
 
 using namespace Shaders;
 using namespace Shaders::GLES;
+
+#ifdef HAVE_DVBRIDGE
+struct CLinuxRendererGLES::ShaderUpscaler
+{
+  pl_opengl gl{};
+  pl_renderer renderer{};
+  std::vector<const pl_hook*> hooks;
+  int preset{-1};
+  bool ready{};
+
+  ~ShaderUpscaler()
+  {
+    for (auto* hook : hooks)
+      pl_mpv_user_shader_destroy(&hook);
+    if (renderer)
+      pl_renderer_destroy(&renderer);
+    if (gl)
+      pl_opengl_destroy(&gl);
+  }
+
+  bool Load(int method)
+  {
+    preset = method;
+    pl_opengl_params context{};
+    context.get_proc_addr = reinterpret_cast<pl_voidfunc_t (*)(const char*)>(eglGetProcAddress);
+    context.egl_display = eglGetCurrentDisplay();
+    context.egl_context = eglGetCurrentContext();
+    gl = pl_opengl_create(nullptr, &context);
+    if (!gl)
+      return false;
+    renderer = pl_renderer_create(nullptr, gl->gpu);
+    if (!renderer)
+      return false;
+    constexpr std::array fsr{"FSRCNNX_x2_8-0-4-1.glsl"};
+    constexpr std::array anime{"Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_M.glsl",
+        "Anime4K_Upscale_CNN_x2_M.glsl", "Anime4K_AutoDownscalePre_x2.glsl",
+        "Anime4K_AutoDownscalePre_x4.glsl", "Anime4K_Upscale_CNN_x2_S.glsl"};
+    const auto files = method == VS_SCALINGMETHOD_FSRCNNX ? std::span<const char* const>{fsr}
+                                                       : std::span<const char* const>{anime};
+    for (const auto* name : files)
+    {
+      const std::string path = std::string{"special://xbmc/system/shaders/cb1/"} + name;
+      XFILE::CFileStream file;
+      if (!file.Open(path))
+        return false;
+      const std::string source{std::istreambuf_iterator<char>(file), {}};
+      const pl_hook* hook = pl_mpv_user_shader_parse(gl->gpu, source.data(), source.size());
+      if (!hook)
+        return false;
+      hooks.push_back(hook);
+    }
+    return true;
+  }
+};
+#endif
 
 CLinuxRendererGLES::CLinuxRendererGLES()
 {
@@ -1152,6 +1217,8 @@ void CLinuxRendererGLES::UpdateVideoFilter()
     m_renderQuality = RQ_MULTIPASS;
       return;
   }
+  case VS_SCALINGMETHOD_FSRCNNX:
+  case VS_SCALINGMETHOD_ANIME4K:
   case VS_SCALINGMETHOD_BICUBIC_SOFTWARE:
   case VS_SCALINGMETHOD_LANCZOS_SOFTWARE:
   case VS_SCALINGMETHOD_SINC_SOFTWARE:
@@ -1336,6 +1403,7 @@ void CLinuxRendererGLES::UnInit()
 
   bool outputStopped = false;
 #ifdef HAVE_DVBRIDGE
+  m_shaderUpscaler.reset();
   if (m_dvRequested)
   {
     auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
@@ -1636,6 +1704,122 @@ dvbridge_geometry CLinuxRendererGLES::DVBridgeGeometry()
 }
 #endif
 
+#ifdef HAVE_DVBRIDGE
+bool CLinuxRendererGLES::RenderShaderUpscaler(int index, int preset)
+{
+  const auto& buf = m_buffers[index];
+  if (m_currentField != FIELD_FULL || m_renderOrientation || m_passthroughHDR || m_toneMap ||
+      m_textureTarget != GL_TEXTURE_2D || buf.m_srcBits != 8 ||
+      (buf.m_srcColSpace != AVCOL_SPC_BT709 && buf.m_srcColSpace != AVCOL_SPC_UNSPECIFIED) ||
+      (buf.m_srcPrimaries != AVCOL_PRI_BT709 && buf.m_srcPrimaries != AVCOL_PRI_UNSPECIFIED) ||
+      (buf.m_srcColTransfer != AVCOL_TRC_BT709 && buf.m_srcColTransfer != AVCOL_TRC_UNSPECIFIED) ||
+      m_videoSettings.m_Brightness != 50.f || m_videoSettings.m_Contrast != 50.f ||
+      glIsEnabled(GL_BLEND))
+    return false;
+
+  CRect src, dst, view;
+  GetVideoRect(src, dst, view);
+  // All bundled CNN presets need enlargement on both axes.
+  if (dst.Width() <= 1.3f * src.Width() || dst.Height() <= 1.3f * src.Height() ||
+      src.Width() <= 0 || src.Height() <= 0)
+    return false;
+  const auto format = GetShaderFormat();
+  if (format != SHADER_NV12 && format != SHADER_NV12_RRG && format != SHADER_YV12)
+    return false;
+
+  if (!m_shaderUpscaler || m_shaderUpscaler->preset != preset)
+  {
+    m_shaderUpscaler = std::make_unique<ShaderUpscaler>();
+    m_shaderUpscaler->ready = m_shaderUpscaler->Load(preset);
+    if (!m_shaderUpscaler->ready)
+      CLog::Log(LOGWARNING, "Unable to initialize SDR upscaler {}", preset);
+  }
+  if (!m_shaderUpscaler->ready)
+    return false;
+
+  const auto& scaler = *m_shaderUpscaler;
+  const pl_gpu gpu = scaler.gl->gpu;
+  struct pl_frame image{};
+  image.num_planes = format == SHADER_YV12 ? 3 : 2;
+  image.repr.sys = PL_COLOR_SYSTEM_BT_709;
+  image.repr.levels = buf.m_srcFullRange ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
+  image.color = pl_color_space_bt709;
+  image.crop = {src.x1, src.y1, src.x2, src.y2};
+  for (int i = 0; i < image.num_planes; ++i)
+  {
+    const auto& plane = buf.fields[FIELD_FULL][i];
+    pl_opengl_wrap_params params{};
+    params.texture = plane.id;
+    params.width = static_cast<int>(plane.texwidth);
+    params.height = static_cast<int>(plane.texheight);
+    params.iformat = i == 1 && image.num_planes == 2 ? GL_RG8 : GL_R8;
+    image.planes[i].texture = plane.id ? pl_opengl_wrap(gpu, &params) : nullptr;
+    image.planes[i].components = i == 1 && image.num_planes == 2 ? 2 : 1;
+    image.planes[i].component_mapping[0] = i;
+    image.planes[i].component_mapping[1] = i + 1;
+  }
+  pl_frame_set_chroma_location(&image, PL_CHROMA_LEFT);
+  GLint framebuffer, viewport[4], redBits;
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
+  glGetIntegerv(GL_VIEWPORT, viewport);
+  glGetIntegerv(GL_RED_BITS, &redBits);
+  const int width = viewport[2], height = viewport[3];
+  pl_opengl_wrap_params targetParams{};
+  targetParams.framebuffer = framebuffer;
+  targetParams.width = width;
+  targetParams.height = height;
+  targetParams.iformat = redBits == 8 ? GL_RGBA8 : redBits == 10 ? GL_RGB10_A2 : 0;
+  const pl_tex target = !viewport[0] && !viewport[1] && targetParams.iformat
+      ? pl_opengl_wrap(gpu, &targetParams) : nullptr;
+  struct pl_frame output{};
+  output.num_planes = 1;
+  output.planes[0].texture = target;
+  output.planes[0].flipped = true;
+  output.planes[0].components = 4;
+  for (int i = 0; i < 4; ++i)
+    output.planes[0].component_mapping[i] = i;
+  output.repr = pl_color_repr_rgb;
+  output.repr.levels = m_fullRange ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
+  output.color = pl_color_space_bt709;
+  output.crop = {dst.x1, dst.y1, dst.x2, dst.y2};
+  const GLboolean scissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
+  GLint scissor[4];
+  glGetIntegerv(GL_SCISSOR_BOX, scissor);
+  const bool fullScissor = !scissorEnabled ||
+      (scissor[0] == 0 && scissor[1] == 0 && scissor[2] == width && scissor[3] == height);
+
+  bool rendered = false;
+  const bool sourceReady = std::all_of(image.planes, image.planes + image.num_planes,
+                                      [](const auto& plane) { return plane.texture != nullptr; });
+  if (sourceReady && target && fullScissor)
+  {
+    glDisable(GL_SCISSOR_TEST);
+    auto params = pl_render_default_params;
+    params.hooks = scaler.hooks.data();
+    params.num_hooks = static_cast<int>(scaler.hooks.size());
+    params.upscaler = &pl_filter_bilinear;
+    params.skip_caching_single_frame = true;
+    rendered = pl_render_image(scaler.renderer, &image, &output, &params);
+    const auto errors = pl_renderer_get_errors(scaler.renderer);
+    rendered = rendered && !errors.errors && !errors.num_disabled_hooks;
+    if (!rendered)
+    {
+      m_shaderUpscaler->ready = false;
+      CLog::Log(LOGWARNING, "SDR upscaler {} failed, using Kodi scaling", preset);
+    }
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+  glViewport(viewport[0], viewport[1], width, height);
+  glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
+  if (scissorEnabled)
+    glEnable(GL_SCISSOR_TEST);
+  pl_tex_destroy(gpu, &output.planes[0].texture);
+  for (int i = 0; i < image.num_planes; ++i)
+    pl_tex_destroy(gpu, &image.planes[i].texture);
+  return rendered;
+}
+#endif
+
 bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 {
   // obtain current field, if interlaced
@@ -1687,6 +1871,10 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 #endif
 #ifdef HAVE_DVBRIDGE
   int upscaler = -1;
+  const int preset = KODI::VIDEO::UPSCALER::Get(false, KODI::VIDEO::UPSCALER::KODI_DEFAULT);
+  if (KODI::VIDEO::UPSCALER::UsesShaderHooks(preset) && RenderShaderUpscaler(index, preset))
+    upscaler = preset;
+  else
 #endif
   if (RenderHook(index))
   {

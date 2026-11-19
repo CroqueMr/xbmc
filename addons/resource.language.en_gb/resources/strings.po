@@ -26749,3 +26749,11 @@ msgstr ""
 msgctxt "#41267"
 msgid "Neutralize dialogue normalization in supported DTS and DTS-HD passthrough streams."
 msgstr ""
+
+msgctxt "#41307"
+msgid "FSRCNNX x2"
+msgstr ""
+
+msgctxt "#41308"
+msgid "Anime4K Fast"
+msgstr ""
