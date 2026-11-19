@@ -880,6 +880,7 @@ void ServiceCaptureTaps()
   result.height = static_cast<unsigned int>(surface->GetHeight());
   result.stride = surface->GetStride();
   result.format = surface->GetFormat();
+  result.colorEncodingVerified = surface->IsColorEncodingVerified();
   result.color = GetOutputColorMetadata(*winSystem);
   result.content = CaptureContent::COMPOSITE; // this tap is the composite half
 

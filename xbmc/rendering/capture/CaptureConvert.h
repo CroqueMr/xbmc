@@ -38,6 +38,10 @@ bool CaptureToBGRA(const CaptureResult& result,
                    unsigned int height,
                    uint8_t* buffer);
 
+//! Convert a verified PQ or HLG composite to a full-range sRGB image at native size.
+//! Preserve deep readbacks at 16 bits and fail if color management is unavailable.
+bool CaptureToDisplaySDR(const CaptureResult& result, CaptureResult& sdr);
+
 } // namespace CAPTURE
 } // namespace RENDERING
 } // namespace KODI

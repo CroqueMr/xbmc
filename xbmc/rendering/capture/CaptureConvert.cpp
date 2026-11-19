@@ -92,8 +92,10 @@ bool ExpandRange(const CaptureResult& result, const uint8_t* src0, std::vector<u
   const int srcStride[] = {result.stride, 0, 0, 0};
   uint8_t* dst[] = {out.data(), nullptr, nullptr, nullptr};
   const int dstStride[] = {stride, 0, 0, 0};
-  sws_scale(context, src, srcStride, 0, static_cast<int>(result.height), dst, dstStride);
+  const int rows = sws_scale(context, src, srcStride, 0, static_cast<int>(result.height), dst, dstStride);
   sws_freeContext(context);
+  if (rows != static_cast<int>(result.height))
+    return false;
 
   // 16..235 scaled by 257 to 16-bit -> full 0..65535, alpha left alone
   constexpr int64_t lo = 16 * 257;
@@ -116,17 +118,24 @@ bool ConvertColorManaged(const CaptureResult& result,
                          const uint8_t* src0,
                          unsigned int width,
                          unsigned int height,
-                         uint8_t* buffer)
+                         uint8_t* buffer,
+                         AVPixelFormat destination = AV_PIX_FMT_BGRA,
+                         bool displaySDR = false)
 {
   std::vector<uint8_t> expanded;
   const uint8_t* srcData = src0;
   AVPixelFormat srcFormat = result.format;
   int srcStride = result.stride;
-  if (result.color.range == AVCOL_RANGE_MPEG && ExpandRange(result, src0, expanded))
+  if (result.color.range == AVCOL_RANGE_MPEG)
   {
-    srcData = expanded.data();
-    srcFormat = AV_PIX_FMT_RGBA64LE;
-    srcStride = static_cast<int>(result.width * 8);
+    if (ExpandRange(result, src0, expanded))
+    {
+      srcData = expanded.data();
+      srcFormat = AV_PIX_FMT_RGBA64LE;
+      srcStride = static_cast<int>(result.width * 8);
+    }
+    else if (displaySDR)
+      return false;
   }
 
   bool converted = false;
@@ -148,12 +157,28 @@ bool ConvertColorManaged(const CaptureResult& result,
       srcFrame->color_primaries = static_cast<AVColorPrimaries>(result.color.primaries);
       srcFrame->color_trc = static_cast<AVColorTransferCharacteristic>(result.color.transfer);
 
-      // the source peak: without it swscale assumes the full PQ range and crushes
-      if (result.hasDisplayMetadata)
+      bool colorMetadataReady = true;
+      const auto& mastering = result.displayMetadata;
+      // Match the sRGB reference display with a stable nominal PQ source peak
+      // when mastering is unknown. Overlays must not change movie exposure.
+      const bool nominalPQ = displaySDR && srcFrame->color_trc == AVCOL_TRC_SMPTE2084 &&
+          (!result.hasDisplayMetadata || !mastering.has_luminance ||
+           mastering.max_luminance.num <= 0 || mastering.max_luminance.den <= 0);
+      if (result.hasDisplayMetadata || nominalPQ)
       {
-        AVMasteringDisplayMetadata* mdm = av_mastering_display_metadata_create_side_data(srcFrame);
+        auto* mdm = av_mastering_display_metadata_create_side_data(srcFrame);
         if (mdm)
-          *mdm = result.displayMetadata;
+        {
+          *mdm = mastering;
+          if (nominalPQ)
+          {
+            mdm->has_luminance = 1;
+            mdm->min_luminance = {0, 1};
+            mdm->max_luminance = {1000, 1};
+          }
+        }
+        else if (displaySDR)
+          colorMetadataReady = false;
       }
       if (result.hasLightMetadata)
       {
@@ -164,21 +189,34 @@ bool ConvertColorManaged(const CaptureResult& result,
 
       dstFrame->width = static_cast<int>(width);
       dstFrame->height = static_cast<int>(height);
-      dstFrame->format = AV_PIX_FMT_BGRA;
+      dstFrame->format = destination;
       dstFrame->data[0] = buffer;
-      dstFrame->linesize[0] = static_cast<int>(width * 4);
+      dstFrame->linesize[0] = static_cast<int>(width * (destination == AV_PIX_FMT_RGBA64LE ? 8 : 4));
       dstFrame->colorspace = AVCOL_SPC_RGB;
       dstFrame->color_range = AVCOL_RANGE_JPEG;
       dstFrame->color_primaries = AVCOL_PRI_BT709;
-      dstFrame->color_trc = AVCOL_TRC_BT709;
+      dstFrame->color_trc = displaySDR ? AVCOL_TRC_IEC61966_2_1 : AVCOL_TRC_BT709;
+      if (displaySDR)
+      {
+        // sRGB reference display.
+        auto* targetPeak = av_mastering_display_metadata_create_side_data(dstFrame);
+        if (targetPeak)
+        {
+          targetPeak->has_luminance = 1;
+          targetPeak->min_luminance = {0, 1};
+          targetPeak->max_luminance = {100, 1};
+        }
+        else
+          colorMetadataReady = false;
+      }
 
       sws->flags = SWS_BILINEAR;
       // stated explicitly: the default intent is relative colorimetric, which clips
       sws->intent = SWS_INTENT_PERCEPTUAL;
 
-      const int res = sws_scale_frame(sws, dstFrame, srcFrame);
+      const int res = colorMetadataReady ? sws_scale_frame(sws, dstFrame, srcFrame) : AVERROR(ENOMEM);
       if (res < 0)
-        CLog::LogF(LOGWARNING, "sws_scale_frame failed ({}), using legacy conversion", res);
+        CLog::LogF(LOGWARNING, "capture color conversion failed ({})", res);
       else
         converted = true;
     }
@@ -188,6 +226,8 @@ bool ConvertColorManaged(const CaptureResult& result,
   }
 #endif
 
+  if (!converted && displaySDR)
+    return false; // Never encode the original HDR codes as sRGB.
   if (!converted)
   {
     // pre-CMS swscale cannot tonemap: plain-convert so the image at least has
@@ -249,6 +289,31 @@ bool CaptureToBGRA(const CaptureResult& result,
     return ConvertColorManaged(result, src0, width, height, buffer);
 
   return RawToBGRA8(result, src0, width, height, buffer);
+}
+
+bool CaptureToDisplaySDR(const CaptureResult& result, CaptureResult& sdr)
+{
+  if (!result.pixels || !result.width || !result.height || !result.colorEncodingVerified)
+    return false;
+  CScopedCapturePixels lock(*result.pixels);
+  if (!lock.data())
+    return false;
+
+  const bool deep = CaptureIsDeep(result.format);
+  const AVPixelFormat format = deep ? AV_PIX_FMT_RGBA64LE : AV_PIX_FMT_BGRA;
+  const auto stride = result.width * (deep ? 8 : 4);
+  auto pixels = std::make_unique<uint8_t[]>(static_cast<size_t>(stride) * result.height);
+  const auto* src0 = CaptureSrcRow0(lock.data(), result.stride, result.height);
+  if (!ConvertColorManaged(result, src0, result.width, result.height, pixels.get(), format, true))
+    return false;
+
+  sdr.width = result.width;
+  sdr.height = result.height;
+  sdr.stride = static_cast<int>(stride);
+  sdr.format = format;
+  sdr.color = {AVCOL_PRI_BT709, AVCOL_TRC_IEC61966_2_1, AVCOL_RANGE_JPEG};
+  sdr.pixels = std::make_shared<CHeapCapturePixels>(std::move(pixels));
+  return true;
 }
 
 } // namespace CAPTURE
