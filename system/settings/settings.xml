@@ -816,27 +816,27 @@
         <setting id="subtitles.bitmapzoom" type="integer" label="40956" help="40957">
           <requirement>HAVE_DVBRIDGE</requirement><level>1</level><default>100</default>
           <constraints><minimum>10</minimum><step>5</step><maximum>200</maximum></constraints>
-          <control type="spinner" format="percentage" />
+          <control type="spinner" format="string"><format>{}%</format></control>
         </setting>
         <setting id="subtitles.bitmapsdrbrightness" type="integer" label="40958" help="40962">
           <requirement>HAVE_DVBRIDGE</requirement><level>1</level><default>100</default>
           <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
-          <control type="spinner" format="percentage" />
+          <control type="spinner" format="string"><format>{}%</format></control>
         </setting>
         <setting id="subtitles.bitmapsdrsaturation" type="integer" label="40959" help="40962">
           <requirement>HAVE_DVBRIDGE</requirement><level>1</level><default>100</default>
           <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
-          <control type="spinner" format="percentage" />
+          <control type="spinner" format="string"><format>{}%</format></control>
         </setting>
         <setting id="subtitles.bitmaphdrbrightness" type="integer" label="40960" help="40962">
           <requirement>HAVE_DVBRIDGE</requirement><level>1</level><default>100</default>
           <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
-          <control type="spinner" format="percentage" />
+          <control type="spinner" format="string"><format>{}%</format></control>
         </setting>
         <setting id="subtitles.bitmaphdrsaturation" type="integer" label="40961" help="40962">
           <requirement>HAVE_DVBRIDGE</requirement><level>1</level><default>100</default>
           <constraints><minimum>0</minimum><step>5</step><maximum>200</maximum></constraints>
-          <control type="spinner" format="percentage" />
+          <control type="spinner" format="string"><format>{}%</format></control>
         </setting>
       </group>
       <group id="1" label="39186">
