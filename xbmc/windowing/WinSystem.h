@@ -20,6 +20,7 @@
 #include "utils/HDRCapabilities.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -82,6 +83,9 @@ public:
   virtual int GetBufferAge() { return 2; }
   //! \brief Bits per color channel of the presented output.
   virtual int GetOutputBitDepth() const { return 8; }
+  virtual bool HasFloatOutput() const { return false; }
+  // No value means this backend does not report Blu-ray PSR23 display capability.
+  virtual std::optional<uint32_t> GetBluray3DDisplayCapabilities() const { return std::nullopt; }
   virtual bool MoveWindow(int topLeft, int topRight){return false;}
   virtual void FinishModeChange(RESOLUTION res){}
   virtual void FinishWindowResize(int newWidth, int newHeight) {ResizeWindow(newWidth, newHeight, -1, -1);}
@@ -271,6 +275,7 @@ public:
   // When false, implementations should skip FBO bind/clear since no GUI
   // draws will land in the FBO this frame.
   virtual bool BeginGuiComposite(bool guiWillRender) { return false; }
+  virtual bool CanReuseGuiComposite() const { return false; }
   virtual void EndGuiComposite() {}
   virtual void CompositeGui() {}
 
@@ -280,6 +285,8 @@ public:
   // yields wrong transparency. When true, GUI draws select a compensated
   // alpha blend (see CGUIFontTTFGLES::FirstBegin).
   virtual bool IsHdrComposite() const { return false; }
+  // Native HDR keeps its perceived-translucency compensation by default.
+  virtual bool UseGuiCoverageAlpha() const { return !IsHdrComposite(); }
 
   /*!
    * \brief Gets debug info from video renderer for use in "Debug Info OSD" (Alt + O)

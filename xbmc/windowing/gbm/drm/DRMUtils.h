@@ -38,6 +38,7 @@ struct drm_fb
   struct gbm_bo* bo = nullptr;
   uint32_t fb_id;
   uint32_t format;
+  uint32_t opaque_fb_id = 0;
 };
 
 struct outputformat
@@ -68,6 +69,8 @@ public:
   CDRMPlane* GetGuiPlane() const { return m_gui_plane; }
   CDRMCrtc* GetCrtc() const { return m_crtc; }
   CDRMConnector* GetConnector() const { return m_connector; }
+  const drmModeModeInfo* GetSelectedMode() const { return m_mode; }
+  const drmModeModeInfo* GetDVTransportMode() const;
   std::vector<outputformat>& GetOutputFormats() { return m_output_formats; }
   bool FindGuiPlane(uint32_t format, uint64_t modifier);
   bool FindVideoPlane(uint32_t format, uint64_t modifier);
@@ -93,6 +96,7 @@ public:
 protected:
   bool OpenDrm(bool needConnector);
   drm_fb* DrmFbGetFromBo(struct gbm_bo* bo);
+  uint32_t DrmOpaqueFbGetFromBo(struct gbm_bo* bo);
 
   int m_fd{-1};
   CDRMConnector* m_connector{nullptr};
@@ -133,7 +137,10 @@ private:
   std::vector<outputformat> m_output_formats = {{DRM_FORMAT_ARGB8888, 8, 8, false, {}},
                                                 {DRM_FORMAT_XRGB8888, 8, 0, false, {}},
                                                 {DRM_FORMAT_ARGB2101010, 10, 2, false, {}},
-                                                {DRM_FORMAT_XRGB2101010, 10, 0, false, {}}};
+                                                {DRM_FORMAT_XRGB2101010, 10, 0, false, {}},
+                                                {DRM_FORMAT_ABGR2101010, 10, 2, false, {}},
+                                                {DRM_FORMAT_XBGR2101010, 10, 0, false, {}},
+                                                {DRM_FORMAT_ABGR16161616F, 16, 16, false, {}}};
 };
 
 } // namespace GBM

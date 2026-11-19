@@ -15,18 +15,93 @@
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
+#ifdef HAVE_DVBRIDGE
+#include "DVBridgeDisplayRoute.h"
+#include "DVBridgeKernelLogReader.h"
+#include "utils/DVBridgeDiagnosticState.h"
+#endif
 
 #include "PlatformDefs.h"
+
+extern "C"
+{
+#include <libdisplay-info/cta-vic.h>
+}
 
 using namespace KODI::WINDOWING::GBM;
 
 namespace
 {
+bool IsCTATiming(const drmModeModeInfo& mode)
+{
+  if (mode.flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN |
+                    DRM_MODE_FLAG_DBLCLK | DRM_MODE_FLAG_3D_MASK))
+    return false;
+  const uint32_t syncMask = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_NHSYNC |
+      DRM_MODE_FLAG_PVSYNC | DRM_MODE_FLAG_NVSYNC;
+  for (unsigned code = 1; code <= UINT8_MAX; ++code)
+  {
+    const auto* timing = di_cta_vic_video_format_from_vic({static_cast<uint8_t>(code)});
+    if (!timing || timing->interlaced) continue;
+    const uint32_t sync =
+        (timing->h_sync_polarity == DI_CTA_VIC_VIDEO_FORMAT_SYNC_POSITIVE ? DRM_MODE_FLAG_PHSYNC : DRM_MODE_FLAG_NHSYNC) |
+        (timing->v_sync_polarity == DI_CTA_VIC_VIDEO_FORMAT_SYNC_POSITIVE ? DRM_MODE_FLAG_PVSYNC : DRM_MODE_FLAG_NVSYNC);
+    if (timing->h_active == mode.hdisplay && timing->v_active == mode.vdisplay &&
+        timing->h_front == mode.hsync_start - mode.hdisplay &&
+        timing->h_sync == mode.hsync_end - mode.hsync_start &&
+        timing->h_back == mode.htotal - mode.hsync_end &&
+        timing->v_front == mode.vsync_start - mode.vdisplay &&
+        timing->v_sync == mode.vsync_end - mode.vsync_start &&
+        timing->v_back == mode.vtotal - mode.vsync_end && (mode.flags & syncMask) == sync &&
+        (mode.clock == (timing->pixel_clock_hz + 500) / 1000 ||
+         mode.clock == (timing->pixel_clock_hz * 1000 / 1001 + 500) / 1000))
+      return true;
+  }
+  return false;
+}
+
+bool SameTimingExceptSync(const drmModeModeInfo& a, const drmModeModeInfo& b)
+{
+  const uint32_t syncMask = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_NHSYNC |
+      DRM_MODE_FLAG_PVSYNC | DRM_MODE_FLAG_NVSYNC;
+  return a.clock == b.clock && a.hdisplay == b.hdisplay &&
+      a.hsync_start == b.hsync_start && a.hsync_end == b.hsync_end &&
+      a.htotal == b.htotal && a.hskew == b.hskew && a.vdisplay == b.vdisplay &&
+      a.vsync_start == b.vsync_start && a.vsync_end == b.vsync_end &&
+      a.vtotal == b.vtotal && a.vscan == b.vscan &&
+      (a.flags & ~syncMask) == (b.flags & ~syncMask);
+}
+
 const std::string SETTING_VIDEOSCREEN_LIMITGUISIZE = "videoscreen.limitguisize";
+
+#ifdef HAVE_DVBRIDGE
+void ReportDisplayRoute(int fd, CDRMConnector* connector)
+{
+  if (!DVBRIDGE::DiagnosticsEnabled() || !connector)
+    return;
+  char* device = drmGetDeviceNameFromFd2(fd);
+  const std::string card = device ? std::filesystem::path(device).filename().string() : "unknown";
+  free(device);
+  const auto snapshot = DVBRIDGE::ReadDisplayRoute("/sys", card, connector->GetName(),
+      connector->GetType(), connector->GetId()) +
+      " edid_blob=" + std::to_string(connector->GetPropertyValue("EDID").value_or(0));
+  static std::mutex mutex;
+  static DVBRIDGE::DisplayRouteChanges changes;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (changes.Report(DVBRIDGE::DiagnosticNowMs(), snapshot))
+  {
+    CLog::Log(LOGINFO, "DVBridge route: {}", snapshot);
+    DVBRIDGE::CollectKernelLog();
+  }
+}
+#endif
 
 void DrmFbDestroyCallback(gbm_bo* bo, void* data)
 {
   drm_fb* fb = static_cast<drm_fb*>(data);
+
+  if (fb->opaque_fb_id > 0)
+    drmModeRmFB(gbm_device_get_fd(gbm_bo_get_device(bo)), fb->opaque_fb_id);
 
   if (fb->fb_id > 0)
   {
@@ -49,6 +124,9 @@ bool CDRMUtils::SetMode(const RESOLUTION_INFO& res)
   if (!m_connector->CheckConnector())
     return false;
 
+#ifdef HAVE_DVBRIDGE
+  ReportDisplayRoute(m_fd, m_connector);
+#endif
   m_mode = m_connector->GetModeForIndex(std::atoi(res.strId.c_str()));
   m_width = res.iWidth;
   m_height = res.iHeight;
@@ -119,6 +197,57 @@ drm_fb* CDRMUtils::DrmFbGetFromBo(struct gbm_bo* bo)
   gbm_bo_set_user_data(bo, fb, DrmFbDestroyCallback);
 
   return fb;
+}
+
+uint32_t CDRMUtils::DrmOpaqueFbGetFromBo(struct gbm_bo* bo)
+{
+  auto* fb = DrmFbGetFromBo(bo);
+  if (!fb)
+    return 0;
+  // The CB1 half-float resolve writes alpha=1; NVIDIA exposes no opaque alias.
+  if (fb->format == DRM_FORMAT_XRGB8888 || fb->format == DRM_FORMAT_XRGB2101010 ||
+      fb->format == DRM_FORMAT_XBGR2101010 || fb->format == DRM_FORMAT_ABGR16161616F)
+    return fb->fb_id;
+  if (fb->format != DRM_FORMAT_ARGB8888 && fb->format != DRM_FORMAT_ARGB2101010 &&
+      fb->format != DRM_FORMAT_ABGR2101010)
+    return 0;
+  if (fb->opaque_fb_id)
+    return fb->opaque_fb_id;
+
+  // A separate opaque view preserves the ordinary GUI framebuffer and owns no
+  // extra pixel storage. Packed DV and reconstructed HDR10 are final images;
+  // neither must be blended again by the scanout plane.
+  const uint32_t opaqueFormat = fb->format == DRM_FORMAT_ABGR2101010 ? DRM_FORMAT_XBGR2101010 :
+      fb->format == DRM_FORMAT_ARGB2101010 ? DRM_FORMAT_XRGB2101010 : DRM_FORMAT_XRGB8888;
+  uint32_t handles[4]{}, strides[4]{}, offsets[4]{};
+  uint64_t modifiers[4]{};
+#if defined(HAS_GBM_MODIFIERS)
+  const int planes = gbm_bo_get_plane_count(bo);
+  if (planes < 1 || planes > 4)
+    return 0;
+  for (int i = 0; i < planes; ++i)
+  {
+    handles[i] = gbm_bo_get_handle_for_plane(bo, i).u32;
+    strides[i] = gbm_bo_get_stride_for_plane(bo, i);
+    offsets[i] = gbm_bo_get_offset(bo, i);
+    modifiers[i] = gbm_bo_get_modifier(bo);
+  }
+#else
+  handles[0] = gbm_bo_get_handle(bo).u32;
+  strides[0] = gbm_bo_get_stride(bo);
+#endif
+  const uint32_t flags = modifiers[0] != DRM_FORMAT_MOD_LINEAR &&
+                                 modifiers[0] != DRM_FORMAT_MOD_INVALID
+                             ? DRM_MODE_FB_MODIFIERS : 0;
+  const int result = drmModeAddFB2WithModifiers(
+      m_fd, gbm_bo_get_width(bo), gbm_bo_get_height(bo), opaqueFormat,
+      handles, strides, offsets, flags ? modifiers : nullptr, &fb->opaque_fb_id, flags);
+  if (result != 0)
+  {
+    fb->opaque_fb_id = 0;
+    CLog::LogF(LOGERROR, "Cannot create opaque transport framebuffer: {}", strerror(errno));
+  }
+  return fb->opaque_fb_id;
 }
 
 bool CDRMUtils::FindPreferredMode()
@@ -479,12 +608,29 @@ bool CDRMUtils::OpenDrm(bool needConnector)
     drmVersionPtr version = drmGetVersion(m_fd);
     if (version)
     {
+#ifdef HAVE_DVBRIDGE
+      if (DVBRIDGE::DiagnosticsEnabled())
+        CLog::Log(LOGINFO, "DVBridge driver: name={} version={}.{}.{}", version->name,
+            version->version_major,version->version_minor,version->version_patchlevel);
+#endif
       if (strcmp(version->name, "amdgpu") == 0)
         m_drm_quirks |= QUIRK_NEEDSPRIMARY;
       drmFreeVersion(version);
     }
 
     PrintDrmDeviceInfo(device);
+#ifdef HAVE_DVBRIDGE
+    // Already-enumerated selected GPU, not a second scan. Keep its PCI identity
+    // visible without global debug mode even if sysfs is inaccessible.
+    if (DVBRIDGE::DiagnosticsEnabled() && device->bustype == DRM_BUS_PCI &&
+        device->businfo.pci && device->deviceinfo.pci)
+      CLog::Log(LOGINFO,
+          "DVBridge GPU: node={} pci={:04x}:{:02x}:{:02x}.{} vendor={:04x} device={:04x} subvendor={:04x} subdevice={:04x}",
+          device->nodes[DRM_NODE_PRIMARY], device->businfo.pci->domain,
+          device->businfo.pci->bus, device->businfo.pci->dev, device->businfo.pci->func,
+          device->deviceinfo.pci->vendor_id, device->deviceinfo.pci->device_id,
+          device->deviceinfo.pci->subvendor_id, device->deviceinfo.pci->subdevice_id);
+#endif
 
     const char* renderPath = drmGetRenderDeviceNameFromFd(m_fd);
 
@@ -680,6 +826,9 @@ bool CDRMUtils::FindConnector()
   CLog::LogF(LOGINFO, "Using connector: {}", connector->get()->GetName());
 
   m_connector = connector->get();
+#ifdef HAVE_DVBRIDGE
+  ReportDisplayRoute(m_fd, m_connector);
+#endif
   return true;
 }
 
@@ -767,6 +916,12 @@ RESOLUTION_INFO CDRMUtils::GetResolutionInfo(drmModeModeInfoPtr mode)
   RESOLUTION_INFO res;
   res.iScreenWidth = mode->hdisplay;
   res.iScreenHeight = mode->vdisplay;
+
+  // Frame packing scans out both eyes plus an active-space gap, i.e.
+  // (vdisplay + vtotal) lines. The kernel doubles the CRTC timing to match.
+  if ((mode->flags & DRM_MODE_FLAG_3D_MASK) == DRM_MODE_FLAG_3D_FRAME_PACKING)
+    res.iScreenHeight = mode->vdisplay + mode->vtotal;
+
   res.iWidth = res.iScreenWidth;
   res.iHeight = res.iScreenHeight;
 
@@ -821,17 +976,33 @@ RESOLUTION_INFO CDRMUtils::GetResolutionInfo(drmModeModeInfoPtr mode)
   res.fPixelRatio = 1.0f;
   res.bFullScreen = true;
 
-  if (mode->flags & DRM_MODE_FLAG_3D_MASK)
+  res.dwFlags = mode->flags & DRM_MODE_FLAG_INTERLACE ? D3DPRESENTFLAG_INTERLACED
+                                                      : D3DPRESENTFLAG_PROGRESSIVE;
+
+  // The 3D layout is a masked enum, not independent bits (TOP_AND_BOTTOM is
+  // 7<<14 and shares bit 14 with FRAME_PACKING 1<<14), so match the whole field.
+  switch (mode->flags & DRM_MODE_FLAG_3D_MASK)
   {
-    if (mode->flags & DRM_MODE_FLAG_3D_TOP_AND_BOTTOM)
-      res.dwFlags = D3DPRESENTFLAG_MODE3DTB;
-    else if (mode->flags & DRM_MODE_FLAG_3D_SIDE_BY_SIDE_HALF)
-      res.dwFlags = D3DPRESENTFLAG_MODE3DSBS;
+    case DRM_MODE_FLAG_3D_TOP_AND_BOTTOM:
+      // Half layout: each eye is sent at half height and displayed full height,
+      // so its pixels are twice as tall. CGraphicContext trusts the stored ratio
+      // for a natively flagged 3D mode, so it has to be set here.
+      res.dwFlags |= D3DPRESENTFLAG_MODE3DTB;
+      res.fPixelRatio = 0.5f;
+      break;
+    case DRM_MODE_FLAG_3D_SIDE_BY_SIDE_HALF:
+      res.dwFlags |= D3DPRESENTFLAG_MODE3DSBS;
+      res.fPixelRatio = 2.0f;
+      break;
+    case DRM_MODE_FLAG_3D_FRAME_PACKING:
+      // Two full-size eyes stacked with an active-space gap: a top-and-bottom
+      // layout whose right eye sits at iHeight + iBlanking (StereoCorrection).
+      res.dwFlags |= D3DPRESENTFLAG_MODE3DTB;
+      res.iBlanking = mode->vtotal - mode->vdisplay;
+      break;
+    default:
+      break;
   }
-  else if (mode->flags & DRM_MODE_FLAG_INTERLACE)
-    res.dwFlags = D3DPRESENTFLAG_INTERLACED;
-  else
-    res.dwFlags = D3DPRESENTFLAG_PROGRESSIVE;
 
   res.strMode =
       StringUtils::Format("{}x{}{} @ {:.6f} Hz", res.iScreenWidth, res.iScreenHeight,
@@ -844,6 +1015,23 @@ RESOLUTION_INFO CDRMUtils::GetCurrentMode()
   return GetResolutionInfo(m_mode);
 }
 
+const drmModeModeInfo* CDRMUtils::GetDVTransportMode() const
+{
+  if (!m_mode || !m_connector || IsCTATiming(*m_mode) ||
+      (m_connector->GetType() != "HDMI-A" &&
+       (m_connector->GetType() != "DP" || !m_connector->SupportsProperty("CB1_NATIVE_TMDS") ||
+        m_connector->ReadPropertyValue("CB1_NATIVE_TMDS") != 1)))
+    return m_mode;
+  // Only the DV transaction needs a CTA AVI VIC; native selection is untouched.
+  for (int i = 0; i < m_connector->GetModesCount(); ++i)
+  {
+    const auto* mode = m_connector->GetModeForIndex(i);
+    if (SameTimingExceptSync(*m_mode, *mode) && IsCTATiming(*mode))
+      return mode;
+  }
+  return m_mode;
+}
+
 std::vector<RESOLUTION_INFO> CDRMUtils::GetModes()
 {
   std::vector<RESOLUTION_INFO> resolutions;
@@ -851,7 +1039,31 @@ std::vector<RESOLUTION_INFO> CDRMUtils::GetModes()
 
   for (auto i = 0; i < m_connector->GetModesCount(); i++)
   {
-    RESOLUTION_INFO res = GetResolutionInfo(m_connector->GetModeForIndex(i));
+    drmModeModeInfoPtr mode = m_connector->GetModeForIndex(i);
+
+    // Interlaced frame packing cannot be driven from a progressive framebuffer;
+    // hide it so it is never picked for 3D playback. strId stays the connector
+    // mode index (SetMode() looks the mode up by it), so skip without renumbering.
+    if ((mode->flags & DRM_MODE_FLAG_3D_MASK) == DRM_MODE_FLAG_3D_FRAME_PACKING &&
+        (mode->flags & DRM_MODE_FLAG_INTERLACE))
+      continue;
+
+    // KODI_3D_PREFER=fp|tab|sbs (environment) keeps only that native 3D layout, so the
+    // selection - which otherwise takes the largest, i.e. frame packing - lands on the
+    // transport wanted. A test knob until a setting exists for it.
+    static const char* const prefer3D = getenv("KODI_3D_PREFER");
+    const uint32_t layout = mode->flags & DRM_MODE_FLAG_3D_MASK;
+    if (prefer3D && layout != DRM_MODE_FLAG_3D_NONE)
+    {
+      const bool keep =
+          (strcmp(prefer3D, "fp") == 0 && layout == DRM_MODE_FLAG_3D_FRAME_PACKING) ||
+          (strcmp(prefer3D, "tab") == 0 && layout == DRM_MODE_FLAG_3D_TOP_AND_BOTTOM) ||
+          (strcmp(prefer3D, "sbs") == 0 && layout == DRM_MODE_FLAG_3D_SIDE_BY_SIDE_HALF);
+      if (!keep)
+        continue;
+    }
+
+    RESOLUTION_INFO res = GetResolutionInfo(mode);
     res.strId = std::to_string(i);
     resolutions.push_back(res);
   }

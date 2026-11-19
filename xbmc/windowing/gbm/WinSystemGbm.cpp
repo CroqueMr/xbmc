@@ -14,6 +14,10 @@
 #include "VideoSyncGbm.h"
 #include "cores/VideoPlayer/VideoReferenceClock.h"
 #include "drm/DRMAtomic.h"
+#ifdef HAVE_DVBRIDGE
+#include "drm/DVBridgeState.h"
+#include "utils/DVBridgeDiagnosticLog.h"
+#endif
 #include "drm/DRMLegacy.h"
 #include "drm/OffScreenModeSetting.h"
 #include "messaging/ApplicationMessenger.h"
@@ -30,6 +34,7 @@
 #include "windowing/GraphicContext.h"
 
 #include <mutex>
+#include <cmath>
 #include <string.h>
 
 #ifndef HAVE_HDR_OUTPUT_METADATA
@@ -171,6 +176,7 @@ bool CWinSystemGbm::InitWindowSystem()
     if (!edid.empty())
     {
       m_info = UTILS::CDisplayInfo::Create(edid);
+      if (m_info) m_displayEdid = edid;
     }
   }
 
@@ -211,11 +217,47 @@ bool CWinSystemGbm::DestroyWindowSystem()
   return true;
 }
 
+namespace
+{
+// Blu-ray PSR23 formats, independent of the player profile or current arrangement.
+// Keep this display backend independent of the optional libbluray headers.
+uint32_t Bluray3DDisplayCapabilities(const std::vector<RESOLUTION_INFO>& modes)
+{
+  bool p1080Ntsc = false;
+  bool p720Ntsc = false;
+  bool p720Pal = false;
+  for (const auto& mode : modes)
+  {
+    if ((mode.dwFlags & D3DPRESENTFLAG_INTERLACED) ||
+        !(mode.dwFlags & (D3DPRESENTFLAG_MODE3DSBS | D3DPRESENTFLAG_MODE3DTB)))
+      continue;
+
+    const int height = mode.iBlanking > 0
+                           ? (mode.iScreenHeight - mode.iBlanking) / 2
+                           : mode.iScreenHeight;
+    if (mode.iScreenWidth == 1920 && height == 1080)
+      p1080Ntsc |= std::abs(mode.fRefreshRate - 24000.0f / 1001.0f) < 0.005f;
+    if (mode.iScreenWidth == 1280 && height == 720)
+    {
+      p720Ntsc |= std::abs(mode.fRefreshRate - 60000.0f / 1001.0f) < 0.005f;
+      p720Pal |= std::abs(mode.fRefreshRate - 50.0f) < 0.005f;
+    }
+  }
+
+  // Bit 0 requires both NTSC formats, bit 1 is 720p50. Physical width is unknown;
+  // neither glasses-free nor interlaced capability can be inferred from these modes.
+  return (p1080Ntsc && p720Ntsc ? 0x01u : 0u) | (p720Pal ? 0x02u : 0u);
+}
+} // namespace
+
 void CWinSystemGbm::UpdateResolutions()
 {
   RESOLUTION_INFO current = m_DRM->GetCurrentMode();
 
   auto resolutions = m_DRM->GetModes();
+  // Publish from the complete local enumeration, before rebuilding the GUI catalogue.
+  // An empty/mono enumeration must also clear a previously advertised 3D capability.
+  m_bluray3DDisplayCapabilities.store(Bluray3DDisplayCapabilities(resolutions));
   if (resolutions.empty())
   {
     CDisplaySettings::GetInstance().ClearCustomResolutions();
@@ -224,9 +266,10 @@ void CWinSystemGbm::UpdateResolutions()
     CDisplaySettings::GetInstance().AddResolutionInfo(current);
     CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = current;
 
-    CLog::Log(LOGINFO, "Found resolution {}x{} with {}x{}{} @ {:f} Hz", current.iWidth,
+    CLog::Log(LOGINFO, "Found resolution {}x{} with {}x{}{} @ {:f} Hz{}", current.iWidth,
               current.iHeight, current.iScreenWidth, current.iScreenHeight,
-              current.dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", current.fRefreshRate);
+              current.dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", current.fRefreshRate,
+              current.StereoLayoutTag());
   }
   else
   {
@@ -244,9 +287,13 @@ void CWinSystemGbm::UpdateResolutions()
         CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = res;
       }
 
-      CLog::Log(LOGINFO, "Found resolution {}x{} with {}x{}{} @ {:f} Hz", res.iWidth, res.iHeight,
+      // The layout matters as much as the geometry here: without it a half 3D mode prints
+      // exactly like the 2D mode of the same timing, and the log dedupe swallows it as a
+      // duplicate message.
+      CLog::Log(LOGINFO, "Found resolution {}x{} with {}x{}{} @ {:f} Hz{}", res.iWidth, res.iHeight,
                 res.iScreenWidth, res.iScreenHeight,
-                res.dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", res.fRefreshRate);
+                res.dwFlags & D3DPRESENTFLAG_INTERLACED ? "i" : "", res.fRefreshRate,
+                res.StereoLayoutTag());
     }
   }
 
@@ -286,11 +333,9 @@ bool CWinSystemGbm::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool bl
 
   auto result = m_DRM->SetVideoMode(res, bo);
 
-  // For atomic DRM, SetVideoMode only queues the modeset (m_need_modeset).
-  // Commit it now so the kernel CRTC matches the new surface before any
-  // subsequent eglSwapBuffers; otherwise mesa logs a spurious
-  // EGL_BAD_SURFACE on the next frame while userspace surface and kernel
-  // CRTC are out of sync. Legacy DRM already committed in SetVideoMode.
+  // Complete Kodi's queued native modeset before the next EGL buffer swap.
+  // This existing GBM synchronization is required for ordinary HDR as well;
+  // it does not set DV signaling or override Kodi's HDR/SDR policy.
   if (result && std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
     FlipPage(true, false, false);
 
@@ -303,6 +348,128 @@ bool CWinSystemGbm::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool bl
 
   return result;
 }
+
+#ifdef HAVE_DVBRIDGE
+bool CWinSystemGbm::RefreshDisplayInfoForVideo()
+{
+  auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (!connector) return false;
+  auto edid = connector->GetEDID(true);
+  if (edid == m_displayEdid)
+    return false;
+  // An absent or invalid EDID withdraws the previous sink's capabilities.
+  auto information = edid.empty() ? nullptr : UTILS::CDisplayInfo::Create(edid);
+  if (!information && !m_info)
+    return false;
+  m_displayEdid = information ? std::move(edid) : std::vector<uint8_t>{};
+  m_info = std::move(information);
+  DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge display refresh: connector={} changed=true",connector->GetId());
+  return true;
+}
+
+bool CWinSystemGbm::SupportsDVOutputMode(bool requireCurrentMode) const
+{
+  if (!m_DRM) return false;
+  const auto usable = [](const drmModeModeInfo* mode) {
+    if (!mode || !mode->hdisplay || (mode->hdisplay & 1) || !mode->vdisplay ||
+        mode->hdisplay > 3840 || mode->vdisplay > 2160 ||
+        uint64_t(mode->hdisplay) * mode->vdisplay < 5 * 3072u ||
+        (mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN))) return false;
+    const double rate = mode->htotal && mode->vtotal ?
+        mode->clock * 1000.0 / mode->htotal / mode->vtotal : 0.0;
+    return CResolutionUtils::IsCB1RefreshRate(rate);
+  };
+  if (usable(m_DRM->GetSelectedMode())) return true;
+  if (requireCurrentMode) return false;
+  auto* connector = m_DRM->GetConnector();
+  if (!connector || !connector->IsConnected()) return false;
+  for (int i = 0; i < connector->GetModesCount(); ++i)
+    if (usable(connector->GetModeForIndex(i))) return true;
+  return false;
+}
+
+bool CWinSystemGbm::SupportsNativeDVOutput(bool requireCurrentMode) const
+{
+  if (!m_info || !m_info->SupportsStandardDolbyVision() ||
+      !std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
+    return false;
+  auto* connector = m_DRM->GetConnector();
+  if (!connector || !connector->IsConnected() || !SupportsDVOutputMode(requireCurrentMode))
+    return false;
+  const auto backend = CDVBridgeState::GetBackend(*connector);
+  return backend == CDVBridgeState::Backend::KERNEL ||
+      (backend == CDVBridgeState::Backend::NVIDIA && m_info->SupportsRGBQuantizationSelection());
+}
+
+bool CWinSystemGbm::CompleteDVBridgePage(int timeoutMs)
+{
+  auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  if (!drm || !drm->HasPendingCB1Page()) return true;
+  if (!drm->CompleteCB1Page(timeoutMs)) return false;
+  m_GBM->GetDevice().GetSurface().CompleteTransactionalBuffer(true);
+  return true;
+}
+
+bool CWinSystemGbm::FlipDVBridgePage(CDVBridgeState& state, bool restore, bool async,
+                                    bool retainSignal, struct gbm_bo* bo)
+{
+  if (!CompleteDVBridgePage()) return false;
+  auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  if (!drm || !m_GBM || !state.Captured())
+    return false;
+  auto& surface = m_GBM->GetDevice().GetSurface();
+  if (!bo) bo = surface.LockTransactionalBuffer();
+  bool valid = bo != nullptr;
+  if (valid && !restore)
+  {
+    const auto mode = drm->GetSelectedMode();
+    const auto format = gbm_bo_get_format(bo);
+    valid = mode && SupportsDVOutputMode() &&
+            gbm_bo_get_width(bo) == mode->hdisplay && gbm_bo_get_height(bo) == mode->vdisplay &&
+            (format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888) &&
+            !(mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN));
+    if (valid)
+    {
+      const double rate = mode->htotal && mode->vtotal
+                              ? mode->clock * 1000.0 / mode->htotal / mode->vtotal : 0.0;
+      valid = CResolutionUtils::IsCB1RefreshRate(rate);
+    }
+  }
+  if (valid)
+    valid = state.Stage(*drm, restore);
+  if (valid && restore && retainSignal)
+    valid = RequeueOutputProperties();
+  bool accepted = false;
+  bool restarted = false;
+  // Hades RC2: restart an active NVIDIA head when only the transport depth changes.
+  // A queued new mode already performs that link transition in its own commit.
+  if (valid && restore && state.CapturedBackend() == CDVBridgeState::Backend::NVIDIA &&
+      drm->IsActive() && drm->IsSelectedModeCommitted())
+  {
+    drm->SetActive(false);
+    const bool off = drm->FlipPageTransactional(bo, true);
+    drm->SetActive(true);
+    if (off)
+    {
+      restarted = true;
+      const bool staged = state.Stage(*drm, true) &&
+          (!retainSignal || RequeueOutputProperties());
+      accepted = drm->FlipPageTransactional(staged ? bo : nullptr, true);
+    }
+    else
+      valid = state.Stage(*drm, true) && (!retainSignal || RequeueOutputProperties());
+  }
+  if (!restarted)
+    accepted = drm->FlipPageTransactional(valid ? bo : nullptr, restore, async);
+  if (!drm->HasPendingCB1Page()) surface.CompleteTransactionalBuffer(accepted);
+  if (accepted && restore)
+  {
+    surface.EndTransactionalMode();
+    state.Restored();
+  }
+  return accepted;
+}
+#endif
 
 void CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async)
 {
@@ -374,6 +541,7 @@ void CWinSystemGbm::Unregister(IDispResource* resource)
 
 void CWinSystemGbm::OnLostDevice()
 {
+  if (m_dispReset) return;
   CLog::Log(LOGDEBUG, "{} - notify display change event", __FUNCTION__);
   m_dispReset = true;
 
@@ -427,6 +595,7 @@ bool CWinSystemGbm::SetVideoOutput(const VideoPicture* videoPicture)
 
 void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture)
 {
+  m_queuedColorspace.reset();
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   if (!drm)
     return;
@@ -477,12 +646,19 @@ void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture)
                KODI::UTILS::ColorimetryToString(scanoutColorimetry),
                KODI::UTILS::ColorimetryToString(colorimetry));
     drm->AddProperty(connector, "Colorspace", colorspace.value());
+    m_queuedColorspace = colorspace;
     drm->SetActive(true);
   }
 }
 
 bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
 {
+  if (!videoPicture)
+    if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
+      drm->SetSDRRestorePending(true);
+  m_queuedHdrMetadata = 0;
+  m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
+  m_hdrBlob.Reset();
   auto settingsComponent = CServiceBroker::GetSettingsComponent();
   if (!settingsComponent)
     return false;
@@ -510,10 +686,8 @@ bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
       drm->AddProperty(connector, "HDR_OUTPUT_METADATA", 0);
       drm->SetActive(true);
 
-      m_hdrBlob.Reset();
     }
 
-    m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
     return false;
   }
 
@@ -521,12 +695,10 @@ bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
   if (videoPicture->color_transfer != AVCOL_TRC_SMPTE2084 &&
       videoPicture->color_transfer != AVCOL_TRC_ARIB_STD_B67)
   {
-    m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
     return false;
   }
 
   KODI::UTILS::Eotf eotf = KODI::UTILS::GetEOTF(*videoPicture);
-  m_eotf = eotf;
 
   if (connector->SupportsProperty("HDR_OUTPUT_METADATA") && m_info &&
       m_info->SupportsHDRStaticMetadataType1() && m_info->SupportsEOTF(eotf))
@@ -536,8 +708,6 @@ bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
     hdr_metadata.metadata_type = KODI::UTILS::HDMI_STATIC_METADATA_TYPE1;
     hdr_metadata.hdmi_metadata_type1.eotf = static_cast<uint8_t>(eotf);
     hdr_metadata.hdmi_metadata_type1.metadata_type = KODI::UTILS::HDMI_STATIC_METADATA_TYPE1;
-
-    m_hdrBlob.Reset();
 
     if (hdr_metadata.hdmi_metadata_type1.eotf)
     {
@@ -602,12 +772,70 @@ bool CWinSystemGbm::SetHDR(const VideoPicture* videoPicture)
       m_hdrBlob = CDRMPropertyBlob(drm->GetFileDescriptor(), &hdr_metadata, sizeof(hdr_metadata));
     }
 
-    drm->AddProperty(connector, "HDR_OUTPUT_METADATA", m_hdrBlob.Get());
+    if (!m_hdrBlob.IsValid() ||
+        !drm->AddProperty(connector, "HDR_OUTPUT_METADATA", m_hdrBlob.Get()))
+    {
+      m_hdrBlob.Reset();
+      CLog::LogF(LOGWARNING, "HDR output rejected: metadata blob allocation or property staging failed");
+      return false;
+    }
+    m_eotf = eotf;
+    m_queuedHdrMetadata = m_hdrBlob.Get();
+    drm->SetSDRRestorePending(false);
     drm->SetActive(true);
+  }
+  else
+  {
+    CLog::LogF(LOGWARNING, "HDR output unavailable: metadata_property={} display_metadata={} eotf_supported={}",
+               connector->SupportsProperty("HDR_OUTPUT_METADATA"),
+               m_info && m_info->SupportsHDRStaticMetadataType1(),
+               m_info && m_info->SupportsEOTF(eotf));
   }
 
   return m_hdrBlob.IsValid();
 }
+
+bool CWinSystemGbm::RequeueOutputProperties()
+{
+  auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  auto* connector = drm ? drm->GetConnector() : nullptr;
+  if (!connector) return false;
+  bool valid = true;
+  if (m_queuedColorspace)
+    valid &= drm->AddProperty(connector, "Colorspace", *m_queuedColorspace);
+  if (m_queuedHdrMetadata && connector->SupportsProperty("HDR_OUTPUT_METADATA"))
+    valid &= drm->AddProperty(connector, "HDR_OUTPUT_METADATA", *m_queuedHdrMetadata);
+  drm->AllowModeset();
+  return valid;
+}
+
+#ifdef HAVE_DVBRIDGE
+bool CWinSystemGbm::StageOrdinaryHDR10Recovery()
+{
+  auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  auto* connector = drm ? drm->GetConnector() : nullptr;
+  if (!connector)
+    return false;
+  if (connector->SupportsProperty("HDR_OUTPUT_METADATA") &&
+      !drm->AddProperty(connector, "HDR_OUTPUT_METADATA", 0))
+    return false;
+  if (connector->SupportsProperty("Colorspace"))
+  {
+    const auto value = connector->GetPropertyEnumValue("Colorspace", "Default");
+    if (!value || !drm->AddProperty(connector, "Colorspace", *value))
+      return false;
+  }
+  drm->SetActive(true);
+  return true;
+}
+
+void CWinSystemGbm::CompleteOrdinaryHDR10Recovery()
+{
+  m_hdrBlob.Reset();
+  m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
+  m_colorimetry = KODI::UTILS::Colorimetry::DEFAULT;
+}
+#endif
 
 bool CWinSystemGbm::IsHDRDisplay()
 {
@@ -635,6 +863,12 @@ CHDRCapabilities CWinSystemGbm::GetDisplayHDRCapabilities() const
 
   if (m_info->SupportsEOTF(UTILS::Eotf::HLG))
     caps.SetHLG();
+
+  if (m_info->SupportsDolbyVision())
+    caps.SetDolbyVision();
+
+  if (m_info->HDR10PlusVersion() >= 0)
+    caps.SetHDR10Plus();
 
   return caps;
 }

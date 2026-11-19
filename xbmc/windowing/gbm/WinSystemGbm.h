@@ -18,6 +18,7 @@
 
 #include "platform/linux/input/LibInputHandler.h"
 
+#include <atomic>
 #include <utility>
 
 #include <gbm.h>
@@ -34,6 +35,7 @@ namespace WINDOWING
 {
 namespace GBM
 {
+class CDVBridgeState;
 
 class CWinSystemGbm : public CWinSystemBase
 {
@@ -50,9 +52,21 @@ public:
   bool SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays) override;
 
   void FlipPage(bool rendered, bool videoLayer, bool async);
+#ifdef HAVE_DVBRIDGE
+  bool FlipDVBridgePage(CDVBridgeState& state, bool restore, bool async = false,
+                        bool retainSignal = false, struct gbm_bo* bo = nullptr);
+  bool CompleteDVBridgePage(int timeoutMs = 0);
+  bool SupportsNativeDVOutput(bool requireCurrentMode = true) const;
+  bool SupportsDVOutputMode(bool requireCurrentMode = true) const;
+  bool RefreshDisplayInfoForVideo();
+#endif
 
   bool CanDoWindowed() override { return false; }
   void UpdateResolutions() override;
+  std::optional<uint32_t> GetBluray3DDisplayCapabilities() const override
+  {
+    return m_bluray3DDisplayCapabilities.load();
+  }
 
   bool UseLimitedColor() override;
 
@@ -83,8 +97,15 @@ public:
   std::vector<std::string> GetConnectedOutputs() override;
 
 protected:
+  bool RequeueOutputProperties();
+  std::optional<uint64_t> m_queuedColorspace, m_queuedHdrMetadata;
   void OnLostDevice();
 
+#ifdef HAVE_DVBRIDGE
+  bool StageOrdinaryHDR10Recovery();
+  void CompleteOrdinaryHDR10Recovery();
+  const UTILS::CDisplayInfo* GetDisplayInfo() const { return m_info.get(); }
+#endif
   std::unique_ptr<CVideoSync> GetVideoSync(CVideoReferenceClock* clock) override;
 
   std::shared_ptr<CDRMUtils> m_DRM;
@@ -99,11 +120,14 @@ protected:
   std::unique_ptr<CLibInputHandler> m_libinput;
 
 private:
+  // Claim no 3D display formats until an entire DRM mode enumeration proves them.
+  std::atomic<uint32_t> m_bluray3DDisplayCapabilities{0};
   CDRMPropertyBlob m_hdrBlob;
   KODI::UTILS::Eotf m_eotf = KODI::UTILS::Eotf::TRADITIONAL_SDR;
   KODI::UTILS::Colorimetry m_colorimetry = KODI::UTILS::Colorimetry::DEFAULT;
 
   std::unique_ptr<UTILS::CDisplayInfo> m_info;
+  std::vector<uint8_t> m_displayEdid;
 };
 
 } // namespace GBM
