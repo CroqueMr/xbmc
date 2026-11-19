@@ -317,7 +317,8 @@ bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool
     if (!hdr)
     {
       CEGLUtils::Log(LOGERROR, errorMsg);
-      Destroy();
+      if (!m_outputSurfaceTransaction)
+        Destroy();
     }
     else
       CEGLUtils::Log(LOGINFO, errorMsg);
@@ -531,6 +532,96 @@ bool CEGLContextUtils::CreatePlatformSurface(void* nativeWindow, EGLNativeWindow
 
   SurfaceAttrib();
 
+  return true;
+}
+
+bool CEGLContextUtils::BeginOutputSurface()
+{
+  if (m_outputSurfaceTransaction || m_eglSurface == EGL_NO_SURFACE ||
+      m_eglContext == EGL_NO_CONTEXT)
+    return false;
+  m_priorSurface = m_eglSurface;
+  m_priorConfig = m_eglConfig;
+  m_priorHDRConfig = m_eglHDRConfig;
+  m_outputSurfaceTransaction = true;
+  return true;
+}
+
+bool CEGLContextUtils::StageOutputSurface(void* nativeWindow, EGLNativeWindowType legacy)
+{
+  if (!m_outputSurfaceTransaction || m_eglSurface != m_priorSurface)
+    return false;
+  m_eglSurface = EGL_NO_SURFACE;
+  return CreatePlatformSurface(nativeWindow, legacy);
+}
+
+bool CEGLContextUtils::BindPriorOutputSurface()
+{
+  if (!m_outputSurfaceTransaction) return true;
+  return eglMakeCurrent(m_eglDisplay,m_priorSurface,m_priorSurface,m_eglContext) == EGL_TRUE;
+}
+
+bool CEGLContextUtils::CompleteOutputSurface(bool presented)
+{
+  if (!m_outputSurfaceTransaction)
+    return true;
+  if (presented)
+  {
+    if (m_eglSurface == EGL_NO_SURFACE)
+      return false;
+    if (m_priorSurface != m_eglSurface &&
+        eglDestroySurface(m_eglDisplay, m_priorSurface) != EGL_TRUE)
+      return false;
+  }
+  else
+  {
+    // Do not mutate either state until binding the coherent prior drawable works.
+    if (!BindPriorOutputSurface())
+      return false;
+    const auto rejected = m_eglSurface;
+    if (rejected != EGL_NO_SURFACE && rejected != m_priorSurface &&
+        eglDestroySurface(m_eglDisplay, rejected) != EGL_TRUE)
+      return false;
+    m_eglSurface = m_priorSurface;
+    m_eglConfig = m_priorConfig;
+    m_eglHDRConfig = m_priorHDRConfig;
+  }
+  m_priorSurface = EGL_NO_SURFACE;
+  m_outputSurfaceTransaction = false;
+  return true;
+}
+
+CEGLContextUtils::RetainedContext CEGLContextUtils::RetainForRetirement()
+{
+  RetainedContext state{m_eglDisplay, m_eglContext, m_eglUploadContext,
+      m_eglSurface, m_priorSurface};
+  // The matching native window retirement owner retains these raw handles plus
+  // its GBM device/surfaces and DRM owner. Implicit destruction must not reclaim.
+  m_eglDisplay = EGL_NO_DISPLAY;
+  m_eglContext = m_eglUploadContext = EGL_NO_CONTEXT;
+  m_eglSurface = m_priorSurface = EGL_NO_SURFACE;
+  m_outputSurfaceTransaction = false;
+  return state;
+}
+
+bool CEGLContextUtils::DestroyRetiredContext(RetainedContext& state)
+{
+  if (state.display == EGL_NO_DISPLAY) return true;
+  if (!eglMakeCurrent(state.display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT)) return false;
+  for (auto* surface : {&state.priorSurface,&state.surface})
+    if (*surface != EGL_NO_SURFACE)
+    {
+      if (!eglDestroySurface(state.display,*surface)) return false;
+      *surface = EGL_NO_SURFACE;
+    }
+  for (auto* context : {&state.uploadContext,&state.context})
+    if (*context != EGL_NO_CONTEXT)
+    {
+      if (!eglDestroyContext(state.display,*context)) return false;
+      *context = EGL_NO_CONTEXT;
+    }
+  if (!eglTerminate(state.display)) return false;
+  state.display = EGL_NO_DISPLAY;
   return true;
 }
 

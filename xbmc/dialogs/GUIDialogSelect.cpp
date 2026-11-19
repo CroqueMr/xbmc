@@ -12,6 +12,7 @@
 #include "FileItemList.h"
 #include "ServiceBroker.h"
 #include "guilib/GUIMessage.h"
+#include "input/actions/Action.h"
 #include "input/actions/ActionIDs.h"
 #include "resources/LocalizeStrings.h"
 #include "resources/ResourcesComponent.h"
@@ -44,6 +45,23 @@ CGUIDialogSelect::CGUIDialogSelect(int windowId)
 }
 
 CGUIDialogSelect::~CGUIDialogSelect(void) = default;
+
+bool CGUIDialogSelect::OnAction(const CAction& action)
+{
+#ifdef HAVE_DVBRIDGE
+  if (action.GetID() == ACTION_PLAYER_PROCESS_INFO)
+  {
+    if (GetProperty("CB1.PlaybackModes").asBoolean())
+    {
+      m_bConfirmed = false;
+      Close(true);
+    }
+    // Keep the shared O key from opening information over an ordinary selector.
+    return true;
+  }
+#endif
+  return CGUIDialogBoxBase::OnAction(action);
+}
 
 bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
 {
@@ -99,6 +117,8 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
           if (iSelected >= 0 && iSelected < m_vecList->Size())
           {
             CFileItemPtr item(m_vecList->Get(iSelected));
+            if (item->GetProperty("disabled").asBoolean())
+              return true;
             if (m_multiSelection)
               item->Select(!item->IsSelected());
             else

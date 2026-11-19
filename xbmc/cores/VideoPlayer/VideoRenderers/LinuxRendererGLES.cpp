@@ -7,6 +7,9 @@
  */
 
 #include "LinuxRendererGLES.h"
+#ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackNotification.h"
+#endif
 
 #include "RenderFactory.h"
 #include "ServiceBroker.h"
@@ -29,6 +32,10 @@
 #include "utils/MathUtils.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
+#ifdef HAVE_DVBRIDGE
+#include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
+#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#endif
 
 #include <mutex>
 
@@ -136,7 +143,7 @@ bool CLinuxRendererGLES::ValidateRenderTarget()
     // call to LoadShaders
     glFinish();
 
-    for (int i = 0 ; i < NUM_BUFFERS ; i++)
+    for (int i = 0 ; i < MAX_RENDER_BUFFERS ; i++)
     {
       DeleteTexture(i);
     }
@@ -208,9 +215,41 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
   m_bValidated = false;
 
   if (!CServiceBroker::GetWinSystem()->SetVideoOutput(&picture))
+  {
     CLog::Log(LOGWARNING, "LinuxRendererGLES::Configure: SetVideoOutput failed");
+#ifdef HAVE_DVBRIDGE
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    if (KODI::WINDOWING::GBM::CWinSystemGbmGLESContext::DVBridgeRequested(&picture) ||
+        (window && window->HasPendingDVBridgeRestore()))
+    {
+      m_bConfigured = false;
+      return false;
+    }
+#endif
+  }
 
   CServiceBroker::GetWinSystem()->SetColorimetry(&picture);
+
+#ifdef HAVE_DVBRIDGE
+  m_dvRequested = KODI::WINDOWING::GBM::CWinSystemGbmGLESContext::DVBridgeRequested(&picture);
+  if (m_dvRequested)
+  {
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    m_passthroughHDR = false;
+    m_hdrFboActive = window &&
+        (window->SelectedDVOutput(&picture).route == DVBRIDGE::OutputRoute::HDR10 ?
+         window->ConfigureHDR10Conversion(picture) : window->BeginDVBridge());
+    if (!m_hdrFboActive)
+    {
+      m_bConfigured = false;
+      CLog::Log(LOGERROR, "DVBridge: native output initialization rejected");
+      return false;
+    }
+    return true;
+  }
+#endif
 
   m_passthroughHDR = CServiceBroker::GetWinSystem()->SetHDR(&picture);
   CLog::Log(LOGDEBUG, "LinuxRendererGLES::Configure: HDR passthrough: {}",
@@ -251,6 +290,19 @@ void CLinuxRendererGLES::AddVideoPicture(const VideoPicture &picture, int index)
   buf.videoBuffer = picture.videoBuffer;
   buf.videoBuffer->Acquire();
   buf.loaded = false;
+  buf.doviMetadata = picture.doviMetadata;
+#ifdef HAVE_DVBRIDGE
+  buf.doviEnhancement = picture.doviEnhancement;
+  buf.doviEnhancementBinding = picture.doviEnhancementBinding;
+  if (picture.doviSourceBinding.Valid() || picture.doviMetadata.Data())
+  {
+    buf.doviSourcePicture = std::make_shared<VideoPicture>();
+    buf.doviSourcePicture->CopyRef(picture);
+  }
+  else buf.doviSourcePicture.reset();
+#endif
+  buf.doviPts = picture.doviSourcePts == AV_NOPTS_VALUE ? DVD_NOPTS_VALUE :
+                  static_cast<double>(picture.doviSourcePts);
   buf.m_srcPrimaries = picture.color_primaries;
   buf.m_srcColSpace = picture.color_space;
   buf.m_srcColTransfer = picture.color_transfer;
@@ -269,6 +321,13 @@ void CLinuxRendererGLES::AddVideoPicture(const VideoPicture &picture, int index)
 void CLinuxRendererGLES::ReleaseBuffer(int idx)
 {
   CPictureBuffer &buf = m_buffers[idx];
+  buf.doviMetadata.Reset();
+#ifdef HAVE_DVBRIDGE
+  buf.doviEnhancement.reset();
+  buf.doviEnhancementBinding = {};
+  buf.doviSourcePicture.reset();
+#endif
+  buf.doviPts = DVD_NOPTS_VALUE;
   if (buf.videoBuffer)
   {
     buf.videoBuffer->Release();
@@ -570,6 +629,9 @@ void CLinuxRendererGLES::DrawBlackBars()
 
 void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {
+#ifdef CB1_HAS_HDR10_AI
+  m_aiFrameRendered = false;
+#endif
   m_iYUVRenderBuffer = index;
 
   if (!m_bConfigured)
@@ -639,7 +701,11 @@ void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigne
     }
   }
 
-  if (!Render(flags, index) && clear)
+  const bool rendered = Render(flags, index);
+#ifdef CB1_HAS_HDR10_AI
+  m_aiFrameRendered = rendered;
+#endif
+  if (!rendered && clear)
     ClearBackBuffer();
 
   VerifyGLState();
@@ -688,7 +754,11 @@ void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsig
       m_pYUVBobShader->SetAlpha(1.0f);
   }
 
-  if (!Render(flags, index) && clear)
+  const bool rendered = Render(flags, index);
+#ifdef CB1_HAS_HDR10_AI
+  m_aiFrameRendered = rendered;
+#endif
+  if (!rendered && clear)
     ClearBackBuffer();
 
   VerifyGLState();
@@ -1065,8 +1135,22 @@ void CLinuxRendererGLES::UnInit()
 
   glFinish();
 
+#ifdef HAVE_DVBRIDGE
+  if (m_dvRequested)
+  {
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    if (window && !window->EndDVBridge())
+    {
+      CLog::Log(LOGERROR, "DVBridge: cannot restore output during renderer teardown");
+      return;
+    }
+    m_dvRequested = false;
+  }
+#endif
+
   // YUV textures
-  for (int i = 0; i < NUM_BUFFERS; ++i)
+  for (int i = 0; i < MAX_RENDER_BUFFERS; ++i)
   {
     DeleteTexture(i);
   }
@@ -1171,6 +1255,26 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
     return false;
   }
 
+#ifdef HAVE_DVBRIDGE
+  if (m_buffers[index].doviSourcePicture)
+  {
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    if (!window || !window->PrepareDVOutputFrame(*m_buffers[index].doviSourcePicture))
+      return false;
+    m_dvRequested = window->DVBridgeRequested(m_buffers[index].doviSourcePicture.get());
+  }
+  if (m_dvRequested)
+  {
+    const bool rendered = m_currentField == FIELD_FULL && RenderDVBridge(index);
+    AfterRenderHook(index);
+    if (rendered)
+      DVBRIDGE::PlaybackNotification::RenderedNative(
+          m_buffers[index].videoBuffer ? m_buffers[index].videoBuffer->PlaybackGeneration() : 0,
+          m_buffers[index].doviMetadata.Binding());
+    return rendered;
+  }
+#endif
   if (RenderHook(index))
   {
     ;
@@ -1204,6 +1308,10 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
   }
 
   AfterRenderHook(index);
+#ifdef HAVE_DVBRIDGE
+  DVBRIDGE::PlaybackNotification::RenderedOrdinary(
+      m_buffers[index].videoBuffer ? m_buffers[index].videoBuffer->PlaybackGeneration() : 0);
+#endif
   return true;
 }
 

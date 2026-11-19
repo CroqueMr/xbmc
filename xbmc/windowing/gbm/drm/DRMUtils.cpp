@@ -15,6 +15,9 @@
 #include "utils/StringUtils.h"
 #include "utils/log.h"
 #include "windowing/GraphicContext.h"
+#ifdef HAVE_DVBRIDGE
+#include "utils/DVBridgeDiagnosticState.h"
+#endif
 
 #include "PlatformDefs.h"
 
@@ -27,6 +30,9 @@ const std::string SETTING_VIDEOSCREEN_LIMITGUISIZE = "videoscreen.limitguisize";
 void DrmFbDestroyCallback(gbm_bo* bo, void* data)
 {
   drm_fb* fb = static_cast<drm_fb*>(data);
+
+  if (fb->opaque_fb_id > 0)
+    drmModeRmFB(gbm_device_get_fd(gbm_bo_get_device(bo)), fb->opaque_fb_id);
 
   if (fb->fb_id > 0)
   {
@@ -119,6 +125,54 @@ drm_fb* CDRMUtils::DrmFbGetFromBo(struct gbm_bo* bo)
   gbm_bo_set_user_data(bo, fb, DrmFbDestroyCallback);
 
   return fb;
+}
+
+uint32_t CDRMUtils::DrmOpaqueFbGetFromBo(struct gbm_bo* bo)
+{
+  auto* fb = DrmFbGetFromBo(bo);
+  if (!fb)
+    return 0;
+  if (fb->format == DRM_FORMAT_XRGB8888 || fb->format == DRM_FORMAT_XRGB2101010)
+    return fb->fb_id;
+  if (fb->format != DRM_FORMAT_ARGB8888 && fb->format != DRM_FORMAT_ARGB2101010)
+    return 0;
+  if (fb->opaque_fb_id)
+    return fb->opaque_fb_id;
+
+  // A separate opaque view preserves the ordinary GUI framebuffer and owns no
+  // extra pixel storage. Packed DV and reconstructed HDR10 are final images;
+  // neither must be blended again by the scanout plane.
+  const uint32_t opaqueFormat = fb->format == DRM_FORMAT_ARGB2101010
+                                    ? DRM_FORMAT_XRGB2101010 : DRM_FORMAT_XRGB8888;
+  uint32_t handles[4]{}, strides[4]{}, offsets[4]{};
+  uint64_t modifiers[4]{};
+#if defined(HAS_GBM_MODIFIERS)
+  const int planes = gbm_bo_get_plane_count(bo);
+  if (planes < 1 || planes > 4)
+    return 0;
+  for (int i = 0; i < planes; ++i)
+  {
+    handles[i] = gbm_bo_get_handle_for_plane(bo, i).u32;
+    strides[i] = gbm_bo_get_stride_for_plane(bo, i);
+    offsets[i] = gbm_bo_get_offset(bo, i);
+    modifiers[i] = gbm_bo_get_modifier(bo);
+  }
+#else
+  handles[0] = gbm_bo_get_handle(bo).u32;
+  strides[0] = gbm_bo_get_stride(bo);
+#endif
+  const uint32_t flags = modifiers[0] != DRM_FORMAT_MOD_LINEAR &&
+                                 modifiers[0] != DRM_FORMAT_MOD_INVALID
+                             ? DRM_MODE_FB_MODIFIERS : 0;
+  const int result = drmModeAddFB2WithModifiers(
+      m_fd, gbm_bo_get_width(bo), gbm_bo_get_height(bo), opaqueFormat,
+      handles, strides, offsets, modifiers, &fb->opaque_fb_id, flags);
+  if (result != 0)
+  {
+    fb->opaque_fb_id = 0;
+    CLog::LogF(LOGERROR, "Cannot create opaque transport framebuffer: {}", strerror(errno));
+  }
+  return fb->opaque_fb_id;
 }
 
 bool CDRMUtils::FindPreferredMode()
@@ -479,6 +533,11 @@ bool CDRMUtils::OpenDrm(bool needConnector)
     drmVersionPtr version = drmGetVersion(m_fd);
     if (version)
     {
+#ifdef HAVE_DVBRIDGE
+      if (DVBRIDGE::DiagnosticsEnabled())
+        CLog::Log(LOGINFO, "DVBridge driver: name={} version={}.{}.{}", version->name,
+            version->version_major,version->version_minor,version->version_patchlevel);
+#endif
       if (strcmp(version->name, "amdgpu") == 0)
         m_drm_quirks |= QUIRK_NEEDSPRIMARY;
       drmFreeVersion(version);

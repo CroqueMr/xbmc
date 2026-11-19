@@ -121,12 +121,12 @@ void CApplicationMessageHandling::OnApplicationMessage(MESSAGING::ThreadMessage*
   switch (msg)
   {
     case TMSG_POWERDOWN:
-      if (m_app.Stop(EXITCODE_POWERDOWN))
+      if (m_app.SetExitCode(EXITCODE_POWERDOWN))
         CServiceBroker::GetPowerManager().Powerdown();
       break;
 
     case TMSG_QUIT:
-      m_app.Stop(EXITCODE_QUIT);
+      m_app.SetExitCode(EXITCODE_QUIT);
       break;
 
     case TMSG_SHUTDOWN:
@@ -147,12 +147,13 @@ void CApplicationMessageHandling::OnApplicationMessage(MESSAGING::ThreadMessage*
 
     case TMSG_RESTART:
     case TMSG_RESET:
-      if (m_app.Stop(EXITCODE_REBOOT))
+      if (m_app.SetExitCode(EXITCODE_REBOOT))
         CServiceBroker::GetPowerManager().Reboot();
       break;
 
     case TMSG_RESTARTAPP:
 #if defined(TARGET_WINDOWS) || defined(TARGET_LINUX)
+      m_app.SetExitCode(EXITCODE_RESTARTAPP);
       m_app.Stop(EXITCODE_RESTARTAPP);
 #endif
       break;
@@ -263,7 +264,6 @@ void CApplicationMessageHandling::OnApplicationMessage(MESSAGING::ThreadMessage*
       break;
 
     case TMSG_MINIMIZE:
-      CServiceBroker::GetWinSystem()->Minimize();
       break;
 
     case TMSG_EXECUTE_OS:

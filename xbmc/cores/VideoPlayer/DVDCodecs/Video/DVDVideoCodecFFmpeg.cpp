@@ -7,6 +7,9 @@
  */
 
 #include "DVDVideoCodecFFmpeg.h"
+#ifdef CB1_HAS_HDR10_AI
+#include "HDR10AIBuffers.h"
+#endif
 
 #include "DVDCodecs/DVDCodecs.h"
 #include "DVDCodecs/DVDFactoryCodec.h"
@@ -23,12 +26,24 @@
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
 #include "utils/CPUInfo.h"
+#include "utils/DVBridgeDiagnosticState.h"
 #include "utils/StringUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
 #include <memory>
 #include <mutex>
+#include "dvbridge_metadata_bounds.h"
+#ifdef HAVE_DVBRIDGE
+#include "DVPlaybackPolicy.h"
+#include <cstdlib>
+#include <cmath>
+extern "C"
+{
+#include "dvbridge_fel.h"
+#include <libavutil/hwcontext.h>
+}
+#endif
 
 extern "C" {
 #include <libavcodec/defs.h>
@@ -335,6 +350,12 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
 
   m_hints = hints;
   m_options = options;
+#ifdef HAVE_DVBRIDGE
+  m_dvNativeOutput = DVBRIDGE::RetainsDVSource(hints);
+  m_dvSourceOwner.BeginStream();
+  m_dvHasStreamDisplayMetadata = false;
+  m_dvHasStreamLightMetadata = false;
+#endif
 
   const AVCodec* pCodec = nullptr;
 
@@ -472,11 +493,40 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
 
   m_dropCtrl.Reset(true);
   m_eof = false;
+#ifdef HAVE_DVBRIDGE
+  if (NeedsDVEnhancement())
+  {
+    AVCodecParameters* parameters = avcodec_parameters_alloc();
+    if (!parameters)
+      return false;
+    int result = avcodec_parameters_from_context(parameters, m_pCodecContext);
+    if (result >= 0 && hints.doviELConfig)
+    {
+      AVPacketSideData* side = av_packet_side_data_new(&parameters->coded_side_data,
+          &parameters->nb_coded_side_data, AV_PKT_DATA_HEVC_CONF, hints.doviELConfig.GetSize(), 0);
+      if (side)
+        std::memcpy(side->data, hints.doviELConfig.GetData(), hints.doviELConfig.GetSize());
+      else
+        result = AVERROR(ENOMEM);
+    }
+    if (result >= 0)
+      m_dvFel = {dvbridge_fel_create(parameters, AVRational{1, AV_TIME_BASE}), dvbridge_fel_destroy};
+    avcodec_parameters_free(&parameters);
+    if (!m_dvFel)
+      return false;
+  }
+#endif
   return true;
 }
 
 void CDVDVideoCodecFFmpeg::Dispose()
 {
+#ifdef HAVE_DVBRIDGE
+  m_dvPending.clear();
+  m_dvFel.reset();
+  m_dvFailed = false;
+  m_dvNativeOutput = false;
+#endif
   av_frame_free(&m_pFrame);
   av_frame_free(&m_pDecodedFrame);
   av_frame_free(&m_pFilterFrame);
@@ -619,6 +669,11 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   avpkt->side_data_elems = packet.iSideDataElems;
 
   int ret = avcodec_send_packet(m_pCodecContext, avpkt);
+#ifdef HAVE_DVBRIDGE
+  // Submit once, only after BL accepted the packet (Kodi retries EAGAIN).
+  if (ret == 0 && m_dvFel && !dvbridge_fel_submit(m_dvFel.get(), avpkt))
+    m_dvFailed = true;
+#endif
 
   //! @todo: properly handle avpkt side_data. this works around our improper use of the side_data
   // as we pass pointers to ffmpeg allocated memory for the side_data. we should really be allocating
@@ -656,6 +711,79 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
 }
 
 CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPicture)
+{
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel)
+  {
+    if (m_dvFailed || dvbridge_fel_failed(m_dvFel.get()))
+      return VC_ERROR;
+    auto emit = [&]() -> VCReturn
+    {
+      if (m_dvPending.empty())
+        return VC_NONE;
+      auto& base = m_dvPending.front();
+      if (base->doviSourcePts == AV_NOPTS_VALUE)
+        return VC_ERROR;
+      AVFrame* enhancement = nullptr;
+      int result = dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts,
+                                     &enhancement);
+      if (result == 2)
+      {
+        m_dvPending.pop_front();
+        return VC_BUFFER;
+      }
+      if (result < 0)
+      {
+        if (dvbridge_fel_exhausted(m_dvFel.get()))
+        {
+          CLog::Log(LOGWARNING, "DV FEL: enhancement EOF with {} unpaired base pictures; "
+                               "ending video without substituting enhancement frames",
+                    m_dvPending.size());
+          m_dvPending.clear();
+          return VC_EOF;
+        }
+        return VC_ERROR;
+      }
+      if (!result)
+        return VC_NONE;
+      base->doviEnhancement = {enhancement, [](AVFrame* f) { av_frame_free(&f); }};
+      // The pairing owner consumed the exact EL from this stream/reset epoch.
+      base->doviEnhancementBinding = base->doviMetadata.Binding();
+      pVideoPicture->CopyRef(*base);
+      m_dvPending.pop_front();
+      return VC_PICTURE;
+    };
+    VCReturn paired = emit();
+    if (paired != VC_NONE)
+      return paired;
+    if (m_dvPending.size() >= 16)
+      return VC_ERROR;
+    auto base = std::make_shared<VideoPicture>();
+    base->Reset();
+    VCReturn result = GetBasePicture(base.get());
+    if (m_pCodecContext->hw_frames_ctx)
+    {
+      auto* frames = reinterpret_cast<AVHWFramesContext*>(m_pCodecContext->hw_frames_ctx->data);
+      if (!dvbridge_fel_device(m_dvFel.get(), frames->device_ref))
+        return VC_ERROR;
+    }
+    if (result == VC_PICTURE)
+      m_dvPending.push_back(std::move(base));
+    if (result == VC_EOF || (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
+      if (!dvbridge_fel_drain(m_dvFel.get()))
+        return VC_ERROR;
+    paired = emit();
+    if (paired != VC_NONE)
+      return paired;
+    if (result == VC_EOF && !m_dvPending.empty())
+      return VC_ERROR;
+    return result == VC_PICTURE ? VC_BUFFER : result;
+  }
+#endif
+  return GetBasePicture(pVideoPicture);
+}
+
+CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVideoPicture)
 {
   if (!m_startedInput)
   {
@@ -954,6 +1082,12 @@ bool CDVDVideoCodecFFmpeg::SetPictureParams(VideoPicture* pVideoPicture)
 
 void CDVDVideoCodecFFmpeg::Reset()
 {
+#ifdef HAVE_DVBRIDGE
+  m_dvSourceOwner.Seek();
+  m_dvPending.clear();
+  dvbridge_fel_reset(m_dvFel.get());
+  m_dvFailed = false;
+#endif
   m_started = false;
   m_startedInput = false;
   m_interlaced = false;
@@ -1134,7 +1268,23 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   {
     pVideoPicture->displayMetadata = *(AVMasteringDisplayMetadata *)sd->data;
     pVideoPicture->hasDisplayMetadata = true;
+#ifdef HAVE_DVBRIDGE
+    m_dvStreamDisplayMetadata = pVideoPicture->displayMetadata;
+    m_dvHasStreamDisplayMetadata = true;
+#endif
   }
+#ifdef HAVE_DVBRIDGE
+  // HDR10 static metadata describes the whole stream, but encoders may carry
+  // its SEI only on the first IRAP. Without it a later frame compares as a
+  // format change, the renderer is rebuilt and native DV output is restarted
+  // (two full HDMI modesets mid-playback). Keep the last in-band values for
+  // the rest of this DV stream; a new SEI still replaces them.
+  else if (m_dvNativeOutput && m_dvHasStreamDisplayMetadata)
+  {
+    pVideoPicture->displayMetadata = m_dvStreamDisplayMetadata;
+    pVideoPicture->hasDisplayMetadata = true;
+  }
+#endif
   else if (m_hints.masteringMetadata)
   {
     pVideoPicture->displayMetadata = *m_hints.masteringMetadata.get();
@@ -1145,35 +1295,88 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   {
     pVideoPicture->lightMetadata = *(AVContentLightMetadata *)sd->data;
     pVideoPicture->hasLightMetadata = true;
+#ifdef HAVE_DVBRIDGE
+    m_dvStreamLightMetadata = pVideoPicture->lightMetadata;
+    m_dvHasStreamLightMetadata = true;
+#endif
   }
+#ifdef HAVE_DVBRIDGE
+  else if (m_dvNativeOutput && m_dvHasStreamLightMetadata)
+  {
+    pVideoPicture->lightMetadata = m_dvStreamLightMetadata;
+    pVideoPicture->hasLightMetadata = true;
+  }
+#endif
   else if (m_hints.contentLightMetadata)
   {
     pVideoPicture->lightMetadata = *m_hints.contentLightMetadata.get();
     pVideoPicture->hasLightMetadata = true;
   }
 
+  pVideoPicture->doviMetadata.Reset();
+  pVideoPicture->doviSourceBinding = {};
+#ifdef HAVE_DVBRIDGE
+  if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
+    pVideoPicture->doviSourceBinding = m_dvSourceOwner.NextPicture();
+#endif
+  pVideoPicture->doviSourceInfo = {m_hints.dovi.dv_profile,m_hints.dovi.dv_level,
+      m_hints.dovi.dv_version_major,m_hints.dovi.dv_version_minor,
+      static_cast<unsigned>(pVideoPicture->colorBits),m_pFrame->format,
+      bool(m_hints.dovi.bl_present_flag),bool(m_hints.dovi.el_present_flag),
+      bool(m_hints.dovi.rpu_present_flag),false,
+      pVideoPicture->hasLightMetadata,
+      0.0,0.0,
+      pVideoPicture->hasLightMetadata ? pVideoPicture->lightMetadata.MaxCLL : 0u,
+      pVideoPicture->hasLightMetadata ? pVideoPicture->lightMetadata.MaxFALL : 0u};
+  const auto& sourceMastering = pVideoPicture->displayMetadata;
+  auto& sourceInfo = pVideoPicture->doviSourceInfo;
+  sourceInfo.compatibility = m_hints.dovi.dv_bl_signal_compatibility_id;
+  sourceInfo.mastering = pVideoPicture->hasDisplayMetadata && sourceMastering.has_luminance &&
+      sourceMastering.max_luminance.den > 0 && sourceMastering.min_luminance.den > 0;
+  if (sourceInfo.mastering)
+  {
+    sourceInfo.maxLuma = av_q2d(sourceMastering.max_luminance);
+    sourceInfo.minLuma = av_q2d(sourceMastering.min_luminance);
+  }
+  pVideoPicture->doviSourcePts = m_pFrame->best_effort_timestamp;
   if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
     sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DOVI_METADATA);
     if (sd)
     {
-      AVDOVIMetadata* dovi = (AVDOVIMetadata*)sd->data;
-      const AVDOVIRpuDataHeader* hdr = av_dovi_get_header(dovi);
-      const AVDOVIDataMapping* mapping = av_dovi_get_mapping(dovi);
-
-      if (hdr != nullptr && hdr->el_spatial_resampling_filter_flag == 1 &&
-          hdr->disable_residual_flag == 0)
+      const auto binding = pVideoPicture->doviSourceBinding;
+      if (!pVideoPicture->doviMetadata.Assign(sd->data, sd->size,binding) ||
+          !dvbridge_metadata_bounds(pVideoPicture->doviMetadata.Data(),
+                                    pVideoPicture->doviMetadata.Size()))
       {
-        pVideoPicture->strDVELType = "MEL";
-        for (int i = 0; i < 3; i++)
+        pVideoPicture->doviMetadata.Reset();
+        // Keep repeated failures bounded across codecs on this decoder thread.
+        static thread_local DVBRIDGE::DiagnosticFailures failures;
+        if (DVBRIDGE::DiagnosticsEnabled() &&
+            failures.Record(DVBRIDGE::DiagnosticNowMs(), "picture-metadata"))
+          CLog::Log(LOGWARNING, "Unable to retain valid Dolby Vision picture metadata: failures={}",
+                    failures.Count());
+      }
+      else
+      {
+        const auto* dovi = reinterpret_cast<const AVDOVIMetadata*>(pVideoPicture->doviMetadata.Data());
+        const AVDOVIRpuDataHeader* hdr = av_dovi_get_header(dovi);
+        const AVDOVIDataMapping* mapping = av_dovi_get_mapping(dovi);
+
+        if (hdr != nullptr && hdr->el_spatial_resampling_filter_flag == 1 &&
+            hdr->disable_residual_flag == 0)
         {
-          if (mapping != nullptr &&
-              (mapping->nlq[i].nlq_offset != 0 || mapping->nlq[i].vdr_in_max != 8388608 ||
-               mapping->nlq[i].linear_deadzone_slope != 0 ||
-               mapping->nlq[i].linear_deadzone_threshold != 0))
+          pVideoPicture->strDVELType = "MEL";
+          for (int i = 0; i < 3; i++)
           {
-            pVideoPicture->strDVELType = "FEL";
-            break;
+            if (mapping != nullptr &&
+                (mapping->nlq[i].nlq_offset != 0 || mapping->nlq[i].vdr_in_max != 8388608 ||
+                 mapping->nlq[i].linear_deadzone_slope != 0 ||
+                 mapping->nlq[i].linear_deadzone_threshold != 0))
+            {
+              pVideoPicture->strDVELType = "FEL";
+              break;
+            }
           }
         }
       }
@@ -1193,6 +1396,9 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
     }
   }
 
+#ifdef CB1_HAS_HDR10_AI
+  BindHDR10AISource(*pVideoPicture);
+#endif
   if (pVideoPicture->iRepeatPicture)
     pVideoPicture->dts = DVD_NOPTS_VALUE;
   else
@@ -1422,6 +1628,31 @@ unsigned CDVDVideoCodecFFmpeg::GetConvergeCount()
   return m_iLastKeyframe;
 }
 
+#ifdef CB1_HAS_HDR10_AI
+void CDVDVideoCodecFFmpeg::BindHDR10AISource(VideoPicture& picture)
+{
+  if (picture.hdrType == StreamHdrType::HDR_TYPE_HDR10 && !picture.doviSourceInfo.profile &&
+      picture.doviSourcePts != AV_NOPTS_VALUE)
+    picture.doviSourceBinding = m_dvSourceOwner.NextPicture();
+}
+#endif
+
+#ifdef CB1_HAS_HDR10_AI
+void CDVDVideoCodecFFmpeg::PrepareHDR10AIReopen()
+{
+  // Pool resizing is not a hardware decode failure.
+  m_decoderState = STATE_NONE;
+}
+
+unsigned CDVDVideoCodecFFmpeg::GetHDR10AIBufferCount() const
+{
+  const bool hdr10 = m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10 &&
+      !m_hints.dovi.rpu_present_flag;
+  const double fps = m_hints.fpsscale > 0 ? double(m_hints.fpsrate) / m_hints.fpsscale : 0;
+  return DVBRIDGE::HDR10AIBuffers::Count(hdr10,DVBRIDGE::hdr10PlaybackMode.load(),fps,m_interlaced);
+}
+#endif
+
 unsigned CDVDVideoCodecFFmpeg::GetAllowedReferences()
 {
   if(m_pHardware)
@@ -1497,4 +1728,3 @@ IHardwareDecoder* CDVDVideoCodecFFmpeg::GetHWAccel()
 {
   return m_pHardware;
 }
-
