@@ -7,6 +7,7 @@
  */
 
 #include "WinSystemGbmEGLContext.h"
+#include "windowing/GraphicContext.h"
 #ifdef HAVE_DVBRIDGE
 #include "drm/DRMAtomic.h"
 #endif
@@ -122,17 +123,8 @@ bool CWinSystemGbmEGLContext::CreateNewWindow(const std::string& name,
   }
 
   uint32_t format = m_eglContext.GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
-  std::vector<uint64_t> fallbackModifiers = {DRM_FORMAT_MOD_LINEAR};
-  std::vector<uint64_t>* modifiers = &fallbackModifiers;
-
-  for (auto& fmt : m_DRM->GetOutputFormats())
-  {
-    if (fmt.drm == format && fmt.active)
-    {
-      modifiers = &fmt.modifiers;
-      break;
-    }
-  }
+  std::vector<uint64_t> modifierList = OutputModifiers(format);
+  std::vector<uint64_t>* modifiers = &modifierList;
 
   if (!m_GBM->GetDevice().CreateSurface(res.iWidth, res.iHeight, format, modifiers->data(),
                                         modifiers->size()))
@@ -230,6 +222,28 @@ bool CWinSystemGbmEGLContext::DestroyWindow()
   return true;
 }
 
+std::vector<uint64_t> CWinSystemGbmEGLContext::OutputModifiers(uint32_t format)
+{
+  std::vector<uint64_t> modifiers = {DRM_FORMAT_MOD_LINEAR};
+  for (const auto& output : m_DRM->GetOutputFormats())
+    if (output.drm == format && output.active)
+    {
+      modifiers = output.modifiers;
+      break;
+    }
+#ifdef AMD_FMT_MOD_DCC_SHIFT
+  const auto mode = m_DRM->GetCurrentMode();
+  if (mode.dwFlags & (D3DPRESENTFLAG_MODE3DTB | D3DPRESENTFLAG_MODE3DSBS))
+  {
+    std::erase_if(modifiers, [](uint64_t mod) {
+      return IS_AMD_FMT_MOD(mod) && AMD_FMT_MOD_GET(DCC, mod);
+    });
+    if (modifiers.empty()) modifiers.push_back(DRM_FORMAT_MOD_LINEAR);
+  }
+#endif
+  return modifiers;
+}
+
 int CWinSystemGbmEGLContext::VideoOutputBitDepth(const VideoPicture* picture) const
 {
   return picture ? picture->colorBits : 8;
@@ -278,17 +292,8 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   {
     if (!m_dvOutputSurface) m_eglContext.DestroySurface();
 
-    std::vector<uint64_t> fallbackModifiers = {DRM_FORMAT_MOD_LINEAR};
-    std::vector<uint64_t>* modifiers = &fallbackModifiers;
-
-    for (auto& fmt : m_DRM->GetOutputFormats())
-    {
-      if (fmt.drm == format && fmt.active)
-      {
-        modifiers = &fmt.modifiers;
-        break;
-      }
-    }
+    auto modifierList = OutputModifiers(format);
+    auto* modifiers = &modifierList;
 
     if (!m_GBM->GetDevice().CreateSurface(m_nWidth, m_nHeight, format, modifiers->data(),
                                           modifiers->size(),m_dvOutputSurface))

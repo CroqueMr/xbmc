@@ -19,6 +19,8 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
                                     const OutputCapabilities& caps)
 {
   OutputSelection result;
+  if (caps.stereoSource)
+    return {OutputRoute::Vanilla, {}, OutputReason::SourceIneligible};
   if (caps.sourceKnown && caps.isHDR10 && !caps.isDV)
   {
     if (preferences.hdr10Source == HDR10SourceMode::Native) return result;

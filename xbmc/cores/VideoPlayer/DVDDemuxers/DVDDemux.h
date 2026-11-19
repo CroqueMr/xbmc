@@ -177,6 +177,7 @@ public:
   std::shared_ptr<AVContentLightMetadata> contentLightMetaData;
 
   std::string stereo_mode; // expected stereo mode
+  bool multiview = false; // Separate coded views require native decoder packing.
   StreamHdrType hdr_type = StreamHdrType::HDR_TYPE_NONE; // type of HDR for this stream (hdr10, etc)
   AVDOVIDecoderConfigurationRecord dovi{};
 #ifdef HAVE_DVBRIDGE

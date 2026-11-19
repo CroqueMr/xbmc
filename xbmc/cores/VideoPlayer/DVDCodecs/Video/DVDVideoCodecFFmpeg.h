@@ -10,6 +10,7 @@
 
 #include "DVDVideoCodec.h"
 #include "DVDVideoPP.h"
+#include "MultiviewFramePairer.h"
 #include "cores/VideoPlayer/DVDCodecs/DVDCodecs.h"
 #include "cores/VideoPlayer/DVDStreamInfo.h"
 
@@ -86,6 +87,7 @@ protected:
   void SetFilters();
   void UpdateName();
   bool SetPictureParams(VideoPicture* pVideoPicture);
+  void UpdateDropControl(int64_t pts);
 
   bool HasHardware() { return m_pHardware != nullptr; }
   void SetHardware(IHardwareDecoder *hardware);
@@ -99,10 +101,16 @@ protected:
   std::string m_filters_next;
   AVFilterGraph* m_pFilterGraph = nullptr;
   AVFilterContext* m_pFilterIn = nullptr;
+  AVFilterContext* m_pFilterIn2 = nullptr; //!< second view of a multiview stream
   AVFilterContext* m_pFilterOut = nullptr;;
   AVFrame* m_pFilterFrame = nullptr;;
   bool m_filterEof = false;
   bool m_eof = false;
+
+  //! Eyes are coded as separate views and are packed side by side by the filter graph.
+  bool m_multiview = false;
+  CMultiviewFramePairer m_multiviewPairer; //!< routes the views to the graph's two inputs
+  std::string m_stereoMode; //!< mode the packed frame is in, empty when not stereoscopic
 
   std::unique_ptr<IDVDVideoPP> m_postProc;
 

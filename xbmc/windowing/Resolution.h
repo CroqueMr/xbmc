@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include "rendering/RenderSystemTypes.h"
+
 #include <stdint.h>
 #include <string>
 
@@ -113,6 +115,20 @@ struct RESOLUTION_INFO
 public:
   RESOLUTION_INFO(int width = 1280, int height = 720, float aspect = 0, const std::string &mode = "");
   float DisplayRatio() const;
+
+  /*!
+   * \brief The stereoscopic layout the mode transmits, to append to a mode in a log
+   *
+   * " 3D sbs", " 3D tab" or " 3D fp", and empty for a 2D mode - the separator included so
+   * that a 2D mode's line reads as it always did.
+   *
+   * strMode carries the geometry, the scan type and the refresh rate, none of which
+   * distinguishes a half 3D mode from the 2D mode of the same timing - they print
+   * identically - so a log naming only that cannot say whether 3D was signalled at all.
+   * Frame packing is told apart from the half top-and-bottom layout it is presented as by
+   * iBlanking, which the packed scanout needs and no other mode has.
+   */
+  std::string StereoLayoutTag() const;
 };
 
 class CResolutionUtils
@@ -120,7 +136,10 @@ class CResolutionUtils
 public:
   static bool IsCB1RefreshRate(double refresh);
   static RESOLUTION ChooseBestResolution(float fps, int width, int height, bool is3D,
-                                        bool allowNativeProgressiveRates = false);
+                                        bool allowNativeProgressiveRates = false,
+                                        RenderStereoMode outputMode = RenderStereoMode::UNDEFINED);
+  static RenderStereoMode ChooseStereoArrangement(RenderStereoMode wanted, float fps,
+                                                 int width, int height);
   static bool HasWhitelist();
   static void PrintWhitelist();
 
@@ -133,7 +152,8 @@ public:
 
 protected:
   static void FindResolutionFromWhitelist(float fps, int width, int height, bool is3D,
-                                          RESOLUTION &resolution, bool allowNativeProgressiveRates);
+                                          RESOLUTION &resolution, bool allowNativeProgressiveRates,
+                                          RenderStereoMode outputMode);
   static bool FindResolutionFromOverride(float fps, int width, bool is3D, RESOLUTION &resolution, float& weight, bool fallback);
   static float RefreshWeight(float refresh, float fps);
 };

@@ -8,11 +8,13 @@
 
 #pragma once
 
+#include "BlurayOffsetMetadata.h"
 #include "DVDDemux.h"
 #include "threads/CriticalSection.h"
 #include "threads/SystemClock.h"
 #include <map>
 #include <memory>
+#include <optional>
 #include <vector>
 
 extern "C" {
@@ -65,6 +67,8 @@ public:
   std::string GetStreamName() override;
 
   std::string m_description;
+  std::optional<unsigned int> m_offsetSequence;
+
 protected:
   CDVDDemuxFFmpeg* m_parent;
   AVStream* m_stream = nullptr;
@@ -119,6 +123,23 @@ public:
 
   bool Aborted();
 
+  /*!
+   * \brief Whether the decoder for this codec can decode and output every view
+   *        of a multiview stream, i.e. carries the view_ids option.
+   */
+  static bool SupportsMultiviewDecode(AVCodecID codecId);
+
+  /*!
+   * \brief The plane offset metadata an H.264 MVC stream carries in its dependent view,
+   *        for placing subtitles in depth. Null until such a stream has been added; the
+   *        store then lives as long as the demuxer, so a holder keeps receiving updates
+   *        across a stream rebuild.
+   */
+  const std::shared_ptr<KODI::VIDEO::BLURAY::COffsetMetadataStore>& GetOffsetMetadata() const
+  {
+    return m_offsetMetadata;
+  }
+
   AVFormatContext* m_pFormatContext;
   std::shared_ptr<CDVDInputStream> m_pInput;
 
@@ -145,6 +166,11 @@ protected:
   unsigned int HLSSelectProgram();
 
   std::string GetStereoModeFromMetadata(AVDictionary* pMetadata);
+  std::string GetStereoModeFromSideData(const AVStream* pStream, bool& multiview);
+  bool HasMvcExtension(const AVStream* pStream);
+  void ConfigureOffsetMetadata(const AVStream* pStream, const CDemuxStreamVideo* stream);
+  void ReadOffsetMetadata(const DemuxPacket& packet);
+  void ResetOffsetMetadata();
   std::string ConvertCodecToInternalStereoMode(const std::string& mode, const StereoModeConversionMap* conversionMap);
 
   void GetL16Parameters(int& channels, int& samplerate);
@@ -175,6 +201,16 @@ protected:
   unsigned int m_newProgram;
   unsigned int m_initialProgramNumber;
   int m_seekStream;
+
+  // An MVC remux carries the disc's plane offsets in the dependent view's SEI, inside
+  // the same length-prefixed access units as the base view
+  std::shared_ptr<KODI::VIDEO::BLURAY::COffsetMetadataStore> m_offsetMetadata;
+  int m_offsetStreamIndex{-1};
+  unsigned int m_offsetNalLengthSize{0};
+  double m_offsetFrameDuration{0.0};
+  unsigned int m_offsetAccessUnitsWithout{0};
+  bool m_loggedOffsetMetadata{false};
+  bool m_loggedOffsetMetadataMissing{false};
 
   XbmcThreads::EndTime<> m_timeout;
 
