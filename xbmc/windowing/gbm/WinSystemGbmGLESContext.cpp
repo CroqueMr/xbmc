@@ -269,15 +269,30 @@ bool CWinSystemGbmGLESContext::SetFullScreen(bool fullScreen,
   if (!RetireDVContext()) return false;
   const int opening = DVBRIDGE::guiModeChangeResolution.value_or(
       DVBRIDGE::modeChangeResolution.load());
-  CLog::Log(LOGINFO,"CB1 HDMI startup: intent={} output_usable={}",
-      opening, SupportsDVOutputMode());
-  if (opening >= 0 && SupportsDVOutputMode())
+  using HDRSignal = DVBRIDGE::NativeHDRSignal;
+  const auto hdr = DVBRIDGE::guiModeChangeResolution ? HDRSignal::None
+                                                   : DVBRIDGE::modeChangeNativeHDR.load();
+  bool outputUsable = false;
+  if (hdr == HDRSignal::None)
+    outputUsable = SupportsDVOutputMode();
+  else if (IsHDRDisplay() && CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+                                 SETTING_WINSYSTEM_IS_HDR_DISPLAY))
+  {
+    const auto capabilities = GetDisplayHDRCapabilities();
+    outputUsable = (hdr != HDRSignal::HDR10 && capabilities.SupportsHLG()) ||
+                   (hdr != HDRSignal::HLG && capabilities.SupportsHDR10());
+  }
+  CLog::Log(LOGINFO,"CB1 HDMI startup: intent={} output_usable={}", opening, outputUsable);
+  if (opening >= 0 && outputUsable)
   {
     const auto& requested=CDisplaySettings::GetInstance().GetResolutionInfo(static_cast<RESOLUTION>(opening));
     if (requested.strId == res.strId && requested.iWidth == res.iWidth &&
         requested.iHeight == res.iHeight && requested.dwFlags == res.dwFlags && HoldCB1Mode(res))
     {
-      m_modeHold.Start(DVBRIDGE::DiagnosticNowMs());
+      const bool ordinaryPicture = hdr != HDRSignal::None;
+      if (ordinaryPicture)
+        m_videoSourceSideData.reset();
+      m_modeHold.Start(DVBRIDGE::DiagnosticNowMs(), ordinaryPicture);
       CRenderSystemGLES::ResetRenderSystem(res.iWidth,res.iHeight);
       return true;
     }
@@ -487,7 +502,12 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
   if (!CompleteDVBridgePage(8)) return;
   // Once the first output owns the mode, its real flip (or restoration) ends
   // the hold. The ordinary deadline must not turn prepared output into failure.
-  if (m_modeHold.Holding() == CModeChangeHold::Kind::START && !m_dvFrame &&
+  const bool startupHold = m_modeHold.Holding() == CModeChangeHold::Kind::START;
+  // Only the first actual picture may carry ordinary video timing with its
+  // output properties. The GUI can render while the first picture is pending.
+  const bool ordinaryPicture =
+      m_modeHold.AwaitsOrdinaryPicture() && rendered && m_videoSourceSideData;
+  if (startupHold && !ordinaryPicture && !m_dvFrame &&
       !(m_dvState.Captured() || m_hdrConversion) &&
       !m_modeHold.Commits(DVBRIDGE::DiagnosticNowMs()))
   {
