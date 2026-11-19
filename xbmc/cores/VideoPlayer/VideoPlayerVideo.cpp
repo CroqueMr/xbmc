@@ -13,6 +13,7 @@
 #include "DVDCodecs/Video/DVPlaybackNotification.h"
 #include "utils/DVBridgeDiagnosticLog.h"
 #include "utils/DVBridgeDiagnosticState.h"
+#include "utils/DVBridgeOverlayTrace.h"
 #include "utils/StringUtils.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
 #endif
@@ -1183,6 +1184,10 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   // don't wait when going ff
   if (m_speed > DVD_PLAYSPEED_NORMAL)
     maxWaitTime = std::max(timeToDisplay, 0ms);
+#ifdef HAVE_DVBRIDGE
+  const bool traceBuffer = DVBRIDGE::OverlayDebugEnabled();
+  const auto bufferStart = traceBuffer ? DVBRIDGE::OverlayClock::now() : DVBRIDGE::OverlayClock::time_point{};
+#endif
   int buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
   if (buffer < 0)
   {
@@ -1200,7 +1205,27 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
     }
 
     if (m_speed != DVD_PLAYSPEED_PAUSE)
+    {
       CLog::Log(LOGWARNING, "{} - timeout waiting for buffer", __FUNCTION__);
+#ifdef HAVE_DVBRIDGE
+      if (traceBuffer && DVBRIDGE::OverlayDebugEnabled())
+      {
+        static thread_local DVBRIDGE::DiagnosticInterval interval;
+        const uint64_t now = DVBRIDGE::DiagnosticNowMs();
+        if (interval.Due(now))
+        {
+          interval.Emitted(now);
+          const auto waitUs = DVBRIDGE::OverlayElapsedUs(bufferStart);
+          int queued, discard, free;
+          m_processInfo.GetRenderBuffers(queued, discard, free);
+          CLog::Log(LOGDEBUG, "CB1 render buffer timeout: now_ms={} wait_us={} timeout_ms={} "
+                    "last_render_free={} last_render_queued={} last_render_discard={} drop_total={} skip_total={}",
+                    now, waitUs, maxWaitTime.count(), free, queued, discard, m_iDroppedFrames,
+                    m_renderManager.GetSkippedFrames());
+        }
+      }
+#endif
+    }
 
     return OUTPUT_AGAIN;
   }

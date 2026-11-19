@@ -16,6 +16,7 @@
 #include "settings/Settings.h"
 #include "utils/log.h"
 #include "utils/DVBridgeDiagnosticLog.h"
+#include "utils/DVBridgeOverlayTrace.h"
 #include "DVBridgeKernelLogReader.h"
 #include "utils/DVBridgeEdid.h"
 #include "utils/DVBridgePresentation.h"
@@ -425,7 +426,13 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (auditCommit)
     ReportDVCommit("atomic-test");
   if (strict && m_cb1TimingInput >= 0) m_cb1SubmittedNs = DVNowNs();
-  ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags, nullptr);
+  {
+    DVBRIDGE::OverlayTimer timing(DVBRIDGE::OverlayStage::Commit);
+    ret = drmModeAtomicCommit(m_fd, m_req->Get(), flags, nullptr);
+    const int error = errno;
+    timing.Finish();
+    errno = error;
+  }
   if (ret < 0)
   {
     const int error = errno;
@@ -546,7 +553,11 @@ bool CDRMAtomic::CompleteCB1Page(int timeoutMs)
   if (!m_cb1Pending) return true;
   if (m_cb1Uncertain) return false;
   pollfd fence{m_cb1OutFence, POLLIN, 0};
+  DVBRIDGE::OverlayTimer timing(DVBRIDGE::OverlayStage::FenceWait);
   const int ready = poll(&fence, 1, timeoutMs);
+  const int pollError = errno;
+  timing.Finish();
+  errno = pollError;
   if (!ready || (ready < 0 && errno == EINTR)) return false;
   sync_file_info info{};
   if (ready < 0 || !(fence.revents & POLLIN) ||
