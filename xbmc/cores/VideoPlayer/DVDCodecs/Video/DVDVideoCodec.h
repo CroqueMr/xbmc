@@ -76,6 +76,7 @@ public:
   DVBRIDGE::SourceInfo doviSourceInfo{};
   DVBRIDGE::SourceBinding doviSourceBinding{};
   int64_t doviSourcePts = AV_NOPTS_VALUE;
+  int64_t doviPairPts = AV_NOPTS_VALUE; // Authored BL time in the current FEL epoch.
 #ifdef HAVE_DVBRIDGE
   std::shared_ptr<AVFrame> doviEnhancement;
   DVBRIDGE::SourceBinding doviEnhancementBinding{};

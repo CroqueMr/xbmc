@@ -54,7 +54,7 @@ void VideoPicture::Reset()
   doviMetadata.Reset();
   doviSourceInfo = {};
   doviSourceBinding = {};
-  doviSourcePts = AV_NOPTS_VALUE;
+  doviSourcePts = doviPairPts = AV_NOPTS_VALUE;
 #ifdef HAVE_DVBRIDGE
   doviEnhancement.reset();
   doviEnhancementBinding = {};
