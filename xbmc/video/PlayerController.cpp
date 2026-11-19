@@ -41,9 +41,45 @@
 #include "windowing/WinSystem.h"
 
 #include <algorithm>
+#include <optional>
+
+#ifdef HAVE_DVBRIDGE
+extern "C"
+{
+#include <libavcodec/codec_desc.h>
+}
+#endif
 
 using namespace KODI;
 using namespace UTILS;
+
+#ifdef HAVE_DVBRIDGE
+namespace
+{
+constexpr int BITMAP_PLACEMENT_MANUAL = 5;
+constexpr int BITMAP_OFFSET_LABEL = 40954;
+
+//! Steps subtitles.bitmapoffset while a bitmap subtitle stream plays with Manual offset placement.
+//! Returns the new offset, or nothing when text subtitle positioning applies instead.
+std::optional<int> ShiftBitmapSubtitles(const CApplicationPlayer& player, int steps)
+{
+  const auto settingsComponent = CServiceBroker::GetSettingsComponent();
+  const auto options = settingsComponent->GetSubtitlesSettings()->GetBitmapOptions();
+  if (options.placement != BITMAP_PLACEMENT_MANUAL)
+    return {};
+
+  SubtitleStreamInfo info;
+  player.GetSubtitleStreamInfo(CURRENT_STREAM, info);
+  const AVCodecDescriptor* codec = avcodec_descriptor_get_by_name(info.codecName.c_str());
+  if (!codec || !(codec->props & AV_CODEC_PROP_BITMAP_SUB))
+    return {};
+
+  const int offset = std::clamp(options.offset + steps, -60, 60);
+  settingsComponent->GetSettings()->SetInt("subtitles.bitmapoffset", offset);
+  return offset;
+}
+} // namespace
+#endif
 
 CPlayerController::CPlayerController()
 {
@@ -400,6 +436,14 @@ bool CPlayerController::OnAction(const CAction &action)
 
       case ACTION_SUBTITLE_VSHIFT_UP:
       {
+#ifdef HAVE_DVBRIDGE
+        if (const auto offset = ShiftBitmapSubtitles(*appPlayer, 1))
+        {
+          ShowSlider(action.GetID(), BITMAP_OFFSET_LABEL, static_cast<float>(*offset), -60.0f, 1.0f,
+                     60.0f);
+          return true;
+        }
+#endif
         const auto settings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
         SUBTITLES::Align subAlign{settings->GetAlignment()};
         if (subAlign != SUBTITLES::Align::BOTTOM_OUTSIDE && subAlign != SUBTITLES::Align::MANUAL)
@@ -430,6 +474,14 @@ bool CPlayerController::OnAction(const CAction &action)
 
       case ACTION_SUBTITLE_VSHIFT_DOWN:
       {
+#ifdef HAVE_DVBRIDGE
+        if (const auto offset = ShiftBitmapSubtitles(*appPlayer, -1))
+        {
+          ShowSlider(action.GetID(), BITMAP_OFFSET_LABEL, static_cast<float>(*offset), -60.0f, 1.0f,
+                     60.0f);
+          return true;
+        }
+#endif
         const auto settings{CServiceBroker::GetSettingsComponent()->GetSubtitlesSettings()};
         SUBTITLES::Align subAlign{settings->GetAlignment()};
         if (subAlign != SUBTITLES::Align::BOTTOM_OUTSIDE && subAlign != SUBTITLES::Align::MANUAL)
@@ -650,6 +702,7 @@ bool CPlayerController::NextAudioStream()
 void CPlayerController::ShowSlider(int action, int label, float value, float min, float delta, float max, bool modal)
 {
   m_sliderAction = action;
+  m_sliderLabel = label;
   if (modal)
     CGUIDialogSlider::ShowAndGetInput(
         CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(label), value, min, delta,
@@ -673,7 +726,8 @@ void CPlayerController::OnSliderChange(void *data, CGUISliderControl *slider)
   else if (m_sliderAction == ACTION_SUBTITLE_VSHIFT_UP ||
            m_sliderAction == ACTION_SUBTITLE_VSHIFT_DOWN)
   {
-    std::string strValue = StringUtils::Format("{:.0f}px", slider->GetFloatValue());
+    std::string strValue =
+        StringUtils::Format("{:.0f}{}", slider->GetFloatValue(), m_sliderLabel == 277 ? "px" : "");
     slider->SetTextValue(strValue);
   }
   else if (m_sliderAction == ACTION_VOLAMP_UP ||
