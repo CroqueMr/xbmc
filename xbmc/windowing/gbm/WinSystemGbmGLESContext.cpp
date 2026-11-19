@@ -920,6 +920,13 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 }
 
 #ifdef HAVE_DVBRIDGE
+bool CWinSystemGbmGLESContext::HasPendingCB1VideoPresentation() const
+{
+  const auto* drm = dynamic_cast<const CDRMAtomic*>(m_DRM.get());
+  return CB1FramePending() || (drm && drm->HasPendingCB1Page()) ||
+         (m_dvBridge && m_dvBridge->PlayerLedCpuPending());
+}
+
 bool CWinSystemGbmGLESContext::PresentPlayerLedFrame()
 {
   if (m_dvSelection.route != DVBRIDGE::OutputRoute::PlayerLed || !m_dvState.Captured())

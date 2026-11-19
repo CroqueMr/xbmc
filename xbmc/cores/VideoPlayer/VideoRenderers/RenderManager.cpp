@@ -630,10 +630,10 @@ void CRenderManager::FrameMove()
   {
     std::unique_lock lock2(m_presentlock);
 #ifdef HAVE_DVBRIDGE
-    if (m_cb1PresentPending)
     {
       auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
-      if (!window || !window->CB1FramePending())
+      m_cb1OutputPending = window && window->HasPendingCB1VideoPresentation();
+      if (m_cb1PresentPending && (!window || !window->CB1FramePending()))
       {
         m_cb1PresentPending = false;
         m_presentstep = m_queued.empty() ? PRESENT_IDLE : PRESENT_READY;
@@ -773,7 +773,7 @@ void CRenderManager::PreInit()
   m_QueueSkip   = 0;
   m_presentstep = PRESENT_IDLE;
 #ifdef HAVE_DVBRIDGE
-  m_cb1PresentPending = false;
+  m_cb1PresentPending = m_cb1OutputPending = false;
 #endif
   m_bRenderGUI = true;
 
@@ -861,7 +861,7 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
         m_presentsourcePast = -1;
         m_presentstep = PRESENT_IDLE;
 #ifdef HAVE_DVBRIDGE
-        m_cb1PresentPending = false;
+        m_cb1PresentPending = m_cb1OutputPending = false;
 #endif
         for (int i = 1; i < m_QueueSize; i++)
           m_free.push_back(i);
@@ -1806,7 +1806,7 @@ bool CRenderManager::HasPendingVideoPresentation()
 {
   std::unique_lock lock(m_presentlock);
 #ifdef HAVE_DVBRIDGE
-  if (m_cb1PresentPending)
+  if (m_cb1PresentPending || m_cb1OutputPending)
     return true;
 #endif
   return !m_queued.empty() || m_presentstep != PRESENT_IDLE;

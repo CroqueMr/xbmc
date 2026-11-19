@@ -288,6 +288,7 @@ protected:
   EPRESENTSTEP m_presentstep = PRESENT_IDLE;
 #ifdef HAVE_DVBRIDGE
   bool m_cb1PresentPending{};
+  bool m_cb1OutputPending{};
 #endif
   XbmcThreads::EndTime<> m_presentTimer;
   bool m_forceNext = false;

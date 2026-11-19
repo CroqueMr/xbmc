@@ -159,6 +159,7 @@ public:
   // Kodi presentation timestamp of the picture the next CB1 render prepares.
   void SetCB1RenderPts(double pts) { m_cb1RenderPts = pts; }
   bool CB1FramePending() const { return m_cb1FramePending; }
+  bool HasPendingCB1VideoPresentation() const;
   bool CB1AsyncPlayback() const
   {
     return CB1AsyncAvailable() && m_dvBridge->AsyncPreparationActive();
