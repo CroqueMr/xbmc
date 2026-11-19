@@ -42,7 +42,13 @@ class CDVBridgeGLES
 public:
   void InvalidateScreenshot() { ++m_nativeOverlayRevision; }
   bool ScreenshotSDR() const { return m_prepared && m_direct && m_effectiveMode==DVBRIDGE_MODE_SDR; }
-  bool ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out);
+  static bool UsesMasterSourceCarrier(dvbridge_mode mode, bool masterIPT,
+                                      const CDVMetadataBuffer& metadata);
+  bool UsesMasterSourceCarrier() const
+  {
+    return UsesMasterSourceCarrier(m_effectiveMode, m_requested.masterIPT, m_pendingMetadata);
+  }
+  bool ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out, bool videoOnly = false);
   static constexpr bool CanComposeSDRGUI(bool enabled, bool hdr10, bool capture,
                                          int width, int height, unsigned pqDraws)
   {
@@ -234,7 +240,7 @@ public:
   bool PrepareHardware(const Layer& base, const AVFrame* enhancement,
                        const CDVMetadataBuffer& metadata, dvbridge_geometry geometry, bool allowPacked = false);
   unsigned int GetPQTexture() const;
-  unsigned int GetPQFramebuffer();
+  unsigned int GetPQFramebuffer(bool forGUI = true);
   bool GetHDR10OutputTarget(unsigned& framebuffer, unsigned& bits)
   {
     if (!m_hdr10 || !m_prepared || !m_direct || !m_scanout) return false;

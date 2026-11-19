@@ -3289,7 +3289,7 @@ bool KODI::WINDOWING::GBM::IsDVBridgeScreenshotSDR(CWinSystemBase& window)
   return gbm && gbm->IsDVBridgeScreenshotSDR();
 }
 
-bool CWinSystemGbmGLESContext::ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
+bool CWinSystemGbmGLESContext::ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out, bool videoOnly)
 {
   if (!m_dvFrame || !m_dvBridge)
   {
@@ -3302,13 +3302,16 @@ bool CWinSystemGbmGLESContext::ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::
           m_guiCompositing, m_guiWillRender, m_nWidth, m_nHeight);
     return false;
   }
-  return m_dvBridge->ReadScreenshot(out);
+  // The other DV outputs have a packed carrier or display-linear RGB. Neither is BT.2020 PQ.
+  if (videoOnly && !m_hdrConversion && !m_dvBridge->UsesMasterSourceCarrier())
+    return false;
+  return m_dvBridge->ReadScreenshot(out, videoOnly);
 }
 
-bool KODI::WINDOWING::GBM::ReadDVBridgeScreenshot(CWinSystemBase& window, KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
+bool KODI::WINDOWING::GBM::ReadDVBridgeScreenshot(CWinSystemBase& window, KODI::RENDERING::CAPTURE::ReadbackBuffer& out, bool videoOnly)
 {
   auto* gbm = dynamic_cast<CWinSystemGbmGLESContext*>(&window);
-  return gbm && gbm->ReadDVBridgeScreenshot(out);
+  return gbm && gbm->ReadDVBridgeScreenshot(out, videoOnly);
 }
 
 bool CWinSystemGbmGLESContext::CB1AsyncAvailable() const
@@ -3381,10 +3384,33 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
     if (!CB1AsyncAvailable()) return false;
   }
   const auto capture = CServiceBroker::GetCaptureService();
-  const bool capturing = capture && !capture->TakeActive(
+  const auto preferences = DVBRIDGE::FrameOutputSettings(
+      !layer.sourceInfo.profile && layer.hdr10PlusSource,
+      !layer.sourceInfo.profile && layer.hlg);
+  bool capturing = capture && !capture->TakeActive(
       KODI::RENDERING::CAPTURE::CaptureContent::COMPOSITE).empty();
   const bool masterCapture=capturing && m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE;
-  if (masterCapture) m_dvBridge->InvalidateScreenshot();
+  if (masterCapture)
+    m_dvBridge->InvalidateScreenshot();
+  else if (capture && (m_hdrConversion || m_dvSelection.policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE))
+  {
+    // A paused frame may already have been consumed by scanout.
+    using namespace KODI::RENDERING::CAPTURE;
+    const auto requests = capture->TakeActive(CaptureContent::VIDEO);
+    if (!requests.empty())
+    {
+      const auto& spec = requests.front()->spec;
+      if (spec.cadence == CaptureCadence::ONESHOT && spec.format == CaptureFormat::NATIVE &&
+          !spec.width && !spec.height && (m_hdrConversion || CDVBridgeGLES::UsesMasterSourceCarrier(
+              m_dvSelection.policy.mode, preferences.masterIPT, metadata)))
+      {
+        m_dvBridge->InvalidateScreenshot();
+        // Direct HDR10 writes scanout only. Prepare its PQ RGB target for the video tap.
+        if (m_hdrConversion && !m_sdrConversion)
+          capturing = true;
+      }
+    }
+  }
   const bool guiAvailable = m_guiWillRender || CanReuseGuiComposite();
   const bool overlayFree = (!capturing || masterCapture) &&
       (!guiAvailable || GetGUIElementCount() == 0) && !m_dvOverlays;
@@ -3393,9 +3419,6 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
       m_previousSourceStream == layer.binding.stream &&
       DVBRIDGE::ContinuousPresentationPicture(layer.pts, m_previousSourcePts) &&
       m_dvSelection.reason == DVBRIDGE::OutputReason::None;
-  const auto preferences = DVBRIDGE::FrameOutputSettings(
-      !layer.sourceInfo.profile && layer.hdr10PlusSource,
-      !layer.sourceInfo.profile && layer.hlg);
   m_masterFramePeriodNs=m_continuousFrameEligible &&
       m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE ?
       DVBRIDGE::MasterFramePeriodNs(CServiceBroker::GetDataCacheCore().GetVideoFps()) : 0;

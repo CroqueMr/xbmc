@@ -972,29 +972,21 @@ void CRenderManager::ServiceVideoCaptures()
 
   for (const auto& request : requests)
   {
-    const unsigned int width =
-        request->spec.width ? request->spec.width : static_cast<unsigned int>(visible.Width());
-    const unsigned int height =
-        request->spec.height ? request->spec.height : static_cast<unsigned int>(visible.Height());
-
     CaptureResult result;
-    if (m_captureBlit->Blit(visible, width, height, request->spec.format) &&
-        m_captureBlit->Read(result))
+    // The ordinary video readback retains the mastering metadata of its source.
+    result.hasDisplayMetadata = m_picture.hasDisplayMetadata;
+    result.displayMetadata = m_picture.displayMetadata;
+    result.hasLightMetadata = m_picture.hasLightMetadata;
+    result.lightMetadata = m_picture.lightMetadata;
+    if (m_captureBlit->Capture(visible, request->spec, result))
     {
       result.color = GetOutputColorMetadata(*CServiceBroker::GetWinSystem());
-      // the presented PQ is the content's during passthrough, so carry its
-      // mastering metadata verbatim: the source peak an SDR tonemap needs.
-      // NOTE: m_picture, not m_pConfigPicture, which Configure() has already
-      // reset by the time this frame reaches CONFIGURED.
-      result.hasDisplayMetadata = m_picture.hasDisplayMetadata;
-      result.displayMetadata = m_picture.displayMetadata;
-      result.hasLightMetadata = m_picture.hasLightMetadata;
-      result.lightMetadata = m_picture.lightMetadata;
       result.content = CaptureContent::VIDEO; // this tap delivers video-only
       captureService->Complete(request, std::move(result));
     }
-    else
+    else if (request->spec.content != CaptureContent::BOTH)
       captureService->Fail(request);
+    // BOTH remains latched for the independent composite tap on this frame.
   }
 }
 

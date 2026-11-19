@@ -172,7 +172,7 @@ public:
   {
     return HasDVBridgeScreenshot() && m_sdrConversion;
   }
-  bool ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out);
+  bool ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out, bool videoOnly = false);
   bool RenderDVBridge(const CDVBridgeGLES::Layer& layer, std::shared_ptr<AVFrame> enhancement,
                        DVBRIDGE::SourceBinding enhancementBinding,
                        const CDVMetadataBuffer& metadata,
