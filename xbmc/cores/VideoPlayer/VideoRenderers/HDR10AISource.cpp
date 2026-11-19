@@ -79,6 +79,10 @@ cb1_ai_status HDR10AISource::Begin(pl_gpu gpu, const char* bundle,
     const auto status = Collect();
     if (status != CB1_AI_READY)
     {
+      // Terminal work belongs to the retiring source. The context owner
+      // fences it before releasing its lease and starting the new source.
+      if (status != CB1_AI_PENDING)
+        return CB1_AI_INVALID;
       if (m_active && m_activation.Observe(status,Identity(binding),now) == Decision::Native)
       {
         m_fallback = true;
