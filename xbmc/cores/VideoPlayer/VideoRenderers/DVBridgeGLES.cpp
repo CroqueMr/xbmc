@@ -3,7 +3,6 @@
 #include "DVBridgeShaders.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackInfo.h"
 #include "utils/log.h"
-#include <chrono>
 extern "C"
 {
 #include <libavutil/dovi_meta.h>
@@ -13,9 +12,45 @@ extern "C"
 #include <EGL/egl.h>
 #include <GLES3/gl3.h>
 #include <limits>
+#include <mutex>
+#include <string_view>
+
+namespace
+{
+void BackendLog(void*, pl_log_level level, const char* message)
+{
+  // Error-only callback: no debug shader dumps or GPU timing/readback queries.
+  // Shared across renderer recreation so repeated setup errors stay bounded.
+  static std::mutex mutex;
+  static DVBRIDGE::DiagnosticFailures failures;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (failures.Record(DVBRIDGE::DiagnosticNowMs(), "graphics", int(level)))
+    CLog::Log(LOGERROR, "DVBridge graphics: level={} detail={}", int(level),
+        std::string_view(message ? message : "unavailable").substr(0, 768));
+}
+}
+
+bool CDVBridgeGLES::Failure(const char* stage)
+{
+  if (DVBRIDGE::DiagnosticsEnabled() && m_failures.Record(DVBRIDGE::DiagnosticNowMs(), stage))
+    CLog::Log(LOGERROR, "DVBridge renderer: stage={} failures={}", stage, m_failures.Count());
+  return false;
+}
+
+void CDVBridgeGLES::Summary(const char* event)
+{
+  if (!DVBRIDGE::DiagnosticsEnabled() || m_lastReported == m_prepares)
+    return;
+  CLog::Log(LOGINFO,
+      "DVBridge renderer {}: prepared={} direct={} composed={} presented={} presentation_failures={} stage_failures={}",
+      event, m_prepares, m_directFrames, m_prepares - m_directFrames,
+      m_presentations, m_failedPresentations, m_failures.Count());
+  m_lastReported = m_prepares;
+}
 
 CDVBridgeGLES::~CDVBridgeGLES()
 {
+  Summary("closed");
   CDVPlaybackInfo::presented.store(0);
   glDeleteFramebuffers(1, &m_framebuffer);
   dvbridge_gl_packer_destroy(m_packer);
@@ -23,15 +58,7 @@ CDVBridgeGLES::~CDVBridgeGLES()
   if (m_gl)
     pl_tex_destroy(m_gl->gpu, &m_scanout);
   pl_opengl_destroy(&m_gl);
-}
-
-bool CDVBridgeGLES::Fail(const char* stage)
-{
-  const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count();
-  if (m_failures.Record(now))
-    CLog::Log(LOGERROR, "DVBridge: render rejected stage={} failures={}", stage, m_failures.Count());
-  return false;
+  pl_log_destroy(&m_log);
 }
 
 bool CDVBridgeGLES::Initialize(bool allowSoftware)
@@ -44,14 +71,21 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware)
   params.egl_context = eglGetCurrentContext();
   params.allow_software = allowSoftware;
   if (params.egl_context == EGL_NO_CONTEXT)
-    return Fail("egl-context");
-  m_gl = pl_opengl_create(nullptr, &params);
+    return Failure("no-egl-context");
+  if (DVBRIDGE::DiagnosticsEnabled() && !m_log)
+  {
+    pl_log_params logging{};
+    logging.log_cb = BackendLog;
+    logging.log_level = PL_LOG_ERR;
+    m_log = pl_log_create(PL_API_VER, &logging);
+  }
+  m_gl = pl_opengl_create(m_log, &params);
   if (!m_gl)
-    return Fail("libplacebo-opengl");
+    return Failure("opengl-create");
   // GUI alpha blending takes place in the 32F PQ target, before transport packing.
   if (!pl_opengl_has_ext(m_gl, "GL_EXT_float_blend") ||
       !pl_opengl_has_ext(m_gl, "GL_OES_texture_float_linear"))
-    return Fail("float-blend-or-float-linear-capability");
+    return Failure("float-blend-or-linear-unavailable");
   m_renderer = dvbridge_renderer_create(m_gl->gpu);
   pl_opengl_wrap_params output{};
   output.width = 3840;
@@ -72,21 +106,17 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware)
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
   glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
   m_packer = dvbridge_gl_packer_create(DVBRIDGE_VERTEX, DVBRIDGE_FRAGMENT);
-  CLog::Log(LOGDEBUG,
-            "DVBridge: GL initialized renderer={} packer={} packed_scanout={} "
-            "rgb_bits={}/{}/{} samples={} linear_encoding={} software_allowed={}",
-            m_renderer != nullptr, m_packer != nullptr, m_scanout != nullptr,
-            red, green, blue, samples, encoding == GL_LINEAR, allowSoftware);
-  if (!m_renderer || !m_packer)
-    return Fail("renderer-or-packer-initialization");
+  if (DVBRIDGE::DiagnosticsEnabled())
+    CLog::Log(LOGINFO, "DVBridge renderer init: rgb={}/{}/{} samples={} linear={} direct_target={} renderer={} packer={}",
+        red, green, blue, samples, encoding == GL_LINEAR, m_scanout != nullptr,
+        m_renderer != nullptr, m_packer != nullptr);
   return m_renderer && m_packer;
 }
 
 void CDVBridgeGLES::Reset()
 {
-  CLog::Log(LOGDEBUG, "DVBridge: renderer reset render_failures={}", m_failures.Count());
-  m_failures.Reset();
-  m_reportedFrame = false;
+  Summary("reset");
+  m_firstFrame = true;
   CDVPlaybackInfo::presented.store(0);
   m_pendingInfo = 0;
   m_prepared = m_packed = false;
@@ -99,11 +129,13 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
 {
   m_prepared = m_packed = false;
   m_direct = false;
-  if (!m_renderer || !metadata.Data())
-    return Fail("renderer-or-metadata-missing");
+  if (!m_renderer)
+    return Failure("renderer-unavailable");
+  if (!metadata.Data())
+    return Failure("metadata-unavailable");
   dvbridge_gl_frame bl{}, el{};
   if (!dvbridge_gl_frame_import(&bl, m_gl->gpu, base.layout, base.width, base.height, base.planes))
-    return Fail("base-layer-import");
+    return Failure("base-import");
   double elPts = std::numeric_limits<double>::quiet_NaN();
   if (enhancement)
   {
@@ -111,7 +143,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
                                  enhancement->width, enhancement->height, enhancement->planes))
     {
       dvbridge_gl_frame_release(&bl);
-      return Fail("enhancement-layer-import");
+      return Failure("enhancement-import");
     }
     bl.frame.enhancement_layer = &el.frame;
     elPts = enhancement->pts;
@@ -125,7 +157,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
                                      base.pts, elPts, geometry, m_scanout, true);
     if (!m_direct)
     {
-      CLog::Log(LOGDEBUG, "DVBridge: packed render unavailable; retaining full-precision composition path");
+      Failure("direct-path-unavailable-using-composition");
       m_directUsable = false;
       dvbridge_renderer_reset(m_renderer);
     }
@@ -150,22 +182,25 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
       if (level == 3 || level == 8 || level == 9 || level == 10 || level == 11 || level == 254)
         m_pendingInfo |= CDVPlaybackInfo::CM4;
     }
-    if (!m_reportedFrame)
-    {
-      CLog::Log(LOGDEBUG,
-                "DVBridge: first prepared frame base={}x{} layout={} enhancement={} "
-                "fel={} cm4={} metadata_bytes={} geometry={},{},{}x{} path={}",
-                base.width, base.height, static_cast<int>(base.layout), enhancement != nullptr,
-                fel, (m_pendingInfo & CDVPlaybackInfo::CM4) != 0, metadata.Size(),
-                geometry.x, geometry.y, geometry.width, geometry.height,
-                m_direct ? "packed" : "float-composition");
-      m_reportedFrame = true;
-    }
   }
   dvbridge_gl_frame_release(&el);
   dvbridge_gl_frame_release(&bl);
   if (!m_prepared)
-    return Fail("metadata-validation-or-reconstruction");
+    return Failure("render-prepare");
+  if (DVBRIDGE::DiagnosticsEnabled())
+  {
+    ++m_prepares;
+    m_directFrames += m_direct;
+    if (m_firstFrame)
+    {
+      m_firstFrame = false;
+      m_lastSummary = DVBRIDGE::DiagnosticNowMs();
+      CLog::Log(LOGINFO, "DVBridge first frame: source={}x{} output={}x{} offset={},{} enhancement={} fel={} cm4={} direct={}",
+          base.width, base.height, geometry.width, geometry.height, geometry.x, geometry.y,
+          enhancement != nullptr, bool(m_pendingInfo & CDVPlaybackInfo::FEL),
+          bool(m_pendingInfo & CDVPlaybackInfo::CM4), m_direct);
+    }
+  }
   return m_prepared;
 }
 
@@ -183,7 +218,7 @@ bool CDVBridgeGLES::PrepareHardware(const Layer& base, const AVFrame* enhancemen
     return Prepare(base, nullptr, metadata, geometry, allowPacked);
   dvbridge_dmabuf imported{};
   if (!dvbridge_dmabuf_import(&imported, enhancement))
-    return Fail("enhancement-dmabuf-import");
+    return Failure("enhancement-dmabuf-import");
   Layer layer{};
   layer.layout = imported.layout;
   layer.width = enhancement->width;
@@ -200,16 +235,17 @@ bool CDVBridgeGLES::Pack(unsigned int framebuffer, int width, int height, bool f
 {
   m_packed = false;
   if (!m_prepared)
-    return Fail("pack-without-prepared-frame");
+    return Failure("pack-without-prepared-frame");
   if (m_direct)
-    return m_packed = framebuffer == 0 && width == 3840 && height == 2160 && flipY;
+  {
+    m_packed = framebuffer == 0 && width == 3840 && height == 2160 && flipY;
+    return m_packed || Failure("direct-pack-target");
+  }
   unsigned int count;
   const auto* packets = dvbridge_packets(dvbridge_render_candidate(m_renderer), &count);
   m_packed = dvbridge_gl_pack(m_packer, GetPQTexture(), framebuffer, width, height,
                              packets, count, flipY);
-  if (!m_packed)
-    return Fail("transport-packing");
-  return m_packed;
+  return m_packed || Failure("composition-pack");
 }
 
 unsigned int CDVBridgeGLES::GetPQFramebuffer()
@@ -231,12 +267,25 @@ unsigned int CDVBridgeGLES::GetPQFramebuffer()
 bool CDVBridgeGLES::Presented(bool success)
 {
   const bool committed = success && m_prepared && m_packed && dvbridge_render_commit(m_renderer);
-  CDVPlaybackInfo::presented.store(committed ? m_pendingInfo : 0);
-  if (committed && m_failures.Count())
+  // A held frame during paced recovery is not a new presentation attempt.
+  if (DVBRIDGE::DiagnosticsEnabled() && m_prepared)
   {
-    CLog::Log(LOGDEBUG, "DVBridge: rendering recovered previous_failures={}", m_failures.Count());
-    m_failures.Reset();
+    m_presentations += committed;
+    m_failedPresentations += !committed;
+    if (!committed)
+      Failure("presentation");
+    // Coarse accounting only: no GPU queries, fences or readbacks added here.
+    if ((m_presentations + m_failedPresentations) % 120 == 0)
+    {
+      const auto now = DVBRIDGE::DiagnosticNowMs();
+      if (now - m_lastSummary >= 30000)
+      {
+        m_lastSummary = now;
+        Summary("summary");
+      }
+    }
   }
+  CDVPlaybackInfo::presented.store(committed ? m_pendingInfo : 0);
   if (!committed)
     dvbridge_renderer_reset(m_renderer);
   m_prepared = m_packed = false;

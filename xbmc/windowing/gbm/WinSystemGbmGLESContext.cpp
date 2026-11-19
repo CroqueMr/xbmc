@@ -496,14 +496,14 @@ bool NativeDVEligible(bool source, bool software, bool interlaced, bool stereo)
 
 bool DVBRIDGE::WantsNativeOutput(const CDVDStreamInfo& stream)
 {
-  const bool software = (stream.codecOptions & CODEC_FORCE_SOFTWARE) != 0;
   const bool eligible = NativeDVEligible(stream.dovi.dv_profile != 0,
-                                        software, stream.interlaced, !stream.stereo_mode.empty());
-  CLog::Log(LOGDEBUG,
-            "DVBridge: stream selection codec={} profile={} level={} software={} interlaced={} "
-            "stereo={} selected={}; selection is provisional until kernel atomic validation",
-            static_cast<int>(stream.codec), stream.dovi.dv_profile, stream.dovi.dv_level,
-            software, stream.interlaced, !stream.stereo_mode.empty(), eligible);
+                          (stream.codecOptions & CODEC_FORCE_SOFTWARE) != 0,
+                          stream.interlaced, !stream.stereo_mode.empty());
+  if (stream.dovi.dv_profile && DiagnosticsEnabled())
+    CLog::Log(LOGINFO, "DVBridge stream candidate: profile={} level={} compatibility={} native_eligible={} software={} interlaced={} stereo={} (selection probe, not active output)",
+        stream.dovi.dv_profile, stream.dovi.dv_level, stream.dovi.dv_bl_signal_compatibility_id, eligible,
+        (stream.codecOptions & CODEC_FORCE_SOFTWARE) != 0, stream.interlaced,
+        !stream.stereo_mode.empty());
   return eligible;
 }
 
@@ -526,28 +526,34 @@ int CWinSystemGbmGLESContext::VideoOutputBitDepth(const VideoPicture* picture) c
 
 bool CWinSystemGbmGLESContext::BeginDVBridge()
 {
+  const auto failure = [this](const char* stage) {
+    if (DVBRIDGE::DiagnosticsEnabled() &&
+        m_dvSetupFailures.Record(DVBRIDGE::DiagnosticNowMs(), stage))
+      CLog::Log(LOGERROR, "DVBridge setup: stage={} failures={} size={}x{} depth={} renderable={}",
+          stage, m_dvSetupFailures.Count(), m_nWidth, m_nHeight,
+          GetOutputBitDepth(), m_renderableType);
+    return false;
+  };
   if (m_nWidth != 3840 || m_nHeight != 2160 || GetOutputBitDepth() != 8 ||
       m_renderableType != EGL_OPENGL_ES3_BIT)
-    return false;
+    return failure("output-format");
   if (m_dvState.Captured())
     return m_dvBridge && m_guiCompositing && m_compositeShader;
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   if (!drm)
-    return false;
+    return failure("atomic-output-unavailable");
   if (!m_dvBridge)
     m_dvBridge = std::make_unique<CDVBridgeGLES>();
   if (!m_dvBridge->Initialize())
-    return false;
+    return failure("renderer-init");
   if (!m_dvState.Captured() && !m_dvState.Capture(*drm))
-    return false;
+    return failure("drm-state-capture");
   m_compositeShader.reset();
   return SetGuiCompositing(AVCOL_TRC_SMPTE2084);
 }
 
 bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
 {
-  CLog::Log(LOGDEBUG, "DVBridge: output transition picture={} dv_requested={} state_captured={}",
-            picture != nullptr, DVBridgeRequested(picture), m_dvState.Captured());
   // Restore with the current surface before EGL replaces its buffers.
   if (m_dvState.Captured() && !EndDVBridge())
     return false;
@@ -560,6 +566,8 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
                                             dvbridge_geometry geometry)
 {
   m_dvFrame = false;
+  if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM); drm && !drm->DVRetryReady())
+    return false;
   if (!BeginDVBridge())
     return false;
   const bool overlayFree = m_guiWillRender && GetGUIElementCount() == 0 && !m_dvOverlays;
@@ -585,14 +593,19 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
     glFinish();
     if (!m_eglContext.TrySwapBuffers() || !FlipDVBridgePage(m_dvState, true))
     {
-      CLog::Log(LOGERROR, "DVBridge: output restoration failed; retaining scanout state");
+      if (DVBRIDGE::DiagnosticsEnabled() &&
+          m_dvSetupFailures.Record(DVBRIDGE::DiagnosticNowMs(), "restore"))
+        CLog::Log(LOGERROR, "DVBridge: output restoration failed; retaining scanout state; failures={}",
+            m_dvSetupFailures.Count());
       return false;
     }
   }
   if (m_dvBridge)
     m_dvBridge->Reset();
+  if (DVBRIDGE::DiagnosticsEnabled() &&
+      m_dvSetupFailures.Recovered(DVBRIDGE::DiagnosticNowMs()))
+    CLog::Log(LOGINFO, "DVBridge: normal display restored after failures={}", m_dvSetupFailures.Count());
   SetGuiCompositing(0);
-  CLog::Log(LOGDEBUG, "DVBridge: ordinary display state restored");
   return true;
 }
 

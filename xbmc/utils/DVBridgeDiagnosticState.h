@@ -1,31 +1,77 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #pragma once
-
+#include <chrono>
 #include <cstdint>
+#include <cstdlib>
 
 namespace DVBRIDGE
 {
-// Diagnostics only: never use this state to decide whether a frame is presented.
-// Keep the first failure, then at most one report every five seconds, even when
-// different failure stages alternate. Successful steady-state frames do no work.
+// Enabled without Kodi's global debug mode. Developers can disable the entire
+// supplement in one place; it must never change output or retry decisions.
+inline bool DiagnosticsEnabled()
+{
+  static const bool enabled = [] {
+    const char* setting = std::getenv("DVBRIDGE_DIAGNOSTICS");
+    return !setting || setting[0] != '0' || setting[1] != '\0';
+  }();
+  return enabled;
+}
+
+inline uint64_t DiagnosticNowMs()
+{
+  return std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// A bounded first-event/change budget plus a 30-second summary. Alternating
+// failures/recoveries cannot reset the budget and turn this into per-frame IO.
 class DiagnosticFailures
 {
 public:
-  bool Record(uint64_t nowMs)
+  bool Record(uint64_t now, const char* stage = "failure", int error = 0)
   {
     ++m_count;
-    if (m_count == 1 || nowMs - m_lastReportMs >= 5000)
+    ++m_consecutive;
+    const bool changed = stage != m_stage || error != m_error;
+    m_stage = stage;
+    m_error = error;
+    if (!m_reported || now - m_window >= 30000)
     {
-      m_lastReportMs = nowMs;
+      m_window = now;
+      m_reports = 0;
+    }
+    if ((!m_reported || changed || now - m_last >= 30000) && m_reports < 4)
+    {
+      m_reported = true;
+      ++m_reports;
+      m_last = now;
+      return true;
+    }
+    return false;
+  }
+  bool Recovered(uint64_t now)
+  {
+    if (!m_consecutive)
+      return false;
+    m_consecutive = 0;
+    ++m_recoveries;
+    if (m_recoveries == 1 || now - m_lastRecovery >= 30000)
+    {
+      m_lastRecovery = now;
       return true;
     }
     return false;
   }
   uint64_t Count() const { return m_count; }
-  void Reset() { m_count = 0; m_lastReportMs = 0; }
+  uint64_t Recoveries() const { return m_recoveries; }
+  void Reset() { *this = {}; }
 
 private:
-  uint64_t m_count{0};
-  uint64_t m_lastReportMs{0};
+  uint64_t m_count{0}, m_consecutive{0}, m_recoveries{0};
+  uint64_t m_window{0}, m_last{0}, m_lastRecovery{0};
+  unsigned m_reports{0};
+  const char* m_stage{nullptr}; // Callers pass static stage labels.
+  int m_error{0};
+  bool m_reported{false};
 };
-}
+} // namespace DVBRIDGE

@@ -719,8 +719,23 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
       AVFrame* enhancement = nullptr;
       int result = dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts,
                                      &enhancement);
+      if (result == 2)
+      {
+        m_dvPending.pop_front();
+        return VC_BUFFER;
+      }
       if (result < 0)
+      {
+        if (dvbridge_fel_exhausted(m_dvFel.get()))
+        {
+          CLog::Log(LOGWARNING, "DV FEL: enhancement EOF with {} unpaired base pictures; "
+                               "ending video without substituting enhancement frames",
+                    m_dvPending.size());
+          m_dvPending.clear();
+          return VC_EOF;
+        }
         return VC_ERROR;
+      }
       if (!result)
         return VC_NONE;
       base->doviEnhancement = {enhancement, [](AVFrame* f) { av_frame_free(&f); }};

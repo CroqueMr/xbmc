@@ -41,11 +41,15 @@ public:
   bool Presented(bool success);
 
 private:
-  bool Fail(const char* stage);
+  bool Failure(const char* stage);
+  void Summary(const char* event);
   DVBRIDGE::DiagnosticFailures m_failures;
-  bool m_reportedFrame{false};
+  uint64_t m_prepares{0}, m_directFrames{0}, m_presentations{0}, m_failedPresentations{0};
+  uint64_t m_lastSummary{0}, m_lastReported{0};
+  bool m_firstFrame{true};
   // All methods, including destruction, require the owning GL context/thread.
   pl_opengl m_gl = nullptr;
+  pl_log m_log = nullptr;
   dvbridge_renderer* m_renderer = nullptr;
   dvbridge_gl_packer* m_packer = nullptr;
   pl_tex m_scanout = nullptr;
