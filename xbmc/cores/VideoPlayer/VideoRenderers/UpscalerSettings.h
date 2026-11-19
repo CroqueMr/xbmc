@@ -41,6 +41,7 @@ constexpr int Label(int method)
     case VS_SCALINGMETHOD_AUTO: return 16316; // Auto
     case VS_SCALINGMETHOD_SPLINE36_FAST: return 16323; // Spline36 Fast
     case VS_SCALINGMETHOD_SPLINE36: return 16322; // Spline36
+    case VS_SCALINGMETHOD_FSR1: return 41306;
     default: return 0;
   }
 }

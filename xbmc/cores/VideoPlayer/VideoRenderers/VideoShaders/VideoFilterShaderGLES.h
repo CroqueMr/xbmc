@@ -106,6 +106,20 @@ protected:
     int m_ditherSize = 0;
   };
 
+  class FSR1FilterShader : public BaseVideoFilterShader
+  {
+  public:
+    FSR1FilterShader();
+    void OnCompiledAndLinked() override;
+    bool OnEnabled() override;
+    bool GetTextureFilter(GLint& filter) override { filter = GL_NEAREST; return true; }
+    void SetInputSize(float width, float height) { m_inputWidth = width; m_inputHeight = height; }
+
+  private:
+    GLint m_hInputSize{-1};
+    float m_inputWidth{1.0f}, m_inputHeight{1.0f};
+  };
+
   class DefaultFilterShader : public BaseVideoFilterShader
   {
     public:

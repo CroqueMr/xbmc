@@ -421,8 +421,9 @@ void CGUIDialogVideoSettings::InitializeSettings()
       upscalers.push_back(entry);
   }
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
-  AddSpinner(groupVideo, SDR, 41302, SettingLevel::Basic, settings->GetInt(SDR), upscalers);
   AddSpinner(groupVideo, HDR, 41303, SettingLevel::Basic, settings->GetInt(HDR), upscalers);
+  upscalers.emplace_back(41306, VS_SCALINGMETHOD_FSR1);
+  AddSpinner(groupVideo, SDR, 41302, SettingLevel::Basic, settings->GetInt(SDR), upscalers);
 #else
   /* remove unsupported methods */
   for(TranslatableIntegerSettingOptions::iterator it = entries.begin(); it != entries.end(); )

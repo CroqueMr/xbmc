@@ -26721,3 +26721,7 @@ msgstr ""
 msgctxt "#41305"
 msgid "Upscaler"
 msgstr ""
+
+msgctxt "#41306"
+msgid "FSR 1 (EASU)"
+msgstr ""

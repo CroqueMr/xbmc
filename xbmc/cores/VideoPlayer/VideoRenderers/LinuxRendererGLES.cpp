@@ -1010,6 +1010,7 @@ void CLinuxRendererGLES::UpdateVideoFilter()
     [[fallthrough]];
   }
 
+  case VS_SCALINGMETHOD_FSR1:
   case VS_SCALINGMETHOD_LANCZOS2:
   case VS_SCALINGMETHOD_SPLINE36:
   case VS_SCALINGMETHOD_LANCZOS3:
@@ -1055,14 +1056,17 @@ void CLinuxRendererGLES::UpdateVideoFilter()
 
     // TODO: GL also passes m_nonLinStretch, m_intermediateGammaCorrection.
     // Add when non-linear stretch and gamma correction are ported to GLES.
-    m_pVideoFilterShader = new ConvolutionFilterShader(m_scalingMethod, m_useDithering);
+    if (m_scalingMethod == VS_SCALINGMETHOD_FSR1)
+      m_pVideoFilterShader = new FSR1FilterShader();
+    else
+      m_pVideoFilterShader = new ConvolutionFilterShader(m_scalingMethod, m_useDithering);
     if (!m_pVideoFilterShader->CompileAndLink())
     {
       CLog::Log(LOGERROR, "GLES: Error compiling and linking video filter shader");
       break;
     }
 
-    if (m_useDithering && m_ditherTex)
+    if (m_scalingMethod != VS_SCALINGMETHOD_FSR1 && m_useDithering && m_ditherTex)
     {
       bool ditherActive = true;
       unsigned int effectiveDitherDepth = m_ditherDepth;
@@ -1902,6 +1906,8 @@ void CLinuxRendererGLES::RenderFromFBO()
     m_pVideoFilterShader->SetSourceTexture(0);
     m_pVideoFilterShader->SetWidth(m_sourceWidth);
     m_pVideoFilterShader->SetHeight(m_sourceHeight);
+    if (m_scalingMethod == VS_SCALINGMETHOD_FSR1)
+      static_cast<FSR1FilterShader*>(m_pVideoFilterShader)->SetInputSize(m_fbo.width, m_fbo.height);
     m_pVideoFilterShader->SetAlpha(1.0f);
     m_pVideoFilterShader->SetMatrices(glMatrixProject.Get(), glMatrixModview.Get());
     m_pVideoFilterShader->Enable();
@@ -2558,6 +2564,14 @@ bool CLinuxRendererGLES::Supports(ESCALINGMETHOD method) const
   {
     return true;
   }
+
+#ifdef HAVE_DVBRIDGE
+  if (method == VS_SCALINGMETHOD_FSR1)
+    return (m_renderMethod & RENDER_GLSL) && !m_passthroughHDR && !m_renderOrientation &&
+           m_currentField == FIELD_FULL &&
+           KODI::VIDEO::UPSCALER::Enlarges(m_sourceRect.Width(), m_sourceRect.Height(),
+                                         m_destRect.Width(), m_destRect.Height());
+#endif
 
   if (method == VS_SCALINGMETHOD_CUBIC_B_SPLINE ||
       method == VS_SCALINGMETHOD_CUBIC_MITCHELL ||
