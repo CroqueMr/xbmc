@@ -23,10 +23,55 @@
 
 #include "PlatformDefs.h"
 
+extern "C"
+{
+#include <libdisplay-info/cta-vic.h>
+}
+
 using namespace KODI::WINDOWING::GBM;
 
 namespace
 {
+bool IsCTATiming(const drmModeModeInfo& mode)
+{
+  if (mode.flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN |
+                    DRM_MODE_FLAG_DBLCLK | DRM_MODE_FLAG_3D_MASK))
+    return false;
+  const uint32_t syncMask = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_NHSYNC |
+      DRM_MODE_FLAG_PVSYNC | DRM_MODE_FLAG_NVSYNC;
+  for (unsigned code = 1; code <= UINT8_MAX; ++code)
+  {
+    const auto* timing = di_cta_vic_video_format_from_vic({static_cast<uint8_t>(code)});
+    if (!timing || timing->interlaced) continue;
+    const uint32_t sync =
+        (timing->h_sync_polarity == DI_CTA_VIC_VIDEO_FORMAT_SYNC_POSITIVE ? DRM_MODE_FLAG_PHSYNC : DRM_MODE_FLAG_NHSYNC) |
+        (timing->v_sync_polarity == DI_CTA_VIC_VIDEO_FORMAT_SYNC_POSITIVE ? DRM_MODE_FLAG_PVSYNC : DRM_MODE_FLAG_NVSYNC);
+    if (timing->h_active == mode.hdisplay && timing->v_active == mode.vdisplay &&
+        timing->h_front == mode.hsync_start - mode.hdisplay &&
+        timing->h_sync == mode.hsync_end - mode.hsync_start &&
+        timing->h_back == mode.htotal - mode.hsync_end &&
+        timing->v_front == mode.vsync_start - mode.vdisplay &&
+        timing->v_sync == mode.vsync_end - mode.vsync_start &&
+        timing->v_back == mode.vtotal - mode.vsync_end && (mode.flags & syncMask) == sync &&
+        (mode.clock == (timing->pixel_clock_hz + 500) / 1000 ||
+         mode.clock == (timing->pixel_clock_hz * 1000 / 1001 + 500) / 1000))
+      return true;
+  }
+  return false;
+}
+
+bool SameTimingExceptSync(const drmModeModeInfo& a, const drmModeModeInfo& b)
+{
+  const uint32_t syncMask = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_NHSYNC |
+      DRM_MODE_FLAG_PVSYNC | DRM_MODE_FLAG_NVSYNC;
+  return a.clock == b.clock && a.hdisplay == b.hdisplay &&
+      a.hsync_start == b.hsync_start && a.hsync_end == b.hsync_end &&
+      a.htotal == b.htotal && a.hskew == b.hskew && a.vdisplay == b.vdisplay &&
+      a.vsync_start == b.vsync_start && a.vsync_end == b.vsync_end &&
+      a.vtotal == b.vtotal && a.vscan == b.vscan &&
+      (a.flags & ~syncMask) == (b.flags & ~syncMask);
+}
+
 const std::string SETTING_VIDEOSCREEN_LIMITGUISIZE = "videoscreen.limitguisize";
 
 #ifdef HAVE_DVBRIDGE
@@ -1003,6 +1048,18 @@ std::vector<RESOLUTION_INFO> CDRMUtils::GetModes()
 
     RESOLUTION_INFO res = GetResolutionInfo(mode);
     res.strId = std::to_string(i);
+    // Kodi's mode key omits sync polarity. Keep the advertised HDMI CTA
+    // timing when an otherwise identical PC alias would hide its AVI VIC.
+    if (m_connector->GetType() == "HDMI-A")
+    {
+      const bool cta = IsCTATiming(*mode);
+      const auto alias = [&](const RESOLUTION_INFO& previous) {
+        const auto* other = m_connector->GetModeForIndex(std::stoi(previous.strId));
+        return SameTimingExceptSync(*mode, *other) && IsCTATiming(*other) != cta;
+      };
+      if (cta) std::erase_if(resolutions, alias);
+      else if (std::ranges::any_of(resolutions, alias)) continue;
+    }
     resolutions.push_back(res);
   }
 
