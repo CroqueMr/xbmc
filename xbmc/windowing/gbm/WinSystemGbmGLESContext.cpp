@@ -1756,6 +1756,9 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
   const auto previous = [&] {
     std::lock_guard lock(m_dvCapabilityMutex);
     auto prior = m_dvLldvStatus;
+    if (lldvStatus.connectorId != prior.connectorId ||
+        lldvStatus.edidGeneration != prior.edidGeneration)
+      m_dvOutputTimings.clear();
     m_dvLldvStatus = lldvStatus;
     return prior;
   }();
@@ -1814,6 +1817,7 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
   }
   const bool availableNativeDV = SupportsNativeDVOutput(false);
   const bool availableHDR10 = SupportsHDR10Conversion(false);
+  auto timings = GetDVOutputTimings();
   std::lock_guard lock(m_dvCapabilityMutex);
   if (lldvStatus.edidGeneration != previous.edidGeneration ||
       lldvStatus.connectorId != previous.connectorId ||
@@ -1838,6 +1842,7 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
   m_dvCapabilities = caps;
   m_dvAvailableNativeDV = availableNativeDV;
   m_dvAvailableHDR10 = availableHDR10;
+  m_dvOutputTimings = std::move(timings);
   if (DVBRIDGE::DiagnosticsEnabled())
   {
     try
@@ -1856,6 +1861,62 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
     }
     catch (...) {}
   }
+}
+
+bool CWinSystemGbmGLESContext::SupportsDVOutputTiming(RESOLUTION resolution) const
+{
+  if (resolution < RES_DESKTOP)
+    return false;
+
+  const auto mode = CDisplaySettings::GetInstance().GetResolutionInfoCopy(resolution);
+  if (mode.dwFlags & D3DPRESENTFLAG_MODEMASK)
+    return false;
+
+  const auto* end = mode.strId.data() + mode.strId.size();
+  int index = -1;
+  const auto parsed = std::from_chars(mode.strId.data(), end, index);
+  if (parsed.ec != std::errc{} || parsed.ptr != end || index < 0)
+    return false;
+
+  // The connector's mode indices can change before Kodi rebuilds its resolution catalogue.
+  std::lock_guard lock(m_dvCapabilityMutex);
+  return std::ranges::any_of(m_dvOutputTimings, [&](const DVOutputTiming& timing) {
+    return timing.index == index && timing.width == mode.iScreenWidth &&
+           timing.height == mode.iScreenHeight && std::abs(timing.refresh - mode.fRefreshRate) < 0.01;
+  });
+}
+
+RESOLUTION CWinSystemGbmGLESContext::ChooseHDR10FallbackResolution(RESOLUTION chosen) const
+{
+  const auto advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  if (SupportsDVOutputTiming(chosen) || CResolutionUtils::HasWhitelist() ||
+      !advanced->m_videoAdjustRefreshOverrides.empty())
+    return chosen;
+
+  const auto& display = CDisplaySettings::GetInstance();
+  const auto original = display.GetResolutionInfoCopy(chosen);
+  std::vector<RESOLUTION> candidates;
+  GetGfxContext().GetAllowedResolutions(candidates);
+  RESOLUTION best = chosen;
+  int bestArea = 0;
+  for (const RESOLUTION candidate : candidates)
+  {
+    const auto mode = display.GetResolutionInfoCopy(candidate);
+    if (std::abs(mode.fRefreshRate - original.fRefreshRate) < 0.01f &&
+        SupportsDVOutputTiming(candidate))
+    {
+      const int area = mode.iScreenWidth * mode.iScreenHeight;
+      if (area > bestArea)
+      {
+        best = candidate;
+        bestArea = area;
+      }
+    }
+  }
+  if (best != chosen)
+    CLog::Log(LOGDEBUG, "CB1 HDR10 fallback: selected {} (original mode {})",
+              display.GetResolutionInfoCopy(best).strMode, original.strMode);
+  return best;
 }
 
 bool CWinSystemGbmGLESContext::CanRetainDVSource() const
@@ -4033,6 +4094,10 @@ bool CWinSystemGbmGLESContext::DestroyWindowSystem()
   if (!RetireDVContext()) return false;
   SelectPascalHDRMode(PascalHDRMode::None);
   m_pascalHDRScanout.reset();
+  {
+    std::lock_guard lock(m_dvCapabilityMutex);
+    m_dvOutputTimings.clear();
+  }
   if (!CWinSystemGbmEGLContext::DestroyWindowSystem()) return false;
   std::lock_guard lock(m_dvCapabilityMutex);
   const auto generation = m_dvCapabilities.generation + 1;
@@ -4095,7 +4160,8 @@ bool CWinSystemGbmGLESContext::CreateContext()
     const auto generation = m_dvCapabilities.generation + 1;
     m_dvCapabilities = {};
     m_dvAvailableNativeDV = m_dvAvailableHDR10 = false;
-  m_dvLldvStatus = {};
+    m_dvOutputTimings.clear();
+    m_dvLldvStatus = {};
     m_dvCapabilities.generation = generation;
     m_dvImportBinding = {};
     m_dvImportUsable = false;

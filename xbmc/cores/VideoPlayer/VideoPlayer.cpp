@@ -4817,8 +4817,8 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
       if (!pMenus)
       {
         const RESOLUTION res = playerLedStartupResolution ? *playerLedStartupResolution :
-            CResolutionUtils::ChooseBestResolution(static_cast<float>(framerate), hint.width,
-                                                   hint.height, !hint.stereo_mode.empty());
+            CRenderManager::ChoosePlaybackResolution(framerate, hint.width, hint.height,
+                                                    !hint.stereo_mode.empty(), nativeDV);
 #ifdef HAVE_DVBRIDGE
         using HDRSignal = DVBRIDGE::NativeHDRSignal;
         auto hdrSignal = HDRSignal::None;

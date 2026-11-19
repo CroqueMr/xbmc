@@ -96,6 +96,8 @@ public:
   DVBRIDGE::OutputCapabilities GetDVOutputCapabilities(const VideoPicture* picture,
       bool allowModeSwitch = false) const;
   bool CanRetainDVSource() const;
+  bool SupportsDVOutputTiming(RESOLUTION resolution) const;
+  RESOLUTION ChooseHDR10FallbackResolution(RESOLUTION chosen) const;
   bool CompleteDVModeSwitch(const VideoPicture& picture);
   std::optional<RESOLUTION> PlayerLedResolution(double fps, bool atStartup = false) const;
   int PlayerLedResolutionReason(RESOLUTION resolution, int preference) const;
@@ -301,6 +303,7 @@ private:
 #endif
   DVBRIDGE::OutputCapabilities m_dvCapabilities;
   bool m_dvAvailableNativeDV{}, m_dvAvailableHDR10{};
+  std::vector<DVOutputTiming> m_dvOutputTimings;
   std::atomic<uint64_t> m_hdr10MaxBpc{0};
   DVBRIDGE::LldvConnectorStatus m_dvLldvStatus{};
   XbmcThreads::EndTime<> m_lldvEdidRefresh;

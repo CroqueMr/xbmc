@@ -515,6 +515,27 @@ RESOLUTION_INFO& CDisplaySettings::GetResolutionInfo(RESOLUTION resolution)
   return GetResolutionInfo((size_t)resolution);
 }
 
+RESOLUTION_INFO CDisplaySettings::GetResolutionInfoCopy(RESOLUTION resolution) const
+{
+  std::unique_lock lock(m_critical);
+  if (resolution <= RES_INVALID || static_cast<size_t>(resolution) >= m_resolutions.size())
+    return EmptyResolution;
+
+  return m_resolutions[resolution];
+}
+
+void CDisplaySettings::SetDesktopResolutionInfo(const RESOLUTION_INFO& resolution)
+{
+  std::unique_lock lock(m_critical);
+  m_resolutions[RES_DESKTOP] = resolution;
+}
+
+size_t CDisplaySettings::ResolutionInfoSize() const
+{
+  std::unique_lock lock(m_critical);
+  return m_resolutions.size();
+}
+
 void CDisplaySettings::AddResolutionInfo(const RESOLUTION_INFO &resolution)
 {
   std::unique_lock lock(m_critical);
@@ -987,6 +1008,7 @@ void CDisplaySettings::SettingOptionsMonitorsFiller(const SettingConstPtr& setti
 
 void CDisplaySettings::ClearCustomResolutions()
 {
+  std::unique_lock lock(m_critical);
   if (m_resolutions.size() > RES_CUSTOM)
   {
     std::vector<RESOLUTION_INFO>::iterator firstCustom = m_resolutions.begin()+RES_CUSTOM;

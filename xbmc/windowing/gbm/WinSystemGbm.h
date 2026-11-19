@@ -28,6 +28,7 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <gbm.h>
 
@@ -137,6 +138,16 @@ public:
   std::vector<std::string> GetConnectedOutputs() override;
 
 protected:
+#ifdef HAVE_DVBRIDGE
+  struct DVOutputTiming
+  {
+    int index;
+    int width;
+    int height;
+    double refresh;
+  };
+  std::vector<DVOutputTiming> GetDVOutputTimings() const;
+#endif
   virtual bool ConnectorPreferencesAllowed() const { return true; }
   void DeferConnectorPreferences();
   void ApplyColorspace();

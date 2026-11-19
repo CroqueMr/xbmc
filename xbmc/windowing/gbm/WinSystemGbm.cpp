@@ -352,7 +352,7 @@ void CWinSystemGbm::UpdateResolutions()
 
     CServiceBroker::GetWinSystem()->GetGfxContext().ResetOverscan(current);
     CDisplaySettings::GetInstance().AddResolutionInfo(current);
-    CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = current;
+    CDisplaySettings::GetInstance().SetDesktopResolutionInfo(current);
 
     CLog::Log(LOGINFO, "Found resolution {}x{} with {}x{}{} @ {:f} Hz{}", current.iWidth,
               current.iHeight, current.iScreenWidth, current.iScreenHeight,
@@ -372,7 +372,7 @@ void CWinSystemGbm::UpdateResolutions()
           current.iWidth == res.iWidth && current.iHeight == res.iHeight &&
           current.fRefreshRate == res.fRefreshRate && current.dwFlags == res.dwFlags)
       {
-        CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = res;
+        CDisplaySettings::GetInstance().SetDesktopResolutionInfo(res);
       }
 
       // The layout matters as much as the geometry here: without it a half 3D mode prints
@@ -1000,25 +1000,49 @@ bool CWinSystemGbm::RefreshDisplayInfoForVideo()
   return true;
 }
 
+namespace
+{
+double DVOutputTimingRate(const drmModeModeInfo* mode)
+{
+  if (!mode || !mode->hdisplay || (mode->hdisplay & 1) || !mode->vdisplay ||
+      mode->hdisplay > 3840 || mode->vdisplay > 2160 ||
+      uint64_t(mode->hdisplay) * mode->vdisplay < 5 * 3072u ||
+      (mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN)))
+    return 0.0;
+  const double rate = mode->htotal && mode->vtotal
+                          ? mode->clock * 1000.0 / mode->htotal / mode->vtotal
+                          : 0.0;
+  return CResolutionUtils::IsCB1RefreshRate(rate) ? rate : 0.0;
+}
+} // namespace
+
 bool CWinSystemGbm::SupportsDVOutputMode(bool requireCurrentMode) const
 {
   if (!m_DRM) return false;
-  const auto usable = [](const drmModeModeInfo* mode) {
-    if (!mode || !mode->hdisplay || (mode->hdisplay & 1) || !mode->vdisplay ||
-        mode->hdisplay > 3840 || mode->vdisplay > 2160 ||
-        uint64_t(mode->hdisplay) * mode->vdisplay < 5 * 3072u ||
-        (mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN))) return false;
-    const double rate = mode->htotal && mode->vtotal ?
-        mode->clock * 1000.0 / mode->htotal / mode->vtotal : 0.0;
-    return CResolutionUtils::IsCB1RefreshRate(rate);
-  };
-  if (usable(m_DRM->GetSelectedMode())) return true;
+  if (DVOutputTimingRate(m_DRM->GetSelectedMode())) return true;
   if (requireCurrentMode) return false;
   auto* connector = m_DRM->GetConnector();
   if (!connector || !connector->IsConnected()) return false;
   for (int i = 0; i < connector->GetModesCount(); ++i)
-    if (usable(connector->GetModeForIndex(i))) return true;
+    if (DVOutputTimingRate(connector->GetModeForIndex(i))) return true;
   return false;
+}
+
+std::vector<CWinSystemGbm::DVOutputTiming> CWinSystemGbm::GetDVOutputTimings() const
+{
+  std::vector<DVOutputTiming> timings;
+  auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (!connector || !connector->IsConnected())
+    return timings;
+
+  for (int index = 0; index < connector->GetModesCount(); ++index)
+  {
+    const auto* mode = connector->GetModeForIndex(index);
+    const double refresh = DVOutputTimingRate(mode);
+    if (refresh > 0.0 && !(mode->flags & DRM_MODE_FLAG_3D_MASK) && mode->vscan <= 1)
+      timings.push_back({index, mode->hdisplay, mode->vdisplay, refresh});
+  }
+  return timings;
 }
 
 bool CWinSystemGbm::SupportsNativeDVOutput(bool requireCurrentMode) const
