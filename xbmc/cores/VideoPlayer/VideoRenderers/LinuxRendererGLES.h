@@ -83,6 +83,7 @@ public:
   CRenderInfo GetRenderInfo() override;
   bool ConfigChanged(const VideoPicture& picture) override;
 #ifdef CB1_HAS_HDR10_AI
+  void PreserveHDR10AIOutputOnReconfigure(const VideoPicture& picture) override;
   bool HDR10AIQueueEligible() const override { return m_softwareAIBuffers > NUM_BUFFERS; }
   bool HDR10AILookahead() const override { return HDR10AIQueueEligible() && m_aiLookahead; }
   bool HDR10AIFrameCommitted() const override;
@@ -110,6 +111,7 @@ protected:
   bool m_aiLookahead{};
   bool m_aiOutputPending{false};
   bool m_aiFrameRendered{true};
+  bool m_preserveHLGOutput{false};
 #endif
   // Returns 0 if scaling is below hqscalers threshold.
   // Otherwise returns the scale factor: < 1.0 = downscale, > 1.0 = upscale.

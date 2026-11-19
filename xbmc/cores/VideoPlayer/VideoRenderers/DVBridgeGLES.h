@@ -161,6 +161,7 @@ public:
     cb1_cmv40_status cmv40Status{CB1_CMV40_OFF};
     int upscaler{-1};
   };
+  uint64_t PendingSourceGeneration() const { return m_pendingSourceInfo.informationGeneration; }
   Submission CaptureSubmission() const
   {
     auto submission=m_submission;

@@ -13,6 +13,7 @@
 
 #include "RenderFactory.h"
 #include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "VideoShaders/VideoFilterShaderGLES.h"
 #include "VideoShaders/YUV2RGBShaderGLES.h"
 #include "VideoShaders/dither.h"
@@ -421,6 +422,16 @@ bool CLinuxRendererGLES::ConfigureVideoOutput(const VideoPicture& picture)
   m_bConfigured = true;
   return true;
 }
+
+#ifdef CB1_HAS_HDR10_AI
+void CLinuxRendererGLES::PreserveHDR10AIOutputOnReconfigure(const VideoPicture& picture)
+{
+  // Growing the software analysis queue must keep native HLG until the DV frame is ready.
+  m_preserveHLGOutput = picture.hdrType == StreamHdrType::HDR_TYPE_HLG &&
+      m_passthroughHDR && !m_dvRequested && picture.videoBuffer->GetFormat() == m_format &&
+      SoftwareHDR10AIBufferCount(picture, m_fps, m_renderOrientation) > m_softwareAIBuffers;
+}
+#endif
 
 bool CLinuxRendererGLES::ConfigChanged(const VideoPicture &picture)
 {
@@ -1419,6 +1430,9 @@ void CLinuxRendererGLES::UnInit()
   if (m_bConfigured)
   {
     m_hdrFboActive = false;
+#ifdef CB1_HAS_HDR10_AI
+    outputStopped |= m_preserveHLGOutput;
+#endif
     if (!outputStopped)
     {
       CServiceBroker::GetWinSystem()->SetGuiCompositing(false);
@@ -1834,6 +1848,17 @@ bool CLinuxRendererGLES::RenderShaderUpscaler(int index, int preset)
 
 bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 {
+#ifdef HAVE_DVBRIDGE
+  // A decoder flush can leave the previous picture selected until new video arrives.
+  if (const auto& picture = m_buffers[index].doviSourcePicture;
+      picture && picture->doviSourceInfo.informationGeneration &&
+      picture->doviSourceInfo.informationGeneration !=
+          CServiceBroker::GetDataCacheCore().GetVideoProcessingGeneration())
+  {
+    return false;
+  }
+#endif
+
   // obtain current field, if interlaced
   if( flags & RENDER_FLAG_TOP)
   {
