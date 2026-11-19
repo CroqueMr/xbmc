@@ -5,6 +5,7 @@
 #include "DVMetadataBuffer.h"
 #include "ServiceBroker.h"
 #include "cores/DataCacheCore.h"
+#include "cores/VideoProcessingInfo.h"
 #ifdef CB1_HAS_HDR10_AI
 #include "cb1_circuit.h"
 #endif
@@ -105,14 +106,16 @@ struct StreamSnapshot
     }
 #endif
   } output;
-  unsigned profile{}, level{}, major{}, minor{};
+  unsigned profile{}, level{}, major{}, minor{}, compatibility{};
   bool bl{}, el{}, rpu{}, metadata{}, cm4{}, fel{};
   bool l1{}, l5{}, l6{};
   std::array<unsigned, 3> pq{};
   std::array<unsigned, 4> area{};
   unsigned maxMaster{}, minMaster{}, maxCLL{}, maxFALL{};
+  VideoDVLevels levels;
   unsigned framebufferBits{}, sourceBits{};
   AVPixelFormat sourceFormat{AV_PIX_FMT_NONE};
+  VideoSourceTags tags;
   int dropped{}, skipped{};
   bool counters{};
   bool sourceMastering{}, sourceLight{};
@@ -181,7 +184,8 @@ public:
     CDVPlaybackInfo::presented.store(0);
   }
 
-  static void SourceBits(unsigned bits, AVPixelFormat format, const SourceInfo& source)
+  static void SourceBits(unsigned bits, AVPixelFormat format, const SourceInfo& source,
+                         const VideoSourceTags& tags = {})
   {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (source.informationGeneration!=m_decodedSource.informationGeneration ||
@@ -193,6 +197,7 @@ public:
     m_decodedSource=source;
     m_decodedSource.bits=bits;
     m_decodedSource.format=static_cast<int>(format);
+    m_decodedTags=tags;
   }
 
   static void Counters(int dropped, int skipped)
@@ -342,6 +347,8 @@ private:
     out.framebufferBits = bits;
     out.l1 = out.l5 = out.l6 = out.cm4 = false;
     out.blocks.reset();
+    out.levels = {};
+    auto& levels = out.levels;
     for (int i = 0; i < data->num_ext_blocks; ++i)
     {
       const auto* ext = av_dovi_get_ext(data, i);
@@ -351,6 +358,13 @@ private:
         case 1:
           out.l1 = true;
           out.pq = {ext->l1.min_pq, ext->l1.max_pq, ext->l1.avg_pq};
+          break;
+        case 2:
+          if (levels.l2Count < levels.l2.size())
+            levels.l2[levels.l2Count++] = ext->l2.target_max_pq;
+          break;
+        case 4:
+          levels.l4 = {ext->l4.anchor_pq, ext->l4.anchor_power};
           break;
         case 5:
           out.l5 = true;
@@ -364,8 +378,39 @@ private:
           out.maxCLL = ext->l6.max_cll;
           out.maxFALL = ext->l6.max_fall;
           break;
-        case 3: case 8: case 9: case 10: case 11: case 254:
+        case 3:
           out.cm4 = true;
+          levels.l3 = {ext->l3.min_pq_offset, ext->l3.max_pq_offset, ext->l3.avg_pq_offset};
+          break;
+        case 8:
+          out.cm4 = true;
+          if (levels.l8Count < levels.l8.size())
+            levels.l8[levels.l8Count++] = ext->l8.target_display_index;
+          break;
+        case 9:
+          out.cm4 = true;
+          levels.l9 = ext->l9.source_primary_index;
+          break;
+        case 10:
+          out.cm4 = true;
+          if (levels.l10Count < levels.l10.size())
+            levels.l10[levels.l10Count++] = {ext->l10.target_display_index,
+                ext->l10.target_primary_index, ext->l10.target_max_pq, ext->l10.target_min_pq};
+          break;
+        case 11:
+          out.cm4 = true;
+          levels.contentType = ext->l11.content_type;
+          levels.whitepoint = ext->l11.whitepoint;
+          levels.referenceMode = ext->l11.reference_mode_flag != 0;
+          break;
+        case 254:
+          out.cm4 = true;
+          levels.dmMode = ext->l254.dm_mode;
+          levels.dmVersion = ext->l254.dm_version_index;
+          break;
+        case 255:
+          levels.runMode = ext->l255.dm_run_mode;
+          levels.runVersion = ext->l255.dm_run_version;
           break;
       }
     }
@@ -384,12 +429,14 @@ public:
       result.informationGeneration=source.informationGeneration;
       result.profile = source.profile; result.level = source.level;
       result.major = source.major; result.minor = source.minor;
+      result.compatibility = source.compatibility;
       result.bl = source.bl; result.el = source.el; result.rpu = source.rpu;
       result.sourceBits = source.bits; result.sourceFormat = static_cast<AVPixelFormat>(source.format);
       result.sourceMastering = source.mastering; result.sourceLight = source.light;
       result.sourceMax = source.maxLuma; result.sourceMin = source.minLuma;
       result.sourceCLL = source.maxCLL; result.sourceFALL = source.maxFALL;
     }
+    result.tags = m_decodedTags;
     return result;
   }
 
@@ -400,6 +447,7 @@ private:
   inline static StreamSnapshot m_snapshot;
   inline static SourceInfo m_nativeSource;
   inline static SourceInfo m_decodedSource;
+  inline static VideoSourceTags m_decodedTags;
   inline static bool m_nativeActive{};
   inline static std::chrono::steady_clock::time_point m_next;
 };

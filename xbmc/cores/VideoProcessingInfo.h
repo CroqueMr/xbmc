@@ -13,6 +13,37 @@ enum class VideoProcessingReason { None, NoDVTransport, NoHDR10Transport,
   NoHDR10PlusTransport, SDRTargetInvalid, ProcessingPending };
 enum class VideoCreativeStatus { Invalid, Unsupported, Neutral, Ready };
 
+// How the decoder tagged the picture: FFmpeg AVColor* codes, -1 when unknown.
+struct VideoSourceTags
+{
+  int primaries{-1}, transfer{-1};
+  bool primariesGuessed{}, fullRange{};
+  std::string enhancement; // "FEL" or "MEL" from Kodi's RPU check, empty without an EL
+};
+
+// RPU level values beyond L1/L5/L6, as FFmpeg parsed the latest sampled picture.
+// Presence is the matching bit of the parsed block set.
+struct VideoDVLevels
+{
+  static constexpr unsigned MaxTrims = 32;
+  struct Target
+  {
+    uint8_t index{}, primaries{};
+    uint16_t maxPQ{}, minPQ{};
+  };
+  std::array<uint16_t, MaxTrims> l2{}; // target_max_pq of each trim pass
+  std::array<uint8_t, MaxTrims> l8{}; // target_display_index of each trim pass
+  std::array<Target, MaxTrims> l10{};
+  unsigned l2Count{}, l8Count{}, l10Count{};
+  std::array<uint16_t, 3> l3{}; // min/max/avg PQ offsets, 2048 is neutral
+  std::array<uint16_t, 2> l4{}; // anchor PQ and power
+  unsigned l9{}; // source_primary_index
+  unsigned contentType{}, whitepoint{};
+  bool referenceMode{};
+  unsigned dmMode{}, dmVersion{}; // L254
+  unsigned runMode{}, runVersion{}; // L255
+};
+
 // Native playback facts. Renderer objects and full metadata buffers stay with their owners.
 struct VideoProcessingInfo
 {
@@ -64,14 +95,16 @@ struct VideoProcessingInfo
   std::optional<VideoOutputType> outputType;
   uint64_t informationGeneration{};
   bool referenceWarning{};
-  unsigned profile{}, level{}, major{}, minor{};
+  unsigned profile{}, level{}, major{}, minor{}, compatibility{};
   bool bl{}, el{}, rpu{}, metadata{}, cm4{}, fel{};
   bool l1{}, l5{}, l6{};
   std::array<unsigned,3> pq{};
   std::array<unsigned,4> area{};
   unsigned maxMaster{}, minMaster{}, maxCLL{}, maxFALL{};
+  VideoDVLevels levels;
   unsigned framebufferBits{}, sourceBits{};
   int sourceFormat{-1};
+  VideoSourceTags tags;
   int dropped{}, skipped{};
   bool counters{}, sourceMastering{}, sourceLight{};
   double sourceMax{}, sourceMin{};

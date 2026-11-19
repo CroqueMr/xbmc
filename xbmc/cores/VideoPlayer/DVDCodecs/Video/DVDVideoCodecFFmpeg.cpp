@@ -1683,7 +1683,8 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   m_requestSkipDeint = false;
   pVideoPicture->iFlags |= m_codecControlFlags;
 
-  if (pVideoPicture->color_primaries == AVCOL_PRI_UNSPECIFIED)
+  pVideoPicture->colorPrimariesGuessed = pVideoPicture->color_primaries == AVCOL_PRI_UNSPECIFIED;
+  if (pVideoPicture->colorPrimariesGuessed)
   {
     if (pVideoPicture->iDisplayWidth > 1024 || pVideoPicture->iDisplayHeight >= 600)
       pVideoPicture->color_primaries = AVCOL_PRI_BT709;
