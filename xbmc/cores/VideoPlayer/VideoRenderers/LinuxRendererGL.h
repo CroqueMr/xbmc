@@ -127,6 +127,8 @@ protected:
   struct CYuvPlane;
   struct CPictureBuffer;
 
+  void SetBufferColorimetry(const CPictureBuffer& buf, bool toneMap);
+
   void BindPbo(CPictureBuffer& buff);
   void UnBindPbo(CPictureBuffer& buff);
   void LoadPlane(CYuvPlane& plane, int type,

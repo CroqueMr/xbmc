@@ -1294,7 +1294,7 @@ bool CWinSystemGbm::SetVideoOutput(const VideoPicture* videoPicture)
                       : m_DRM->FindGuiPlane(current->GetFormat(), current->GetModifier());
 }
 
-void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture)
+void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture, bool sdrToBT709)
 {
   m_queuedColorspace.reset();
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
@@ -1313,7 +1313,13 @@ void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture)
   KODI::UTILS::Colorimetry colorimetry = KODI::UTILS::Colorimetry::DEFAULT;
 
   if (videoPicture)
+  {
     colorimetry = KODI::UTILS::GetColorimetry(*videoPicture);
+    if (sdrToBT709 && videoPicture->hdrType == StreamHdrType::HDR_TYPE_NONE &&
+        videoPicture->color_transfer != AVCOL_TRC_SMPTE2084 &&
+        videoPicture->color_transfer != AVCOL_TRC_ARIB_STD_B67)
+      colorimetry = KODI::UTILS::Colorimetry::BT709_YCC;
+  }
 
   m_colorimetry = colorimetry;
 

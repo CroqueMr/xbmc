@@ -411,7 +411,7 @@ bool CLinuxRendererGLES::ConfigureVideoOutput(const VideoPicture& picture)
   }
 #endif
 
-  CServiceBroker::GetWinSystem()->SetColorimetry(&picture);
+  CServiceBroker::GetWinSystem()->SetColorimetry(&picture, true);
   m_passthroughHDR = CServiceBroker::GetWinSystem()->SetHDR(&picture);
   CLog::Log(LOGDEBUG, "LinuxRendererGLES::Configure: HDR passthrough: {}",
             m_passthroughHDR ? "on" : "off");
@@ -3147,11 +3147,12 @@ void CLinuxRendererGLES::CheckVideoParameters(int index)
     {
       VideoPicture tmp{};
       tmp.color_space = toneMap ? AVCOL_SPC_UNSPECIFIED : buf.m_srcColSpace;
+      tmp.color_transfer = buf.m_srcColTransfer;
       tmp.iWidth = m_sourceWidth;
       tmp.iHeight = m_sourceHeight;
       // Keep Adaptive on the format already selected for this source depth.
       tmp.colorBits = buf.m_srcBits;
-      CServiceBroker::GetWinSystem()->SetColorimetry(&tmp);
+      CServiceBroker::GetWinSystem()->SetColorimetry(&tmp, true);
     }
 
     m_toneMap = toneMap;
