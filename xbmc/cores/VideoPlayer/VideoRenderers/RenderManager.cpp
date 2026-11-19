@@ -946,6 +946,26 @@ void CRenderManager::SetViewMode(int iViewMode)
   m_playerPort->VideoParamsChange();
 }
 
+namespace
+{
+RESOLUTION ChoosePlaybackResolution(const VideoPicture& picture, double fps, bool nativeDV)
+{
+#ifdef HAVE_DVBRIDGE
+  const auto advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  if (nativeDV && picture.stereoMode.empty() && !CResolutionUtils::HasWhitelist() &&
+      advanced->m_videoAdjustRefreshOverrides.empty())
+    if (const auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+            CServiceBroker::GetWinSystem()))
+      if (const auto resolution = window->PlayerLedResolution(fps))
+        return *resolution;
+#else
+  (void)nativeDV;
+#endif
+  return CResolutionUtils::ChooseBestResolution(fps, picture.iWidth, picture.iHeight,
+                                                 !picture.stereoMode.empty());
+}
+} // namespace
+
 RESOLUTION CRenderManager::GetResolution()
 {
   RESOLUTION res = CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution();
@@ -956,8 +976,7 @@ RESOLUTION CRenderManager::GetResolution()
 
   if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF)
   {
-    res = CResolutionUtils::ChooseBestResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
-                                                 !m_picture.stereoMode.empty());
+    res = ChoosePlaybackResolution(m_picture, m_fps, m_nativeDVRate);
   }
 
   return res;
@@ -1226,8 +1245,7 @@ void CRenderManager::UpdateResolution()
     {
       if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF && m_fps > 0.0f)
       {
-        RESOLUTION res = CResolutionUtils::ChooseBestResolution(
-            m_fps, m_picture.iWidth, m_picture.iHeight, !m_picture.stereoMode.empty());
+        const RESOLUTION res = ChoosePlaybackResolution(m_picture, m_fps, m_nativeDVRate);
 #ifdef HAVE_DVBRIDGE
         // Carry the stream's intent when this later request performs the modeset.
         const auto previous = DVBRIDGE::guiModeChangeResolution;

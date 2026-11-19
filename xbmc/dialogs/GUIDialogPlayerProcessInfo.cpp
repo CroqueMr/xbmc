@@ -149,6 +149,19 @@ bool InfoValueFits(const std::string& text)
   return label.GetTextWidth() <= 284.0f;
 }
 
+std::string LldvTrimText(unsigned levels, unsigned groups)
+{
+  using Trims = VideoProcessingInfo::PlayerLed;
+  if (!groups)
+    return {};
+  std::string text = levels & (1u << 8) ? "L8" : "L2";
+  if (groups & Trims::SOP) text += " · SOP";
+  if (groups & Trims::Colour) text += " · Colour";
+  if (groups & Trims::Mid) text += " · Mid";
+  if (groups & Trims::Clip) text += " · Clip";
+  return text;
+}
+
 std::string PolicyText(std::string text)
 {
   if (text.starts_with("Dolby Vision "))
@@ -282,6 +295,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         data.tags.primariesGuessed, data.tags.fullRange));
     const auto active = data.output.flags;
     const bool hdr10 = active & CDVPlaybackInfo::HDR10;
+    const bool lldv = active && data.output.lldv.has_value();
     const bool metadata = active && data.metadata;
     const auto yesno = [](bool value) { return value ? "Yes" : "No"; };
     const auto resolution = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
@@ -387,7 +401,7 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.MinimumLinkBits", active && data.output.minimumLinkBits ?
         StringUtils::Format("{}-bit",data.output.minimumLinkBits) : "");
     SetProperty("DV.Transport", active ? CDVPlaybackInfo::Transport(data.output.format) : "");
-    SetProperty("DV.SignalIntent", active & CDVPlaybackInfo::HDMI ?
+    SetProperty("DV.SignalIntent", lldv ? "LLDV / YCbCr 4:2:2" : active & CDVPlaybackInfo::HDMI ?
         (data.output.iptTransport ? "TV-Led / IPT-PQc2 tunnel" : "TV-Led / YCbCr tunnel") :
         active & CDVPlaybackInfo::HDR10PLUS ? "PQ / BT.2020 / HDR10+" :
         hdr10 ? "PQ / BT.2020" : "");
@@ -419,12 +433,13 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.ReferenceWarning", data.referenceWarning ? "Consider Reference" : "");
     SetProperty("DV.TVProfile", active && data.output.effective==8 ?
         StringUtils::Format("BT.709 / {:g} nits / {:g}", data.output.target,data.output.sdrGamma) :
-        active && (data.output.effective==3 || data.output.effective==4 || data.output.effective==6) ?
+        active && (data.output.lldv || data.output.effective==3 || data.output.effective==4 || data.output.effective==6) ?
         StringUtils::Format("{}{} / {:g} nits",
             data.output.panel==1 || data.output.panel==2 ? localizer.Get(40833+data.output.panel)+" · " : "",
             data.output.gamut==1 ? "BT.709" : data.output.gamut==2 ? "P3-D65" : "BT.2020",
-            data.output.effective==3 ? data.output.target : data.output.manualPeak) : "");
-    SetProperty("DV.DisplayBlack", (hdr10 && data.output.effective==3 || active && data.output.effective==8) ?
+            data.output.lldv || data.output.effective==3 ? static_cast<double>(data.output.target) : data.output.manualPeak) : "");
+    SetProperty("DV.DisplayBlack", (active && (data.output.lldv || (hdr10 && data.output.effective==3) ||
+        data.output.effective==8)) ?
         StringUtils::Format("{:g} nits", data.output.displayBlack) : "");
     SetProperty("DV.HDR10Policy", hdr10 ? CDVPlaybackInfo::Policy(data.output) : "");
     SetProperty("DV.HDR10Target", hdr10 && data.output.effective!=3 ? StringUtils::Format("{:g} nits", data.output.target) : "");
@@ -449,16 +464,22 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
           data.output.creativeEdited & (1u<<8) ? "HDR10+ curve from L8" :
           data.output.creativeEdited & (1u<<2) ? "HDR10+ curve from L2" :
           data.output.creativeEdited & (1u<<1) ? "HDR10+ scene curve" : "Statistics only");
+    if (lldv)
+      SetProperty("DV.CreativeTrims", LldvTrimText(data.output.creativeApplied, data.output.lldv->trimGroups));
+    SetProperty("DV.LocalCM4", lldv && data.output.lldv->cm4Appended ? "CM4 added locally" : "");
     SetProperty("DV.Precision", active ? StringUtils::Format("{}-bit", data.output.bits) : "N/A");
     SetProperty("DV.L1PQ", metadata && data.l1 ? StringUtils::Format("{} | {} | {}", data.pq[0], data.pq[1], data.pq[2]) : "N/A");
     SetProperty("DV.L1Nits", metadata && data.l1 ? StringUtils::Format("{:.1f} | {:.1f} | {:.1f} nits",
         PQNits(data.pq[0]), PQNits(data.pq[1]), PQNits(data.pq[2])) : "N/A");
     // Use the accepted route's partial components, without changing the original source values.
     const bool partialL1 = metadata && data.l1 && applied[1] &&
-        (data.output.effective == 8 || (hdr10 && (data.output.effective == 2 || data.output.effective == 3)));
-    SetProperty("DV.UsedL1PQ", partialL1 ? StringUtils::Format("{} | {}", data.pq[1], data.pq[2]) : "");
+        (data.output.lldv || data.output.effective == 8 ||
+         (hdr10 && (data.output.effective == 2 || data.output.effective == 3)));
+    const auto sceneMax = data.output.lldv ? data.output.lldv->scenePQ[0] : data.pq[1];
+    const auto sceneAvg = data.output.lldv ? data.output.lldv->scenePQ[1] : data.pq[2];
+    SetProperty("DV.UsedL1PQ", partialL1 ? StringUtils::Format("{} | {}", sceneMax, sceneAvg) : "");
     std::string usedL1Nits = metadata && data.l1 && applied[1] ?
-        (partialL1 ? StringUtils::Format("{:.1f} | {:.1f} nits", PQNits(data.pq[1]), PQNits(data.pq[2])) :
+        (partialL1 ? StringUtils::Format("{:.1f} | {:.1f} nits", PQNits(sceneMax), PQNits(sceneAvg)) :
             StringUtils::Format("{:.1f} | {:.1f} | {:.1f} nits",
                 PQNits(data.pq[0]), PQNits(data.pq[1]), PQNits(data.pq[2]))) : "";
     if (!InfoValueFits(usedL1Nits) && usedL1Nits.ends_with(" nits"))
@@ -483,7 +504,8 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.OutputL8Targets", active && forwarded[8] ? L8Targets(levels) : "");
     SetProperty("DV.L3", carried(3) ? StringUtils::Format("{} | {} | {}",
         levels.l3[0], levels.l3[1], levels.l3[2]) : "");
-    SetProperty("DV.UsedL3", carried(3) && applied[3] && hdr10 && data.output.effective == 3 ?
+    SetProperty("DV.UsedL3", carried(3) && applied[3] &&
+        (data.output.lldv || (hdr10 && data.output.effective == 3)) ?
         StringUtils::Format("{} | {}", levels.l3[1], levels.l3[2]) : "");
     SetProperty("DV.L4", carried(4) ? StringUtils::Format("{} | {}", levels.l4[0], levels.l4[1]) : "");
     SetProperty("DV.L8Targets", carried(8) ? L8Targets(levels) : "");

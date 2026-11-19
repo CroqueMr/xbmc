@@ -7,12 +7,13 @@
 
 namespace DVBRIDGE
 {
-enum class OutputRoute { Vanilla, NativeDV, HDR10, SDR };
+enum class OutputRoute { Vanilla, NativeDV, HDR10, SDR, PlayerLed };
 struct OutputSelection
 {
   OutputRoute route{OutputRoute::Vanilla};
   dvbridge_policy policy{};
   OutputReason reason{OutputReason::None};
+  int lldvFormat{};
 };
 
 inline OutputSelection SelectOutput(const OutputPreferences& preferences,
@@ -65,6 +66,17 @@ inline OutputSelection SelectOutput(const OutputPreferences& preferences,
     return result;
   auto policy = preferences.Policy();
   result.policy=policy;
+  if (policy.mode == DVBRIDGE_MODE_PLAYER_LED)
+  {
+    if (!caps.playerLed) result.reason = OutputReason::NoPlayerLedTransport;
+    else if (!preferences.ProfileValid(policy.mode)) result.reason = OutputReason::TVProfileRequired;
+    else if (!caps.processingKnown) result.reason = OutputReason::ProcessingPending;
+    else if (const auto& mode = caps.processing[policy.mode]; !mode.usable)
+      result.reason = mode.reason == OutputReason::None ? OutputReason::NoGPUProcessing : mode.reason;
+    else result.route = OutputRoute::PlayerLed;
+    result.lldvFormat = preferences.lldvFormat;
+    return result;
+  }
   if (policy.mode == DVBRIDGE_MODE_SDR)
   {
     if (!preferences.ProfileValid(policy.mode)) return {OutputRoute::Vanilla,{},OutputReason::SDRTargetInvalid};

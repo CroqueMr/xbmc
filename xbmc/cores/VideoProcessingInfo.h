@@ -62,6 +62,13 @@ struct VideoProcessingInfo
     bool restored{};
     bool hdr10AI{};
   } transaction;
+  struct PlayerLed
+  {
+    enum TrimGroup : unsigned { SOP = 1, Colour = 2, Mid = 4, Clip = 8 };
+    std::array<unsigned, 2> scenePQ{}; // effective max/avg after L3
+    unsigned trimGroups{};
+    bool cm4Appended{};
+  };
   struct Output
   {
     unsigned flags{}, bits{};
@@ -91,6 +98,7 @@ struct VideoProcessingInfo
     std::array<unsigned,3> aiBaseline{};
     std::array<unsigned,3> emittedL1{};
     std::string engine, circuit;
+    std::optional<PlayerLed> lldv{};
   } output;
   std::optional<VideoOutputType> outputType;
   uint64_t informationGeneration{};

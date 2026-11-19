@@ -17,6 +17,8 @@ uniform highp float u_ootfGamma; // HLG OOTF or negative SDR target gamma
                                 // PQ: 0.0 (use LUT path instead)
 uniform bool u_inputPQ;         // CB1 subtitle layer already contains BT.2020 PQ.
 uniform highp vec2 u_outputRange; // CB1 exact bit-depth scale and black code.
+uniform highp float u_playerLedScale;
+uniform highp mat3 u_playerLedGui, u_playerLedSubtitles;
 
 // BT.709 -> BT.2020 color space conversion matrix (applied in linear light)
 const mat3 bt709_to_bt2020 = mat3(
@@ -37,6 +39,15 @@ void main()
 
   if (u_inputPQ)
   {
+    if (u_playerLedScale > 0.0)
+    {
+      highp vec3 q = pow(clamp(gui.rgb / gui.a, 0.0, 1.0), vec3(32.0 / 2523.0));
+      highp vec3 l = pow(max(q - 3424.0 / 4096.0, 0.0) /
+                          (2413.0 / 128.0 - (2392.0 / 128.0) * q), vec3(16384.0 / 2610.0));
+      gl_FragColor = vec4(clamp(u_playerLedSubtitles * l * u_playerLedScale, 0.0, 1.0) * gui.a,
+                          gui.a);
+      return;
+    }
     gl_FragColor = vec4(gui.rgb * u_outputRange.x + gui.a * u_outputRange.y, gui.a);
     return;
   }
@@ -47,6 +58,13 @@ void main()
     texture2D(u_lutDegamma, vec2(gui.g, 0.5)).r,
     texture2D(u_lutDegamma, vec2(gui.b, 0.5)).r
   );
+
+  if (u_playerLedScale > 0.0)
+  {
+    gl_FragColor = vec4(clamp(u_playerLedGui * linear * (0.0203 * u_playerLedScale), 0.0, 1.0),
+                        gui.a);
+    return;
+  }
 
   // SDR movie composition stays in BT.709 and uses the independent target gamma.
   if (u_ootfGamma < 0.0)

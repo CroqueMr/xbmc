@@ -10,6 +10,7 @@
 
 #include "guilib/Shader.h"
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,13 @@ public:
   void SetOutputRange(float scale, float offset) { m_outputScale = scale; m_outputOffset = offset; }
 
   bool CreateLUTs(int colorTransfer, float sdrGamma = 2.4f);
+  void SetPlayerLed(float peak = 0.0f, const std::array<float,9>& gui = {},
+                    const std::array<float,9>& subtitles = {})
+  {
+    m_playerLedScale = peak > 0 ? 10000.0f / peak : 0.0f;
+    m_playerLedGui = gui;
+    m_playerLedSubtitles = subtitles;
+  }
 
   GLint GetPosLoc() { return m_hPos; }
   GLint GetTexLoc() { return m_hTex; }
@@ -60,4 +68,7 @@ private:
   GLint m_hOotfGamma{-1};
   GLint m_hInputPQ{-1};
   GLint m_hOutputRange{-1};
+  GLint m_hPlayerLedScale{-1}, m_hPlayerLedGui{-1}, m_hPlayerLedSubtitles{-1};
+  float m_playerLedScale{};
+  std::array<float,9> m_playerLedGui{}, m_playerLedSubtitles{};
 };

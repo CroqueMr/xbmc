@@ -121,6 +121,7 @@ public:
         CGBMSurfaceBuffer(const CGBMSurfaceBuffer&) = delete;
         CGBMSurfaceBuffer& operator=(const CGBMSurfaceBuffer&) = delete;
         explicit CGBMSurfaceBuffer(gbm_surface* surface);
+        CGBMSurfaceBuffer(gbm_bo* buffer, std::shared_ptr<void> lease);
         ~CGBMSurfaceBuffer();
 
         /**
@@ -133,6 +134,7 @@ public:
       private:
         gbm_surface* m_surface{nullptr};
         gbm_bo* m_buffer{nullptr};
+        std::shared_ptr<void> m_lease;
       };
 
       /**
@@ -144,6 +146,7 @@ public:
 
       // Blocking atomic presentation only: retain the current scanout on failure.
       gbm_bo* LockTransactionalBuffer();
+      gbm_bo* AdoptTransactionalBuffer(gbm_bo* buffer, std::shared_ptr<void> lease);
       void CompleteTransactionalBuffer(bool presented);
       void EndTransactionalMode();
 

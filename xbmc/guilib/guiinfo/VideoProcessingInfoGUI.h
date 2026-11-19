@@ -13,6 +13,7 @@ struct VideoProcessingInfoGUI
   {
     if (!info.metadata) return "";
     if (info.cm4) return "CM4.0 (original)";
+    if (info.output.lldv) return "CM2.9";
     if ((info.output.flags & CDVPlaybackInfo::HDMI) && !info.output.hdr10AI &&
         !info.output.authoredLegacy && (info.output.effective==1 || info.output.effective==5))
       return info.output.flags & CDVPlaybackInfo::CM4 ? "CM2.9 (CM4 added)" : "CM2.9 (CM4 not added)";

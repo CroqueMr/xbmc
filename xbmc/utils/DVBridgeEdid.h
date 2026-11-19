@@ -20,7 +20,8 @@ enum dvbridge_edid_status {
 struct dvbridge_sink_caps {
 	enum dvbridge_edid_status status;
 	unsigned int version, offset, length;
-	bool legacy_vsif, supports_2160p60;
+	bool legacy_vsif, supports_2160p60, lldv_422;
+	unsigned int lldv_444_bits;
 };
 
 static inline const char *dvbridge_edid_reason(enum dvbridge_edid_status status)
@@ -38,11 +39,22 @@ static inline const char *dvbridge_edid_reason(enum dvbridge_edid_status status)
 	return "unknown";
 }
 
+/* Capabilities are usable only after parsing the complete EDID. */
+static inline bool dvbridge_lldv_422(struct dvbridge_sink_caps caps)
+{
+	return (caps.status == DV_EDID_STANDARD || caps.status == DV_EDID_LLDV_ONLY) && caps.lldv_422;
+}
+
+static inline unsigned int dvbridge_lldv_444_bits(struct dvbridge_sink_caps caps)
+{
+	return dvbridge_lldv_422(caps) ? caps.lldv_444_bits : 0;
+}
+
 static inline struct dvbridge_sink_caps
 dvbridge_parse_edid(const unsigned char *edid, size_t size)
 {
 	static const unsigned char magic[8] = {0, 255, 255, 255, 255, 255, 255, 0};
-	struct dvbridge_sink_caps result = {DV_EDID_ABSENT, 0, 0, 0, false, false};
+	struct dvbridge_sink_caps result = {DV_EDID_ABSENT, 0, 0, 0, false, false, false, 0};
 	unsigned int block, i, blocks, found = 0;
 
 	if (!edid || !size)
@@ -114,15 +126,19 @@ dvbridge_parse_edid(const unsigned char *edid, size_t size)
 						return result;
 					/* Long V1 and short V1 without LL use HDMI-1.4b
 					 * signaling, not the modern Dolby-OUI packet. */
-					result.legacy_vsif = len == 14 || !(data[7] & 1);
+					result.lldv_422 = len == 11 && (data[7] & 1);
+					result.legacy_vsif = !result.lldv_422;
 					result.supports_2160p60 = (data[4] & 2) != 0;
 					break;
 				case 2:
 					if (len < 11)
 						return result;
-					if ((data[6] & 3) < 2) {
-						result.status = DV_EDID_LLDV_ONLY;
-						return result;
+					/* V2 includes LL 4:2:2. Its 4:4:4 variant also needs the
+					 * Low Latency HDMI interface bit and a defined depth. */
+					result.lldv_422 = true;
+					if (data[6] & 1) {
+						unsigned int depth = ((data[7] & 1) << 1) | (data[8] & 1);
+						result.lldv_444_bits = depth == 1 ? 10 : depth == 2 ? 12 : 0;
 					}
 					result.supports_2160p60 = true;
 					break;
@@ -130,7 +146,8 @@ dvbridge_parse_edid(const unsigned char *edid, size_t size)
 					result.status = DV_EDID_VERSION;
 					return result;
 				}
-				result.status = DV_EDID_STANDARD;
+				result.status = result.version == 2 && (data[6] & 3) < 2 ?
+					DV_EDID_LLDV_ONLY : DV_EDID_STANDARD;
 			}
 			pos += len + 1;
 		}
