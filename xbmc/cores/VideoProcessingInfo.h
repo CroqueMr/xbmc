@@ -10,7 +10,7 @@
 enum class VideoOutputType { SDR, HDR10, HLG, DolbyVision, HDR10Plus };
 enum class VideoProcessingReason { None, NoDVTransport, NoHDR10Transport,
   NoGPUProcessing, SourceIneligible, TVProfileRequired, ActivationFailed, RestoreFailed,
-  NoHDR10PlusTransport };
+  NoHDR10PlusTransport, SDRTargetInvalid, ProcessingPending };
 enum class VideoCreativeStatus { Invalid, Unsupported, Neutral, Ready };
 
 // How the decoder tagged the picture: FFmpeg AVColor* codes, -1 when unknown.
@@ -25,7 +25,7 @@ struct VideoSourceTags
 // Presence is the matching bit of the parsed block set.
 struct VideoDVLevels
 {
-  static constexpr unsigned MaxTrims = 8;
+  static constexpr unsigned MaxTrims = 32;
   struct Target
   {
     uint8_t index{}, primaries{};
@@ -69,6 +69,8 @@ struct VideoProcessingInfo
     bool level6{};
     int requested{}, effective{1}, method{}, panel{}, gamut{};
     double manualPeak{}, displayBlack{}, sdrGamma{};
+    unsigned sdrHDRInputUsed{}; // MDCV min/max, MaxCLL fallback, HDR10+ max/avg: bits 1/2/4/8/16.
+    std::array<float,4> sdrHDRInputValues{}; // Imported scene_max RGB and scene_avg, in nits.
     uint64_t revision{}, stream{}, picture{};
     uint32_t format{};
     unsigned width{}, height{};
