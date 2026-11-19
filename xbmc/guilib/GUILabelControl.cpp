@@ -136,7 +136,17 @@ void CGUILabelControl::Process(unsigned int currentTime, CDirtyRegionList &dirty
 
 CRect CGUILabelControl::CalcRenderRegion() const
 {
-  return m_label.GetRenderRect();
+  CRect region = m_label.GetRenderRect();
+  const auto* font = m_label.GetLabelInfo().font;
+  if (!font || region.IsEmpty())
+    return region;
+
+  const CPoint padding = font->GetRenderPadding();
+  region.x1 -= padding.x;
+  region.y1 -= padding.y;
+  region.x2 += padding.x;
+  region.y2 += padding.y;
+  return region;
 }
 
 void CGUILabelControl::Render()
