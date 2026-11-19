@@ -25854,11 +25854,11 @@ msgctxt "#40821"
 msgid "Basic uses source metadata. Expert requires a TV profile. HDR10+ sends picture statistics and representable trims to a compatible display."
 msgstr ""
 
-msgctxt "#40920"
+msgctxt "#40922"
 msgid "HDR10+ conversion (experimental)"
 msgstr ""
 
-msgctxt "#40921"
+msgctxt "#40923"
 msgid "HDR10+ output requires a supported HDMI driver and display."
 msgstr ""
 
