@@ -1555,7 +1555,8 @@ bool CDVBridgeGLES::SetNativeOverlay(unsigned texture, unsigned degamma, unsigne
   return true;
 }
 
-bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<Context> context, bool sdr)
+bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<Context> context,
+                              bool sdr, unsigned int framebuffer)
 {
   if (m_gl)
     return m_renderer && m_packer;
@@ -1570,10 +1571,10 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<C
     return Failure("float-blend-or-linear-unavailable");
   m_renderer = m_context->Attach();
   m_packer = dvbridge_gl_packer_create(DVBRIDGE_VERTEX, DVBRIDGE_FRAGMENT);
-  return m_renderer && m_packer && RebindOutputSurface(hdr10,sdr);
+  return m_renderer && m_packer && RebindOutputSurface(hdr10, sdr, framebuffer);
 }
 
-bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr)
+bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int framebuffer)
 {
   if (!m_gl || m_pending || m_prepared) return false;
   m_playerLedCpu.reset();
@@ -1588,12 +1589,14 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr)
   GLint draw, read, red, green, blue, samples, encoding;
   glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
   glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
-  glBindFramebuffer(GL_FRAMEBUFFER, 0);
+  output.framebuffer = framebuffer;
+  glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
   glGetIntegerv(GL_RED_BITS, &red);
   glGetIntegerv(GL_GREEN_BITS, &green);
   glGetIntegerv(GL_BLUE_BITS, &blue);
   glGetIntegerv(GL_SAMPLES, &samples);
-  glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, GL_BACK,
+  glGetFramebufferAttachmentParameteriv(
+      GL_FRAMEBUFFER, framebuffer ? GL_COLOR_ATTACHMENT0 : GL_BACK,
       GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
   pl_tex candidate{};
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&

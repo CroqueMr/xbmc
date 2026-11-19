@@ -68,6 +68,8 @@ protected:
   std::unique_ptr<VideoPicture> m_floatOutputPicture;
   virtual bool CreateContext() = 0;
   virtual int VideoOutputBitDepth(const VideoPicture* picture) const;
+  virtual bool PrepareHDR10Scanout() { return false; }
+  virtual bool RetainHDR10ScanoutOnTransition() const { return false; }
   // Opt-in only for DV frame transactions. Ordinary output keeps native semantics.
   void UseDVOutputSurfaceTransaction(bool enabled) { m_dvOutputSurface = enabled; }
   bool CompleteDVOutputSurface(bool submitted);
