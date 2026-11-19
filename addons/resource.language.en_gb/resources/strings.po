@@ -26865,3 +26865,19 @@ msgstr ""
 msgctxt "#41311"
 msgid "HLG : Native"
 msgstr ""
+
+msgctxt "#41500"
+msgid "Treat Dolby Vision + HDR10+ as"
+msgstr ""
+
+msgctxt "#41501"
+msgid "Choose the default input format for HEVC Dolby Vision Profile 7 and 8.1 videos with verified HDR10+ metadata. The setting applies when opening a video."
+msgstr ""
+
+msgctxt "#41502"
+msgid "Dolby Vision"
+msgstr ""
+
+msgctxt "#41503"
+msgid "HDR10+"
+msgstr ""

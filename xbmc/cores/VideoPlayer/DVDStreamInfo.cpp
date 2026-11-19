@@ -45,6 +45,15 @@ CDVDStreamInfo::CDVDStreamInfo(const CDemuxStream& right, bool withextradata) : 
 
 CDVDStreamInfo::~CDVDStreamInfo() = default;
 
+bool CDVDStreamInfo::HasHDR10PlusCompatibleDolbyVisionBase() const
+{
+  if (codec != AV_CODEC_ID_HEVC || !dovi.bl_present_flag || !dovi.rpu_present_flag)
+    return false;
+
+  return (dovi.dv_profile == 8 && dovi.dv_bl_signal_compatibility_id == 1 && !dovi.el_present_flag) ||
+         (dovi.dv_profile == 7 && dovi.dv_bl_signal_compatibility_id == 6 && dovi.el_present_flag);
+}
+
 void CDVDStreamInfo::Clear()
 {
   codec = AV_CODEC_ID_NONE;
@@ -76,6 +85,7 @@ void CDVDStreamInfo::Clear()
   forced_aspect = false;
   bitsperpixel = 0;
   hdrType = StreamHdrType::HDR_TYPE_NONE;
+  preferHybridHDR10Plus = false;
   colorSpace = AVCOL_SPC_UNSPECIFIED;
   colorRange = AVCOL_RANGE_UNSPECIFIED;
   colorPrimaries = AVCOL_PRI_UNSPECIFIED;
@@ -213,6 +223,7 @@ bool CDVDStreamInfo::Equal(const CDemuxStream& right, bool withextradata)
 // ASSIGNMENT
 void CDVDStreamInfo::Assign(const CDVDStreamInfo& right, bool withextradata)
 {
+  preferHybridHDR10Plus = right.preferHybridHDR10Plus;
   codec = right.codec;
   type = right.type;
   uniqueId = right.uniqueId;
@@ -279,6 +290,7 @@ void CDVDStreamInfo::Assign(const CDVDStreamInfo& right, bool withextradata)
 
 void CDVDStreamInfo::Assign(const CDemuxStream& right, bool withextradata)
 {
+  preferHybridHDR10Plus = false;
   Clear();
 
   codec = right.codec;

@@ -41,6 +41,7 @@ public:
   int GetVideoUpscaler();
   bool SetVideoSourceSideData(uint64_t generation, std::shared_ptr<const VideoSourceSideData> source);
   std::string GetVideoSourceSideData();
+  bool HasVideoHDR10PlusPrimary();
   bool HasVideoHDR10PlusSource();
   // The latest accepted picture's source side data for the current generation, or null.
   std::shared_ptr<const VideoSourceSideData> GetVideoSourceSideDataSnapshot();

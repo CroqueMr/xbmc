@@ -123,7 +123,7 @@ bool ValidHDR10Plus(const AVDynamicHDRPlus& value)
 std::shared_ptr<const VideoSourceSideData> VideoSourceSideData::Capture(
     uint64_t generation, uint64_t serial, AVCodecID codec, const AVFrame* frame,
     const AVDOVIDecoderConfigurationRecord* config,
-    const AVMasteringDisplayMetadata* mastering, const AVContentLightMetadata* light) noexcept
+    const AVMasteringDisplayMetadata* mastering, const AVContentLightMetadata* light, Hybrid hybrid) noexcept
 {
   try
   {
@@ -195,6 +195,12 @@ std::shared_ptr<const VideoSourceSideData> VideoSourceSideData::Capture(
       result->m_cll = std::move(bytes);
       return true;
     });
+    result->m_hdr10PlusPrimary = hybrid == Hybrid::HDR10Plus;
+    if (hybrid == Hybrid::ProbeHDR10Plus && frame && result->m_hdr10plus && !result->m_rpu.empty())
+    {
+      const auto* dv = av_frame_get_side_data(frame, AV_FRAME_DATA_DOVI_METADATA);
+      result->m_hdr10PlusPrimary = dv && dv->data && dv->size >= sizeof(AVDOVIMetadata);
+    }
     return result;
   }
   catch (const std::bad_alloc&) { return {}; } // diagnostics must not stop decoding
