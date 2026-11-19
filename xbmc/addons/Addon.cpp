@@ -722,6 +722,9 @@ void OnPostInstall(const AddonPtr& addon, bool update, bool modal)
   // OE
 
   addon->OnPostInstall(update, modal);
+ 
+  if (addon->Type() == AddonType::SERVICE || addon->Type() == AddonType::SCRIPT)
+    system("/usr/bin/environment-setup");
 }
 
 void OnPreUnInstall(const AddonPtr& addon)
@@ -734,6 +737,9 @@ void OnPreUnInstall(const AddonPtr& addon)
 void OnPostUnInstall(const AddonPtr& addon)
 {
   addon->OnPostUnInstall();
+
+  if (addon->Type() == AddonType::SERVICE || addon->Type() == AddonType::SCRIPT)
+    system("/usr/bin/environment-setup");
 }
 
 } // namespace ADDON
