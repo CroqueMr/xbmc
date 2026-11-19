@@ -160,6 +160,7 @@ public:
    * looking at the end of the queue.
    */
   bool GetStats(int &lateframes, double &pts, int &queued, int &discard);
+  bool HasPendingVideoPresentation();
 
   /**
    * Video player call this on flush in order to discard any queued frames
@@ -287,6 +288,7 @@ protected:
   EPRESENTSTEP m_presentstep = PRESENT_IDLE;
 #ifdef HAVE_DVBRIDGE
   bool m_cb1PresentPending{};
+  bool m_cb1OutputPending{};
 #endif
   XbmcThreads::EndTime<> m_presentTimer;
   bool m_forceNext = false;

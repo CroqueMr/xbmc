@@ -1710,20 +1710,15 @@ void CVideoPlayer::ProcessBdjPresentation()
   }
 
   if (m_bdjDraining && bluray.WaitingForBdjPlaylist() &&
-      !m_VideoPlayerVideo->HasData() && !m_VideoPlayerAudio->HasData())
+      !m_VideoPlayerVideo->HasData() && !m_VideoPlayerAudio->HasData() &&
+      !m_renderManager.HasPendingVideoPresentation())
   {
-    int late, queued, discarded;
-    double renderPts;
-    m_renderManager.GetStats(late, renderPts, queued, discarded);
-    if (queued == 0)
+    if (const auto seq = bluray.BdjEndSequence())
     {
-      if (const auto seq = bluray.BdjEndSequence())
-      {
-        bluray.ReleaseBdjEnd();
-        CLog::Log(LOGDEBUG, "BD-J presentation: drained through sequence {}", seq);
-      }
-      m_bdjPresentationEvents.clear();
+      bluray.ReleaseBdjEnd();
+      CLog::Log(LOGDEBUG, "BD-J presentation: drained through sequence {}", seq);
     }
+    m_bdjPresentationEvents.clear();
   }
   bluray.PollBdjEvents();
 #endif
