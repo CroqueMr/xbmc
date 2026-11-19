@@ -97,6 +97,7 @@ include(CMakeDependentOption)
 include(cmake/scripts/common/DependencyOptions.cmake)
 
 # general
+option(HEADERS_ONLY       "Skip building" OFF)
 option(VERBOSE            "Enable verbose output?" OFF)
 option(VERBOSE_FIND       "Enable verbose output of library searches only?" OFF)
 option(ENABLE_CLANGTIDY   "Enable clang-tidy support?" OFF)
@@ -184,6 +185,7 @@ core_find_git_rev(APP_SCMID FULL)
 set(AUDIO_BACKENDS_LIST "" CACHE STRING "Available audio backends")
 set(GL_INTERFACES_LIST "" CACHE STRING "Available GL interfaces")
 
+if(NOT HEADERS_ONLY)
 # Dynamically loaded libraries built with the project
 add_custom_target(${APP_NAME_LC}-libraries)
 set(LIBRARY_FILES "" CACHE STRING "" FORCE)
@@ -665,6 +667,7 @@ if(DOXYGEN_FOUND)
                     COMMAND ${CMAKE_COMMAND} -E echo "Documentation built to: file://${CMAKE_SOURCE_DIR}/docs/html/index.html"
                     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}/docs/doxygen
                     COMMENT "Generating Doxygen documentation" VERBATIM)
+endif()
 endif()
 
 # link wrapper
