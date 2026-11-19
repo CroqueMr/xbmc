@@ -64,6 +64,7 @@ public:
     bool AsyncPreparationConfigured() const;
     bool FELHardwareUpscaling(uint64_t stream);
     void SetSpatialMethod(ESCALINGMETHOD method, bool exact);
+    int Upscaler() const;
     pl_opengl GL() const;
     pl_log Log() const;
     void Retain(std::shared_ptr<void> base, std::shared_ptr<void> enhancement = {});
@@ -97,6 +98,7 @@ public:
   {
     dvbridge_gl_layout layout;
     ESCALINGMETHOD scalingMethod{VS_SCALINGMETHOD_LINEAR};
+    ESCALINGMETHOD autoScalingMethod{VS_SCALINGMETHOD_LINEAR};
     int width;
     int height;
     dvbridge_gl_plane planes[3];
@@ -157,12 +159,14 @@ public:
     std::optional<std::array<uint8_t,CB1_HDR10PLUS_VSIF_BYTES>> hdr10plus{};
     bool hdr10plusAccepted{};
     cb1_cmv40_status cmv40Status{CB1_CMV40_OFF};
+    int upscaler{-1};
   };
   Submission CaptureSubmission() const
   {
     auto submission=m_submission;
     submission.informationGeneration=m_pendingSourceInfo.informationGeneration;
     submission.cmv40Status=dvbridge_renderer_cmv40_status(m_renderer);
+    submission.upscaler = m_context->Upscaler();
     const bool fel=(m_pendingInfo & CDVPlaybackInfo::FEL) != 0;
     submission.felFilter=fel ? m_requested.felUpscaling : -1;
     submission.felBackend=fel ? (m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE || m_requested.felUpscaling == 2 ? 3 :

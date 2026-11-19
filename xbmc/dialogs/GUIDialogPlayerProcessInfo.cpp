@@ -16,6 +16,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackInfo.h"
 #include "cores/DataCacheCore.h"
+#include "cores/VideoPlayer/VideoRenderers/UpscalerSettings.h"
 #include "cores/VideoSourceSideData.h"
 #include "guilib/guiinfo/VideoProcessingInfoGUI.h"
 #include "utils/StringUtils.h"
@@ -367,6 +368,10 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     SetProperty("DV.FELUpscaling", active & CDVPlaybackInfo::FEL ?
         (data.output.felUpscaling == 2 ? "Reference GPU" : data.output.felUpscaling == 0 ? "VAAPI" : data.output.felUpscaling == 1 ? "Bilinear GPU" : "") : "");
     SetProperty("DV.Mode", active ? VideoProcessingInfoGUI::Mode(data) : "Kodi default");
+    const int upscaler = CServiceBroker::GetDataCacheCore().GetVideoUpscaler();
+    const int upscalerLabel = upscaler < 0 ? 0 : KODI::VIDEO::UPSCALER::Label(upscaler);
+    SetProperty("DV.VideoUpscaler", upscalerLabel ?
+        CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(upscalerLabel) : "");
     SetProperty("DV.Engine", data.output.engine);
     SetProperty("DV.Circuit", data.output.circuit);
     SetProperty("DV.Reconstruction", "");

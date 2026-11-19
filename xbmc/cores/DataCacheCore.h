@@ -37,6 +37,8 @@ public:
   uint64_t GetVideoProcessingGeneration();
   bool SetVideoProcessingInfo(uint64_t generation, const VideoProcessingInfo& info);
   VideoProcessingInfo GetVideoProcessingInfo();
+  void SetVideoUpscaler(int method, uint64_t generation);
+  int GetVideoUpscaler();
   bool SetVideoSourceSideData(uint64_t generation, std::shared_ptr<const VideoSourceSideData> source);
   std::string GetVideoSourceSideData();
   bool HasVideoHDR10PlusSource();
@@ -245,6 +247,8 @@ protected:
 
   CCriticalSection m_videoPlayerSection;
   VideoProcessingInfo m_videoProcessingInfo;
+  int m_videoUpscaler{-1};
+  uint64_t m_videoUpscalerGeneration{};
   std::shared_ptr<const VideoSourceSideData> m_videoSourceSideData;
   uint64_t m_videoProcessingGeneration{};
   struct SPlayerVideoInfo

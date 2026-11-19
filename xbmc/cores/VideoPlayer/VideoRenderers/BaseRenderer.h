@@ -178,6 +178,21 @@ protected:
    */
   float GetPerEyeAspectRatio() const;
 
+  /*!
+   * \brief Set the authored active picture area of the next picture, in source pixels.
+   *
+   * An empty rect means that the whole encoded frame is active.
+   */
+  void SetActiveArea(const CRect& area) { m_activeArea = area; }
+
+  /*!
+   * \brief Fit the active area instead of the encoded frame when this enlarges the picture.
+   *
+   * Changes m_sourceRect and the aspect ratio only for the Dolby Vision active area
+   * view mode. A frame that already fits its active area keeps the whole source rect.
+   */
+  void FitActiveArea(float& aspectRatio);
+
   virtual void ManageRenderArea();
   virtual void ReorderDrawPoints();
   virtual EShaderFormat GetShaderFormat();
@@ -204,6 +219,7 @@ protected:
   CRect m_destRect;
   CRect m_sourceRect;
   CRect m_viewRect;
+  CRect m_activeArea;
 
   // rendering flags
   unsigned m_iFlags = 0;

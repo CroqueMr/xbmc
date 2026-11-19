@@ -35,14 +35,67 @@
 #include "windowing/WinSystem.h"
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoSourceSideData.h"
+#include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
+#include "UpscalerSettings.h"
+#include "ShaderUpscalerPresets.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
+
+extern "C"
+{
+#include <libplacebo/renderer.h>
+#include <libplacebo/shaders/custom.h>
+}
+
+#include <array>
+#include <iterator>
 #endif
 
 #include <mutex>
 
+extern "C"
+{
+#include <libavutil/dovi_meta.h>
+}
+
 using namespace Shaders;
 using namespace Shaders::GLES;
+
+#ifdef HAVE_DVBRIDGE
+struct CLinuxRendererGLES::ShaderUpscaler
+{
+  pl_opengl gl{};
+  pl_renderer renderer{};
+  std::vector<const pl_hook*> hooks;
+  int preset{-1};
+  bool ready{};
+
+  ~ShaderUpscaler()
+  {
+    KODI::VIDEO::UPSCALER::DestroyHooks(hooks);
+    if (renderer)
+      pl_renderer_destroy(&renderer);
+    if (gl)
+      pl_opengl_destroy(&gl);
+  }
+
+  bool Load(int method)
+  {
+    preset = method;
+    pl_opengl_params context{};
+    context.get_proc_addr = reinterpret_cast<pl_voidfunc_t (*)(const char*)>(eglGetProcAddress);
+    context.egl_display = eglGetCurrentDisplay();
+    context.egl_context = eglGetCurrentContext();
+    gl = pl_opengl_create(nullptr, &context);
+    if (!gl)
+      return false;
+    renderer = pl_renderer_create(nullptr, gl->gpu);
+    if (!renderer)
+      return false;
+    return KODI::VIDEO::UPSCALER::LoadHooks(gl->gpu, method, hooks);
+  }
+};
+#endif
 
 CLinuxRendererGLES::CLinuxRendererGLES()
 {
@@ -220,6 +273,9 @@ bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps,
   m_bConfigured = true;
   m_scalingMethodGui = VS_SCALINGMETHOD_MAX;
   m_scalingMethod = m_videoSettings.m_ScalingMethod;
+#ifdef HAVE_DVBRIDGE
+  m_reportedUpscaler = -2;
+#endif
 
   // Ensure that textures are recreated and rendering starts only after the 1st
   // frame is loaded after every call to Configure().
@@ -360,6 +416,7 @@ void CLinuxRendererGLES::AddVideoPicture(const VideoPicture &picture, int index)
   buf.loaded = false;
   buf.doviMetadata = picture.doviMetadata;
 #ifdef HAVE_DVBRIDGE
+  buf.informationGeneration = picture.sourceSideData ? picture.sourceSideData->Generation() : 0;
   buf.doviEnhancement = picture.doviEnhancement;
   buf.doviEnhancementBinding = picture.doviEnhancementBinding;
   if (picture.doviSourceBinding.Valid() || picture.doviMetadata.Data())
@@ -582,6 +639,26 @@ void CLinuxRendererGLES::Update()
   ValidateRenderTarget();
 }
 
+void CLinuxRendererGLES::UpdateActiveArea(int index)
+{
+  CRect area;
+  // The decoder retains only bounded metadata. Without L5, the whole frame is active.
+  const auto* metadata =
+      reinterpret_cast<const AVDOVIMetadata*>(m_buffers[index].doviMetadata.Data());
+  for (int i = 0; metadata && i < metadata->num_ext_blocks; ++i)
+  {
+    const AVDOVIDmData* block = av_dovi_get_ext(metadata, i);
+    if (block->level != 5)
+      continue;
+    const unsigned left = block->l5.left_offset, right = block->l5.right_offset;
+    const unsigned top = block->l5.top_offset, bottom = block->l5.bottom_offset;
+    if (left + right < m_sourceWidth && top + bottom < m_sourceHeight)
+      area.SetRect(left, top, m_sourceWidth - right, m_sourceHeight - bottom);
+    break;
+  }
+  SetActiveArea(area);
+}
+
 void CLinuxRendererGLES::ClearBackBuffer()
 {
   //set the entire backbuffer to black
@@ -746,6 +823,7 @@ void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigne
     return;
   }
 
+  UpdateActiveArea(index);
   ManageRenderArea();
 
   if (clear)
@@ -821,6 +899,7 @@ void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsig
   if (!buf.fields[FIELD_FULL][0].id)
     return;
 
+  UpdateActiveArea(index);
   ManageRenderArea();
 
   if (clear)
@@ -863,7 +942,11 @@ void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsig
 
 ESCALINGMETHOD CLinuxRendererGLES::SelectScalingMethod() const
 {
-  auto method = m_videoSettings.m_ScalingMethod;
+  return ResolveScalingMethod(m_videoSettings.m_ScalingMethod);
+}
+
+ESCALINGMETHOD CLinuxRendererGLES::ResolveScalingMethod(ESCALINGMETHOD method) const
+{
   if(!Supports(method))
   {
     CLog::Log(LOGWARNING,
@@ -892,6 +975,17 @@ ESCALINGMETHOD CLinuxRendererGLES::SelectScalingMethod() const
   return method;
 }
 
+#ifdef HAVE_DVBRIDGE
+ESCALINGMETHOD CLinuxRendererGLES::AutoUpscalingOverride() const
+{
+  using namespace KODI::VIDEO::UPSCALER;
+  if (Get(false, KODI_DEFAULT) == VS_SCALINGMETHOD_AUTO ||
+      Get(true, KODI_DEFAULT) == VS_SCALINGMETHOD_AUTO)
+    return ResolveScalingMethod(VS_SCALINGMETHOD_AUTO);
+  return VS_SCALINGMETHOD_LINEAR;
+}
+#endif
+
 void CLinuxRendererGLES::UpdateVideoFilter()
 {
   CRect srcRect;
@@ -908,7 +1002,18 @@ void CLinuxRendererGLES::UpdateVideoFilter()
 
   // TODO: GL also checks nonLinStretchChanged and cmsChanged in the early exit
   // and the reload check below. Add when non-linear stretch and CMS are ported to GLES.
-  if (m_scalingMethodGui == m_videoSettings.m_ScalingMethod &&
+  auto requested = m_videoSettings.m_ScalingMethod;
+#ifdef HAVE_DVBRIDGE
+  if (!m_dvRequested && KODI::VIDEO::UPSCALER::Enlarges(
+          srcRect.Width(), srcRect.Height(), dstRect.Width(), dstRect.Height()))
+  {
+    const auto override = static_cast<ESCALINGMETHOD>(
+        KODI::VIDEO::UPSCALER::Get(m_passthroughHDR, requested));
+    if (override == requested || Supports(override))
+      requested = override;
+  }
+#endif
+  if (m_scalingMethodGui == requested &&
       viewRect.Height() == m_lastViewRect.Height() && viewRect.Width() == m_lastViewRect.Width() &&
       srcRect.Height() == m_lastSourceRect.Height() && srcRect.Width() == m_lastSourceRect.Width())
   {
@@ -916,12 +1021,12 @@ void CLinuxRendererGLES::UpdateVideoFilter()
   }
 
   // Viewport-only change doesn't need shader reload -- only method changes do
-  if (m_scalingMethod != m_videoSettings.m_ScalingMethod)
+  if (m_scalingMethod != requested)
     m_reloadShaders = true;
 
   const ESCALINGMETHOD previousMethod = m_scalingMethod;
-  m_scalingMethodGui = m_videoSettings.m_ScalingMethod;
-  m_scalingMethod = SelectScalingMethod();
+  m_scalingMethodGui = requested;
+  m_scalingMethod = ResolveScalingMethod(requested);
   m_lastViewRect = viewRect;
   m_lastSourceRect = srcRect;
 
@@ -974,6 +1079,8 @@ void CLinuxRendererGLES::UpdateVideoFilter()
     [[fallthrough]];
   }
 
+  case VS_SCALINGMETHOD_FSR1:
+  case VS_SCALINGMETHOD_FSR1_RCAS:
   case VS_SCALINGMETHOD_LANCZOS2:
   case VS_SCALINGMETHOD_SPLINE36:
   case VS_SCALINGMETHOD_LANCZOS3:
@@ -1019,14 +1126,18 @@ void CLinuxRendererGLES::UpdateVideoFilter()
 
     // TODO: GL also passes m_nonLinStretch, m_intermediateGammaCorrection.
     // Add when non-linear stretch and gamma correction are ported to GLES.
-    m_pVideoFilterShader = new ConvolutionFilterShader(m_scalingMethod, m_useDithering);
+    if (m_scalingMethod == VS_SCALINGMETHOD_FSR1 || m_scalingMethod == VS_SCALINGMETHOD_FSR1_RCAS)
+      m_pVideoFilterShader = new FSR1FilterShader();
+    else
+      m_pVideoFilterShader = new ConvolutionFilterShader(m_scalingMethod, m_useDithering);
     if (!m_pVideoFilterShader->CompileAndLink())
     {
       CLog::Log(LOGERROR, "GLES: Error compiling and linking video filter shader");
       break;
     }
 
-    if (m_useDithering && m_ditherTex)
+    if (m_scalingMethod != VS_SCALINGMETHOD_FSR1 &&
+        m_scalingMethod != VS_SCALINGMETHOD_FSR1_RCAS && m_useDithering && m_ditherTex)
     {
       bool ditherActive = true;
       unsigned int effectiveDitherDepth = m_ditherDepth;
@@ -1057,6 +1168,8 @@ void CLinuxRendererGLES::UpdateVideoFilter()
     m_renderQuality = RQ_MULTIPASS;
       return;
   }
+  case VS_SCALINGMETHOD_FSRCNNX:
+  case VS_SCALINGMETHOD_ANIME4K:
   case VS_SCALINGMETHOD_BICUBIC_SOFTWARE:
   case VS_SCALINGMETHOD_LANCZOS_SOFTWARE:
   case VS_SCALINGMETHOD_SINC_SOFTWARE:
@@ -1070,6 +1183,7 @@ void CLinuxRendererGLES::UpdateVideoFilter()
   }
 
   CLog::Log(LOGERROR, "GLES: Falling back to bilinear due to failure to init scaler");
+  m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
   if (m_pVideoFilterShader)
   {
     delete m_pVideoFilterShader;
@@ -1163,6 +1277,7 @@ void CLinuxRendererGLES::LoadShaders(int field)
             else
             {
               CLog::Log(LOGERROR, "GLES: Error enabling YUV2RGB GLSL shader");
+              m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
               delete m_pYUVProgShader;
               m_pYUVProgShader = nullptr;
             }
@@ -1239,6 +1354,9 @@ void CLinuxRendererGLES::UnInit()
 
   bool outputStopped = false;
 #ifdef HAVE_DVBRIDGE
+  m_shaderUpscaler.reset();
+  m_rcasShader.reset();
+  m_rcasInput.Cleanup();
   if (m_dvRequested)
   {
     auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
@@ -1376,6 +1494,7 @@ bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& lay
   }
   layer.width=m_sourceWidth; layer.height=m_sourceHeight;
   layer.scalingMethod=SelectScalingMethod();
+  layer.autoScalingMethod=AutoUpscalingOverride();
   layer.pts=hdr10 ? source.pts / DVD_TIME_BASE : buffer.doviPts;
   layer.binding=hdr10 ? source.doviSourceBinding : buffer.doviMetadata.Binding();
   if (!std::isfinite(layer.pts) || (hdr10 && (source.pts==DVD_NOPTS_VALUE ||
@@ -1450,6 +1569,142 @@ dvbridge_geometry CLinuxRendererGLES::DVBridgeGeometry()
 }
 #endif
 
+#ifdef HAVE_DVBRIDGE
+bool CLinuxRendererGLES::RenderShaderUpscaler(int index, int preset)
+{
+  const auto& buf = m_buffers[index];
+  const bool hdr = m_passthroughHDR;
+  const bool pq = buf.m_srcColTransfer == AVCOL_TRC_SMPTE2084;
+  const bool hlg = buf.m_srcColTransfer == AVCOL_TRC_ARIB_STD_B67;
+  const bool bt709 = (buf.m_srcColSpace == AVCOL_SPC_BT709 ||
+                      buf.m_srcColSpace == AVCOL_SPC_UNSPECIFIED) &&
+                     (buf.m_srcPrimaries == AVCOL_PRI_BT709 ||
+                      buf.m_srcPrimaries == AVCOL_PRI_UNSPECIFIED) &&
+                     (buf.m_srcColTransfer == AVCOL_TRC_BT709 ||
+                      buf.m_srcColTransfer == AVCOL_TRC_UNSPECIFIED);
+  const bool supportedColor = hdr ?
+      ((pq || hlg) && buf.m_srcPrimaries == AVCOL_PRI_BT2020 &&
+       buf.m_srcColSpace == AVCOL_SPC_BT2020_NCL && buf.m_srcBits == 10) :
+      (bt709 && buf.m_srcBits == 8);
+  if (m_currentField != FIELD_FULL || m_renderOrientation || m_toneMap ||
+      m_textureTarget != GL_TEXTURE_2D || !supportedColor ||
+      m_videoSettings.m_Brightness != 50.f || m_videoSettings.m_Contrast != 50.f ||
+      glIsEnabled(GL_BLEND))
+    return false;
+
+  CRect src, dst, view;
+  GetVideoRect(src, dst, view);
+  // All bundled CNN presets need enlargement on both axes.
+  if (dst.Width() <= 1.3f * src.Width() || dst.Height() <= 1.3f * src.Height() ||
+      src.Width() <= 0 || src.Height() <= 0)
+    return false;
+  const auto format = GetShaderFormat();
+  if (format != SHADER_NV12 && format != SHADER_NV12_RRG && format != SHADER_YV12)
+    return false;
+
+  if (!m_shaderUpscaler || m_shaderUpscaler->preset != preset)
+  {
+    m_shaderUpscaler = std::make_unique<ShaderUpscaler>();
+    m_shaderUpscaler->ready = m_shaderUpscaler->Load(preset);
+    if (!m_shaderUpscaler->ready)
+      CLog::Log(LOGWARNING, "Unable to initialize SDR upscaler {}", preset);
+  }
+  if (!m_shaderUpscaler->ready)
+    return false;
+
+  const auto& scaler = *m_shaderUpscaler;
+  const pl_gpu gpu = scaler.gl->gpu;
+  struct pl_frame image{};
+  image.num_planes = format == SHADER_YV12 ? 3 : 2;
+  image.repr.sys = hdr ? PL_COLOR_SYSTEM_BT_2020_NC : PL_COLOR_SYSTEM_BT_709;
+  image.repr.levels = buf.m_srcFullRange ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
+  image.color = hdr ? pl_color_space_hdr10 : pl_color_space_bt709;
+  if (hlg)
+    image.color.transfer = PL_COLOR_TRC_HLG;
+  if (hdr)
+  {
+    image.repr.bits.sample_depth = 16;
+    image.repr.bits.color_depth = buf.m_srcBits;
+    image.repr.bits.bit_shift = image.num_planes == 2 ? 16 - buf.m_srcBits : 0;
+  }
+  image.crop = {src.x1, src.y1, src.x2, src.y2};
+  for (int i = 0; i < image.num_planes; ++i)
+  {
+    const auto& plane = buf.fields[FIELD_FULL][i];
+    pl_opengl_wrap_params params{};
+    params.texture = plane.id;
+    params.width = static_cast<int>(plane.texwidth);
+    params.height = static_cast<int>(plane.texheight);
+    const bool uv = i == 1 && image.num_planes == 2;
+    params.iformat = hdr ? (uv ? GL_RG16_EXT : GL_R16_EXT) : (uv ? GL_RG8 : GL_R8);
+    image.planes[i].texture = plane.id ? pl_opengl_wrap(gpu, &params) : nullptr;
+    image.planes[i].components = i == 1 && image.num_planes == 2 ? 2 : 1;
+    image.planes[i].component_mapping[0] = i;
+    image.planes[i].component_mapping[1] = i + 1;
+  }
+  pl_frame_set_chroma_location(&image, PL_CHROMA_LEFT);
+  GLint framebuffer, viewport[4], redBits;
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &framebuffer);
+  glGetIntegerv(GL_VIEWPORT, viewport);
+  glGetIntegerv(GL_RED_BITS, &redBits);
+  const int width = viewport[2], height = viewport[3];
+  pl_opengl_wrap_params targetParams{};
+  targetParams.framebuffer = framebuffer;
+  targetParams.width = width;
+  targetParams.height = height;
+  targetParams.iformat = redBits == 8 && !hdr ? GL_RGBA8 :
+      redBits == 10 ? GL_RGB10_A2 : redBits == 16 ? GL_RGBA16F : 0;
+  const pl_tex target = !viewport[0] && !viewport[1] && targetParams.iformat
+      ? pl_opengl_wrap(gpu, &targetParams) : nullptr;
+  struct pl_frame output{};
+  output.num_planes = 1;
+  output.planes[0].texture = target;
+  output.planes[0].flipped = true;
+  output.planes[0].components = 4;
+  for (int i = 0; i < 4; ++i)
+    output.planes[0].component_mapping[i] = i;
+  output.repr = pl_color_repr_rgb;
+  output.repr.levels = m_fullRange ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
+  output.color = image.color;
+  output.crop = {dst.x1, dst.y1, dst.x2, dst.y2};
+  const GLboolean scissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
+  GLint scissor[4];
+  glGetIntegerv(GL_SCISSOR_BOX, scissor);
+  const bool fullScissor = !scissorEnabled ||
+      (scissor[0] == 0 && scissor[1] == 0 && scissor[2] == width && scissor[3] == height);
+
+  bool rendered = false;
+  const bool sourceReady = std::all_of(image.planes, image.planes + image.num_planes,
+                                      [](const auto& plane) { return plane.texture != nullptr; });
+  if (sourceReady && target && fullScissor)
+  {
+    glDisable(GL_SCISSOR_TEST);
+    auto params = pl_render_default_params;
+    params.hooks = scaler.hooks.data();
+    params.num_hooks = static_cast<int>(scaler.hooks.size());
+    params.upscaler = &pl_filter_bilinear;
+    params.skip_caching_single_frame = true;
+    rendered = pl_render_image(scaler.renderer, &image, &output, &params);
+    const auto errors = pl_renderer_get_errors(scaler.renderer);
+    rendered = rendered && !errors.errors && !errors.num_disabled_hooks;
+    if (!rendered)
+    {
+      m_shaderUpscaler->ready = false;
+      CLog::Log(LOGWARNING, "SDR upscaler {} failed, using Kodi scaling", preset);
+    }
+  }
+  glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+  glViewport(viewport[0], viewport[1], width, height);
+  glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
+  if (scissorEnabled)
+    glEnable(GL_SCISSOR_TEST);
+  pl_tex_destroy(gpu, &output.planes[0].texture);
+  for (int i = 0; i < image.num_planes; ++i)
+    pl_tex_destroy(gpu, &image.planes[i].texture);
+  return rendered;
+}
+#endif
+
 bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 {
   // obtain current field, if interlaced
@@ -1483,6 +1738,7 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
   }
   if (m_dvRequested)
   {
+    m_reportedUpscaler = -2;
     const bool rendered = m_currentField == FIELD_FULL && RenderDVBridge(index);
     AfterRenderHook(index);
     if (rendered)
@@ -1491,6 +1747,13 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
           m_buffers[index].doviMetadata.Binding());
     return rendered;
   }
+#endif
+#ifdef HAVE_DVBRIDGE
+  int upscaler = -1;
+  const int preset = KODI::VIDEO::UPSCALER::Get(m_passthroughHDR, KODI::VIDEO::UPSCALER::KODI_DEFAULT);
+  if (KODI::VIDEO::UPSCALER::UsesShaderHooks(preset) && RenderShaderUpscaler(index, preset))
+    upscaler = preset;
+  else
 #endif
   if (RenderHook(index))
   {
@@ -1518,6 +1781,13 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
     default:
       break;
     }
+#ifdef HAVE_DVBRIDGE
+    if (KODI::VIDEO::UPSCALER::Enlarges(m_sourceRect.Width(), m_sourceRect.Height(),
+                                       m_destRect.Width(), m_destRect.Height()))
+      upscaler = m_currentField != FIELD_FULL && m_renderQuality != RQ_MULTIPASS &&
+                 m_scalingMethod != VS_SCALINGMETHOD_NEAREST
+                     ? VS_SCALINGMETHOD_LINEAR : m_scalingMethod;
+#endif
   }
   else
   {
@@ -1526,8 +1796,17 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 
   AfterRenderHook(index);
 #ifdef HAVE_DVBRIDGE
+  const auto generation =
+      m_buffers[index].videoBuffer ? m_buffers[index].videoBuffer->PlaybackGeneration() : 0;
+  const auto informationGeneration = m_buffers[index].informationGeneration;
+  if (informationGeneration != m_reportedUpscalerGeneration || m_reportedUpscaler != upscaler)
+  {
+    CServiceBroker::GetDataCacheCore().SetVideoUpscaler(upscaler, informationGeneration);
+    m_reportedUpscalerGeneration = informationGeneration;
+    m_reportedUpscaler = upscaler;
+  }
   DVBRIDGE::PlaybackNotification::RenderedOrdinary(
-      m_buffers[index].videoBuffer ? m_buffers[index].videoBuffer->PlaybackGeneration() : 0);
+      generation);
 #ifdef CB1_HAS_HDR10_AI
   if (m_passthroughHDR)
   {
@@ -1844,8 +2123,92 @@ void CLinuxRendererGLES::RenderToFBO(int index, int field)
   VerifyGLState();
 }
 
+#ifdef HAVE_DVBRIDGE
+bool CLinuxRendererGLES::RunRCAS()
+{
+  const int width = static_cast<int>(std::lround(m_destRect.Width()));
+  const int height = static_cast<int>(std::lround(m_destRect.Height()));
+  if (!m_rcasInput.IsBound() || m_rcasWidth != width || m_rcasHeight != height)
+  {
+    GLint draw, read;
+    glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+    m_rcasInput.Cleanup();
+    const bool allocated = m_rcasInput.Initialize() &&
+        m_rcasInput.CreateAndBindToTexture(GL_TEXTURE_2D, width, height, GL_RGBA16F,
+                                           GL_HALF_FLOAT, GL_NEAREST);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
+    if (!allocated)
+      return false;
+    m_rcasWidth = width;
+    m_rcasHeight = height;
+  }
+  if (!m_rcasShader)
+  {
+    auto shader = std::make_unique<FSR1FilterShader>(true);
+    if (!shader->CompileAndLink())
+      return false;
+    m_rcasShader = std::move(shader);
+  }
+
+  GLint draw, read, viewport[4];
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+  glGetIntegerv(GL_VIEWPORT, viewport);
+  if (!m_rcasInput.BeginRender())
+    return false;
+  const bool scissor = glIsEnabled(GL_SCISSOR_TEST);
+  glDisable(GL_SCISSOR_TEST);
+  glViewport(0, 0, width, height);
+  glActiveTexture(GL_TEXTURE0);
+  m_fbo.fbo.SetFiltering(GL_TEXTURE_2D, GL_NEAREST);
+  auto* easu = static_cast<FSR1FilterShader*>(m_pVideoFilterShader);
+  easu->SetSourceTexture(0);
+  easu->SetWidth(m_sourceWidth);
+  easu->SetHeight(m_sourceHeight);
+  easu->SetInputSize(m_fbo.width, m_fbo.height);
+  easu->SetAlpha(1.f);
+  constexpr GLfloat identity[16] = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+  easu->SetMatrices(identity, identity);
+  const bool ready = easu->Enable();
+  if (ready)
+  {
+    const GLfloat vert[] = {-1,-1,1,-1,-1,1,1,1};
+    const GLfloat u = m_fbo.width / m_sourceWidth;
+    const GLfloat v = m_fbo.height / m_sourceHeight;
+    const GLfloat tex[] = {0,0,u,0,0,v,u,v};
+    const GLint position = easu->GetVertexLoc();
+    const GLint coord = easu->GetcoordLoc();
+    glVertexAttribPointer(position, 2, GL_FLOAT, 0, 0, vert);
+    glVertexAttribPointer(coord, 2, GL_FLOAT, 0, 0, tex);
+    glEnableVertexAttribArray(position);
+    glEnableVertexAttribArray(coord);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisableVertexAttribArray(position);
+    glDisableVertexAttribArray(coord);
+    easu->Disable();
+  }
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
+  glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+  if (scissor)
+    glEnable(GL_SCISSOR_TEST);
+  return ready;
+}
+#endif
+
 void CLinuxRendererGLES::RenderFromFBO()
 {
+  auto* filterShader = m_pVideoFilterShader;
+  bool sharpened = false;
+#ifdef HAVE_DVBRIDGE
+  sharpened = m_scalingMethod == VS_SCALINGMETHOD_FSR1_RCAS && RunRCAS();
+  if (sharpened)
+    filterShader = m_rcasShader.get();
+  else if (m_scalingMethod == VS_SCALINGMETHOD_FSR1_RCAS)
+    m_scalingMethod = VS_SCALINGMETHOD_FSR1;
+#endif
   glActiveTexture(GL_TEXTURE0);
   glBindTexture(GL_TEXTURE_2D, m_fbo.fbo.Texture());
   VerifyGLState();
@@ -1854,21 +2217,36 @@ void CLinuxRendererGLES::RenderFromFBO()
 
   // 2nd Pass to screen size with optional video filter
 
-  if (m_pVideoFilterShader)
+  if (filterShader)
   {
     GLint filter;
-    if (!m_pVideoFilterShader->GetTextureFilter(filter))
+    if (!filterShader->GetTextureFilter(filter))
     {
       filter = m_scalingMethod == VS_SCALINGMETHOD_NEAREST ? GL_NEAREST : GL_LINEAR;
     }
 
-    m_fbo.fbo.SetFiltering(GL_TEXTURE_2D, filter);
-    m_pVideoFilterShader->SetSourceTexture(0);
-    m_pVideoFilterShader->SetWidth(m_sourceWidth);
-    m_pVideoFilterShader->SetHeight(m_sourceHeight);
-    m_pVideoFilterShader->SetAlpha(1.0f);
-    m_pVideoFilterShader->SetMatrices(glMatrixProject.Get(), glMatrixModview.Get());
-    m_pVideoFilterShader->Enable();
+#ifdef HAVE_DVBRIDGE
+    if (sharpened)
+      m_rcasInput.SetFiltering(GL_TEXTURE_2D, filter);
+    else
+#endif
+      m_fbo.fbo.SetFiltering(GL_TEXTURE_2D, filter);
+    filterShader->SetSourceTexture(0);
+    int sampleWidth = m_sourceWidth, sampleHeight = m_sourceHeight;
+#ifdef HAVE_DVBRIDGE
+    if (sharpened)
+    {
+      sampleWidth = m_rcasWidth;
+      sampleHeight = m_rcasHeight;
+    }
+#endif
+    filterShader->SetWidth(sampleWidth);
+    filterShader->SetHeight(sampleHeight);
+    if (m_scalingMethod == VS_SCALINGMETHOD_FSR1)
+      static_cast<FSR1FilterShader*>(filterShader)->SetInputSize(m_fbo.width, m_fbo.height);
+    filterShader->SetAlpha(1.0f);
+    filterShader->SetMatrices(glMatrixProject.Get(), glMatrixModview.Get());
+    filterShader->Enable();
   }
   else
   {
@@ -1878,15 +2256,15 @@ void CLinuxRendererGLES::RenderFromFBO()
 
   VerifyGLState();
 
-  float imgwidth = m_fbo.width / m_sourceWidth;
-  float imgheight = m_fbo.height / m_sourceHeight;
+  float imgwidth = sharpened ? 1.f : m_fbo.width / m_sourceWidth;
+  float imgheight = sharpened ? 1.f : m_fbo.height / m_sourceHeight;
 
   GLubyte idx[4] = {0, 1, 3, 2}; // determines order of triangle strip
   GLfloat vert[4][3];
   GLfloat tex[4][2];
 
-  GLint vertLoc = m_pVideoFilterShader->GetVertexLoc();
-  GLint loc = m_pVideoFilterShader->GetcoordLoc();
+  GLint vertLoc = filterShader->GetVertexLoc();
+  GLint loc = filterShader->GetcoordLoc();
 
   glVertexAttribPointer(vertLoc, 3, GL_FLOAT, 0, 0, vert);
   glVertexAttribPointer(loc, 2, GL_FLOAT, 0, 0, tex);
@@ -1915,9 +2293,9 @@ void CLinuxRendererGLES::RenderFromFBO()
 
   VerifyGLState();
 
-  if (m_pVideoFilterShader)
+  if (filterShader)
   {
-    m_pVideoFilterShader->Disable();
+    filterShader->Disable();
   }
 
   VerifyGLState();
@@ -2522,6 +2900,14 @@ bool CLinuxRendererGLES::Supports(ESCALINGMETHOD method) const
   {
     return true;
   }
+
+#ifdef HAVE_DVBRIDGE
+  if (KODI::VIDEO::UPSCALER::UsesFSR1(method))
+    return (m_renderMethod & RENDER_GLSL) && !m_renderOrientation &&
+           m_currentField == FIELD_FULL &&
+           KODI::VIDEO::UPSCALER::Enlarges(m_sourceRect.Width(), m_sourceRect.Height(),
+                                         m_destRect.Width(), m_destRect.Height());
+#endif
 
   if (method == VS_SCALINGMETHOD_CUBIC_B_SPLINE ||
       method == VS_SCALINGMETHOD_CUBIC_MITCHELL ||

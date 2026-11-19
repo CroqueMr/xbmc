@@ -26574,6 +26574,10 @@ msgctxt "#41224"
 msgid "Dolby Vision picture metadata is missing or unusable."
 msgstr ""
 
+msgctxt "#41276"
+msgid "Dolby Vision active area"
+msgstr ""
+
 msgctxt "#41225"
 msgid "CB1 log detail"
 msgstr ""
@@ -26588,4 +26592,40 @@ msgstr ""
 
 msgctxt "#41228"
 msgid "Normal keeps CB1 warnings, errors and key playback and display events. Enhanced includes detailed CB1 diagnostics. Kodi debug logging is controlled separately."
+msgstr ""
+
+msgctxt "#41301"
+msgid "Kodi default"
+msgstr ""
+
+msgctxt "#41302"
+msgid "SDR upscaler"
+msgstr ""
+
+msgctxt "#41303"
+msgid "HDR and Dolby Vision upscaler"
+msgstr ""
+
+msgctxt "#41304"
+msgid "Select the filter used to enlarge video for this output. Kodi default keeps the existing video scaling settings."
+msgstr ""
+
+msgctxt "#41305"
+msgid "Upscaler"
+msgstr ""
+
+msgctxt "#41306"
+msgid "FSR 1 (EASU)"
+msgstr ""
+
+msgctxt "#41307"
+msgid "FSRCNNX x2"
+msgstr ""
+
+msgctxt "#41308"
+msgid "Anime4K Fast"
+msgstr ""
+
+msgctxt "#41309"
+msgid "FSR 1 (EASU + RCAS)"
 msgstr ""
