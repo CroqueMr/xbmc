@@ -92,7 +92,6 @@ public:
   }
   static void Emit(const std::string& text);
   static void EmitAI(int mode);
-  static void RenderingUnavailable(OutputReason reason);
 private:
   inline static std::atomic<bool> m_pending{false};
   inline static std::atomic<uint64_t> m_generation{0};

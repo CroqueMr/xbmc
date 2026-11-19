@@ -822,8 +822,11 @@ bool CApplicationMessageHandling::OnMessage(const CGUIMessage& message)
     }
 
     case GUI_MSG_PLAYBACK_ERROR:
-      MESSAGING::HELPERS::ShowOKDialogText(CVariant{16026}, CVariant{16027});
+    {
+      const int detail = message.GetParam1();
+      MESSAGING::HELPERS::ShowOKDialogText(CVariant{16026}, CVariant{detail != 0 ? detail : 16027});
       return true;
+    }
 
     case GUI_MSG_PLAYLISTPLAYER_STARTED:
     case GUI_MSG_PLAYLISTPLAYER_CHANGED:

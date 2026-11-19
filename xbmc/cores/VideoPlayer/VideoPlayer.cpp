@@ -1492,6 +1492,7 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
 
 void CVideoPlayer::Prepare()
 {
+  m_errorDetail = 0;
 #ifdef HAVE_DVBRIDGE
   DVBRIDGE::SelectOutputSettings();
 #endif
@@ -3168,12 +3169,13 @@ void CVideoPlayer::OnExit()
   m_bStop = true;
 
   bool error = m_error;
+  const int errorDetail = m_errorDetail;
   bool close = m_bCloseRequest;
   m_outboundEvents->Submit([=]() {
     if (close)
       cb->OnPlayBackStopped();
     else if (error)
-      cb->OnPlayBackError();
+      cb->OnPlayBackError(errorDetail);
     else
       cb->OnPlayBackEnded();
   });
@@ -3757,7 +3759,13 @@ void CVideoPlayer::HandleMessages()
       CLog::Log(LOGDEBUG, "CVideoPlayer - CDVDMsg::PLAYER_ABORT");
       m_bAbortRequest = true;
 #ifdef HAVE_DVBRIDGE
-      if (const auto error = std::dynamic_pointer_cast<CDVDMsgBool>(pMsg); error && error->m_value)
+      if (const auto error = std::dynamic_pointer_cast<CDVDMsgInt>(pMsg))
+      {
+        m_error = true;
+        m_errorDetail = error->m_value;
+      }
+      else if (const auto error = std::dynamic_pointer_cast<CDVDMsgBool>(pMsg);
+               error && error->m_value)
         m_error = true;
 #endif
     }
@@ -4605,7 +4613,8 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
       constexpr auto reason = DVBRIDGE::OutputReason::HDR10LinkDepthTooLow;
       CLog::Log(LOGERROR, "Dolby Vision playback unavailable: profile={} reason={}",
                 hint.dovi.dv_profile, static_cast<int>(reason));
-      DVBRIDGE::PlaybackNotification::RenderingUnavailable(reason);
+      m_error = true;
+      m_errorDetail = CDVPlaybackInfo::ReasonLabel(reason);
       m_bAbortRequest = true;
       return false;
     }

@@ -26126,10 +26126,6 @@ msgctxt "#40870"
 msgid "Choose the default playback circuit for HDR10 sources. New files use this default. Playback-menu choices apply only to the current file. Adaptive requires a TV profile. Kodi default uses native Kodi playback."
 msgstr ""
 
-msgctxt "#40875"
-msgid "Requested rendering is unavailable. Playback stopped."
-msgstr ""
-
 msgctxt "#40876"
 msgid "Playback modes | Source: {0}"
 msgstr ""
@@ -26572,4 +26568,8 @@ msgstr ""
 
 msgctxt "#41223"
 msgid "Requires 10-bit HDMI"
+msgstr ""
+
+msgctxt "#41224"
+msgid "Dolby Vision picture metadata is missing or unusable."
 msgstr ""
