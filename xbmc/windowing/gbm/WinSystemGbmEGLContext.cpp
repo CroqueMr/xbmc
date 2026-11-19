@@ -319,8 +319,7 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   bool separateScanout = false;
   if (!ChooseEGLConfig(m_renderableType, bitDepth))
   {
-    separateScanout = m_dvOutputSurface && bitDepth >= 10 &&
-        ChooseEGLConfig(m_renderableType, 8) && PrepareHDR10Scanout();
+    separateScanout = bitDepth >= 10 && PrepareHDR10Scanout(videoPicture);
     if (!separateScanout)
     {
       CLog::LogF(LOGERROR, "failed to choose EGL config for {}-bit", bitDepth);

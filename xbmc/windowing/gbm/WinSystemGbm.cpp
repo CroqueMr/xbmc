@@ -1103,6 +1103,12 @@ bool CWinSystemGbm::FlipDVBridgePage(CDVBridgeState& state, bool restore, bool a
 
 void CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async)
 {
+  FlipPage(rendered, videoLayer, async, {});
+}
+
+bool CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async,
+                             const std::shared_ptr<gbm_bo>& carrier)
+{
   if (m_videoLayerBridge && !videoLayer)
   {
     // disable video plane when video layer no longer is active
@@ -1113,24 +1119,25 @@ void CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async)
     DeferConnectorPreferences();
 
   auto atomic = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-  const bool colourTransition = rendered && atomic && atomic->HasColorRangeTransition();
+  const bool transactional = rendered && atomic && (carrier || atomic->HasColorRangeTransition());
   struct gbm_bo* bo = nullptr;
 
   if (rendered)
   {
     auto& surface = m_GBM->GetDevice().GetSurface();
-    bo = colourTransition ? surface.LockTransactionalBuffer() : surface.LockFrontBuffer().Get();
-    if (colourTransition && !bo)
+    bo = carrier ? surface.AdoptTransactionalBuffer(carrier.get(), carrier)
+                 : transactional ? surface.LockTransactionalBuffer() : surface.LockFrontBuffer().Get();
+    if (transactional && !bo)
     {
       if (auto gui = CServiceBroker::GetGUI()) gui->GetWindowManager().MarkDirty();
-      return;
+      return false;
     }
   }
 
   // A refused colour request keeps the old scanout. Release its GBM buffers
   // only after a blocking replacement has completed, as in CB1 restoration.
-  m_DRM->FlipPage(bo, rendered, videoLayer, colourTransition ? false : async);
-  if (colourTransition)
+  m_DRM->FlipPage(bo, rendered, videoLayer, transactional ? false : async);
+  if (transactional)
   {
     auto& surface = m_GBM->GetDevice().GetSurface();
     surface.CompleteTransactionalBuffer(atomic->LastPageAccepted());
@@ -1156,6 +1163,9 @@ void CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async)
     auto* gui = m_DRM->GetGuiPlane();
     m_DRM->FindGuiPlane(gui->GetFormat(), gui->GetModifier());
   }
+  if (atomic)
+    return atomic->LastPageAccepted();
+  return false;
 }
 
 bool CWinSystemGbm::OrdinaryShaderLimitedColor()

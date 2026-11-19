@@ -2282,6 +2282,11 @@ void CLinuxRendererGLES::RenderToFBO(int index, int field)
   m_renderSystem->SetViewPort(viewport);
 
   m_fbo.fbo.EndRender();
+#ifdef HAVE_DVBRIDGE
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+          CServiceBroker::GetWinSystem()))
+    window->BindNativePascalHDRFramebuffer();
+#endif
 
   VerifyGLState();
 }
