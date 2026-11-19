@@ -210,7 +210,8 @@ public:
   RetainedContext RetainForRetirement();
   static bool DestroyRetiredContext(RetainedContext& state);
   bool InitializeDisplay(EGLint renderingApi);
-  bool ChooseConfig(EGLint renderableType, EGLint visualId = 0, bool hdr = false, int alpha = 8);
+  bool ChooseConfig(EGLint renderableType, EGLint visualId = 0, bool hdr = false, int alpha = 8,
+                    bool floating = false);
   bool CreateContext(CEGLAttributesVec contextAttribs);
   bool BindContext();
   void Destroy();

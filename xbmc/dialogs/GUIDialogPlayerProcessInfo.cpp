@@ -13,10 +13,10 @@
 #ifdef HAVE_DVBRIDGE
 #include "DVPlaybackModes.h"
 #include "DVPixelFormat.h"
-#include "dvbridge_creative.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackInfo.h"
-#include "cores/VideoPlayer/DVDCodecs/Video/DVStreamTelemetry.h"
+#include "cores/DataCacheCore.h"
+#include "guilib/guiinfo/VideoProcessingInfoGUI.h"
 #include "utils/StringUtils.h"
 #include "utils/Variant.h"
 #include "utils/CPUInfo.h"
@@ -43,11 +43,12 @@ void CGUIDialogPlayerProcessInfo::OnInitWindow()
 #ifdef HAVE_DVBRIDGE
   const bool enhanced = DVBRIDGE::EnhancedInfoEnabled();
   SetProperty("DV.Enhanced", enhanced);
-  DVBRIDGE::StreamTelemetry::observing.store(enhanced);
   m_nextRefresh = 0;
   m_renderUsage.Reset();
   SetProperty("DV.GPUAvailable", false);
   SetProperty("DV.GPURender", "N/A");
+  if (enhanced)
+    RefreshInfo();
 #endif
   CGUIDialog::OnInitWindow();
 }
@@ -55,19 +56,14 @@ void CGUIDialogPlayerProcessInfo::OnInitWindow()
 void CGUIDialogPlayerProcessInfo::OnDeinitWindow(int nextWindowID)
 {
 #ifdef HAVE_DVBRIDGE
-  DVBRIDGE::StreamTelemetry::observing.store(false);
   m_renderUsage.Reset();
 #endif
   CGUIDialog::OnDeinitWindow(nextWindowID);
 }
 
-void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegionList& dirtyregions)
-{
 #ifdef HAVE_DVBRIDGE
-  const bool refresh = DVBRIDGE::StreamTelemetry::observing.load() && currentTime >= m_nextRefresh;
-  if (refresh)
-  {
-    m_nextRefresh = currentTime + 500;
+void CGUIDialogPlayerProcessInfo::RefreshInfo()
+{
     const auto render = m_renderUsage.Sample();
     SetProperty("DV.GPUAvailable", render.has_value());
     SetProperty("DV.GPURender", render ? StringUtils::Format("{:.0f} %", *render) : "N/A");
@@ -77,8 +73,8 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
       CGUIMessage usage(GUI_MSG_ITEM_SELECT, GetID(), gauge, render ? std::lround(*render) : 0);
       OnMessage(usage);
     }
-    const auto data = DVBRIDGE::StreamTelemetry::Read();
-    SetProperty("DV.SourcePixelFormat", DVBRIDGE::SourcePixelFormat(data.sourceFormat));
+    const auto data = CServiceBroker::GetDataCacheCore().GetVideoProcessingInfo();
+    SetProperty("DV.SourcePixelFormat", DVBRIDGE::SourcePixelFormat(static_cast<AVPixelFormat>(data.sourceFormat)));
     SetProperty("DV.SourceBits", data.sourceBits ? StringUtils::Format("{}-bit", data.sourceBits) : "N/A");
     const auto active = data.output.flags;
     const bool hdr10 = active & CDVPlaybackInfo::HDR10;
@@ -105,16 +101,21 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
     const auto applied=data.AppliedBlocks();
     SetProperty("DV.ParsedBlocks", metadata ? CDVPlaybackInfo::Blocks(data.blocks) : "");
     SetProperty("DV.AppliedBlocks", metadata ? CDVPlaybackInfo::Blocks(applied) : "");
-    SetProperty("DV.TransmittedBlocks", metadata ? CDVPlaybackInfo::Blocks(data.TransmittedBlocks())+
+    SetProperty("DV.TransmittedBlocks", active & CDVPlaybackInfo::HDMI ? CDVPlaybackInfo::Blocks(data.TransmittedBlocks())+
         (data.output.authoredLegacy ? " (authored)" : "") : "");
     SetProperty("DV.UnappliedBlocks", metadata ? CDVPlaybackInfo::Blocks(data.blocks & ~applied) : "");
     SetProperty("DV.RPU", data.profile ? yesno(data.rpu) : "N/A");
     SetProperty("DV.BL", data.profile ? yesno(data.bl) : "N/A");
     SetProperty("DV.EL", data.profile ? yesno(data.el) : "N/A");
     SetProperty("DV.FEL", active ? (active & CDVPlaybackInfo::FEL ? "Full FEL" : "No FEL") : "");
-    SetProperty("DV.Mode", CDVPlaybackInfo::Mode(data.output));
-    SetProperty("DV.Engine", "");
-    SetProperty("DV.Circuit", "");
+    SetProperty("DV.FELUpscaling", active & CDVPlaybackInfo::FEL ?
+        (data.output.felUpscaling == 2 ? "Reference GPU" : data.output.felUpscaling == 0 ? "VAAPI" : data.output.felUpscaling == 1 ? "Nearest neighbour (GPU)" : "") : "");
+    SetProperty("DV.Mode", active ? VideoProcessingInfoGUI::Mode(data) : "Kodi default");
+    SetProperty("DV.FastRendering", active ?
+        std::string(data.output.fastChroma ? "On" : "Off") +
+        (data.output.fastRenderingMode == 2 ? " (Auto)" : "") : "");
+    SetProperty("DV.Engine", data.output.engine);
+    SetProperty("DV.Circuit", data.output.circuit);
     SetProperty("DV.Reconstruction", "");
     SetProperty("DV.AIL1", "");
     SetProperty("DV.AIL3", "");
@@ -122,18 +123,11 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
     SetProperty("DV.PartialBlocks", hdr10 && data.output.effective==3 && metadata ?
         std::string(data.blocks[1] ? "L1 max/avg" : "")+
         (data.blocks[3] ? (data.blocks[1] ? "; L3 max/avg" : "L3 max/avg") : "") : "");
-    SetProperty("DV.ActivePolicy", active ? std::string(CDVPlaybackInfo::RequestedPolicy(data.output.effective))+
-        (data.output.effective==4 ? (data.output.enhancement ? " - Signature" : " - Natural") : "") : "Kodi default");
-#ifdef CB1_HAS_HDR10_AI
-    if (active)
-    {
-      SetProperty("DV.Engine", cb1_engine_version());
-      SetProperty("DV.Circuit", data.output.Circuit());
-    }
+    SetProperty("DV.ActivePolicy", active ? std::string(CDVPlaybackInfo::RequestedPolicy(data.output.effective)) : "Kodi default");
     if (active && data.output.hdr10AI)
     {
       const auto& localizer=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
-      const int label=data.output.effective==1 ? 40867 : (data.output.enhancement ? 40872 : 40871);
+      const int label=data.output.effective==1 ? 40867 : 40868;
       SetProperty("DV.Mode", localizer.Get(label));
       SetProperty("DV.ActivePolicy", localizer.Get(label));
       SetProperty("DV.Reconstruction", "AI-estimated L1/L3");
@@ -147,10 +141,9 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
         SetProperty("DV.OutputL1", StringUtils::Format("{} | {} | {}",
             data.output.emittedL1[0],data.output.emittedL1[1],data.output.emittedL1[2]));
     }
-#endif
     const auto& localizer=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
-    const auto reasonText=[&](DVBRIDGE::OutputReason reason) {
-      const int id=CDVPlaybackInfo::ReasonLabel(reason);
+    const auto reasonText=[&](VideoProcessingReason reason) {
+      const int id=CDVPlaybackInfo::ReasonLabel(static_cast<DVBRIDGE::OutputReason>(reason));
       return id ? localizer.Get(id) : std::string{};
     };
     SetProperty("DV.Fallback", active && data.output.fallback ? reasonText(data.output.reason) : "");
@@ -161,18 +154,31 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
         hdr10 ? "PQ / BT.2020" : "");
     SetProperty("DV.Committed", active && data.output.stream ? StringUtils::Format("{} / {} / {}",
         data.output.stream,data.output.picture,data.output.revision) : "");
-    const bool transaction=data.transaction.identity.Valid();
-    SetProperty("DV.RequestedPolicy", transaction ? std::string(CDVPlaybackInfo::RequestedPolicy(data.transaction.requested))+
-        (data.transaction.requested==4 ? (data.transaction.enhancement ? " - Signature" : " - Natural") : "") :
-        active ? CDVPlaybackInfo::RequestedPolicy(data.output.requested) : "");
+    // Next-picture preparation is not an output-mode transition.
+    const bool transaction=data.transaction.identity.Valid() &&
+        std::string_view(data.transaction.stage)!="Committed" &&
+        (data.transaction.atomicError ||
+         data.transaction.reason==VideoProcessingReason::ActivationFailed ||
+         data.transaction.reason==VideoProcessingReason::RestoreFailed ||
+         std::string_view(data.transaction.stage)=="Failed commit" ||
+         (active ? (
+          data.transaction.identity.stream!=data.output.stream ||
+          data.transaction.requested!=data.output.requested ||
+          data.transaction.effective!=data.output.effective ||
+          data.transaction.reason!=data.output.reason) :
+          (data.transaction.requested || data.transaction.reason!=VideoProcessingReason::None)));
+    SetProperty("DV.ProcessingVisible", bool(active) || transaction);
+    SetProperty("DV.RequestedPolicy", transaction ? std::string(CDVPlaybackInfo::RequestedPolicy(data.transaction.requested,
+        data.transaction.hdr10AI)) :
+        active ? CDVPlaybackInfo::RequestedPolicy(data.output.requested,data.output.hdr10AI) : "");
     SetProperty("DV.AdmissionReason", transaction ? reasonText(data.transaction.reason) : "");
     SetProperty("DV.AtomicResult", transaction && data.transaction.atomicError ?
         StringUtils::Format("errno={} / failures={} / restored={}",data.transaction.atomicError,
             data.transaction.retryCount,yesno(data.transaction.restored)) : "");
-    SetProperty("DV.OutputStage", transaction && std::string_view(data.transaction.stage)!="Committed" ?
+    SetProperty("DV.OutputStage", transaction ?
         std::string(data.transaction.stage)+" (not committed)" : "");
     SetProperty("DV.ReferenceWarning", data.referenceWarning ? "Consider Reference" : "");
-    SetProperty("DV.TVProfile", active && data.output.effective>=3 ?
+    SetProperty("DV.TVProfile", active && (data.output.effective==3 || data.output.effective==4 || data.output.effective==6) ?
         StringUtils::Format("{} / {:g} nits",
             data.output.gamut==1 ? "BT.709" : data.output.gamut==2 ? "P3-D65" : "BT.2020",
             data.output.manualPeak) : "");
@@ -181,13 +187,14 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
     SetProperty("DV.HDR10TargetLabel", hdr10 ? (data.output.effective==2 ? "Source reference" :
         data.output.effective==3 ? "Display reference" : "Mapping target") : "");
     SetProperty("DV.CreativeTrims", active ? (data.output.creativeKnown ?
-        (data.output.creativeStatus==DVBRIDGE_CREATIVE_INVALID ||
-         data.output.creativeStatus==DVBRIDGE_CREATIVE_UNSUPPORTED ?
+        (data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Invalid) ||
+         data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Unsupported) ?
             "Treatment unavailable / original metadata preserved" :
-         data.output.creativeStatus==DVBRIDGE_CREATIVE_NEUTRAL ?
+         data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Neutral) ?
             "Neutral / original metadata preserved" :
          hdr10 ? (data.output.creativeApplied & ((1u<<2)|(1u<<8)) ?
             "Applied in HDR10 processing" : "No compatible creative trims") :
+          data.output.creativeApplied ? "Metadata-guided expansion" :
           data.output.creativeEdited ? "Metadata adjusted for TV" : "Original metadata preserved") :
         data.output.authoredLegacy || hdr10 ? "Source trims not applied" : "Forwarded to TV") : "");
     SetProperty("DV.Precision", active ? StringUtils::Format("{}-bit framebuffer", data.output.bits) : "N/A");
@@ -204,6 +211,17 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
     SetProperty("DV.Mastering", metadata && data.l6 ? StringUtils::Format("{} | {:.4f} nits",
         data.maxMaster, data.minMaster / 10000.0) : "N/A");
     SetProperty("DV.CLL", metadata && data.l6 ? StringUtils::Format("{} | {} nits", data.maxCLL, data.maxFALL) : "N/A");
+}
+#endif
+
+void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegionList& dirtyregions)
+{
+#ifdef HAVE_DVBRIDGE
+  const bool refresh = DVBRIDGE::EnhancedInfoEnabled() && currentTime >= m_nextRefresh;
+  if (refresh)
+  {
+    m_nextRefresh = currentTime + 500;
+    RefreshInfo();
   }
 #endif
   CGUIDialog::Process(currentTime, dirtyregions);

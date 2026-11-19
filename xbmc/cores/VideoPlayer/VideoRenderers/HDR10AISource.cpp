@@ -104,6 +104,8 @@ cb1_ai_status HDR10AISource::Begin(pl_gpu gpu, const char* bundle,
   }
   m_gpu = gpu;
   cb1_hdr10_ai_reset(m_context,binding.stream,m_revision);
+  if (!cb1_hdr10_ai_set_coalesced_bounds(m_context,true))
+    return RecordStatus("analysis-configuration",CB1_AI_INVALID);
   return CB1_AI_READY;
 }
 
@@ -198,11 +200,13 @@ bool HDR10AISource::Presented(DVBRIDGE::SourceBinding binding, bool success)
   return true;
 }
 
-void HDR10AISource::DiscardBefore(DVBRIDGE::SourceBinding binding)
+void HDR10AISource::DiscardBefore(DVBRIDGE::SourceBinding binding, uint64_t now)
 {
   if (Matches(binding) && AwaitingPresentation() &&
       binding.picture > m_preparedBinding.picture)
   {
+    if (m_activation.CancelPrepared(m_prepared->id, now) == Decision::Native)
+      m_fallback = true;
     // Kodi discarded this image; no presentation state is committed.
     m_prepared.reset();
     m_preparedBinding = {};

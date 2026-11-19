@@ -218,6 +218,34 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
   // frame is loaded after every call to Configure().
   m_bValidated = false;
 
+#ifdef CB1_HAS_HDR10_AI
+  m_aiOutputPending = HDR10AILookahead() &&
+      DVBRIDGE::FrameOutputSettings().hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
+  if (m_aiOutputPending)
+  {
+    // Keep the GUI output until AI preparation selects DV or native HDR10.
+    m_dvRequested = m_passthroughHDR = m_hdrFboActive = false;
+    return true;
+  }
+#endif
+  return ConfigureVideoOutput(picture);
+}
+
+bool CLinuxRendererGLES::ConfigureVideoOutput(const VideoPicture& picture)
+{
+#ifdef CB1_HAS_HDR10_AI
+  if (m_aiOutputPending &&
+      KODI::WINDOWING::GBM::CWinSystemGbmGLESContext::DVBridgeRequested(&picture))
+  {
+    // Queue preparation already owns the final surface and its first DV frame.
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    m_dvRequested = true;
+    m_passthroughHDR = false;
+    m_hdrFboActive = window && window->BeginDVBridge();
+    return m_hdrFboActive;
+  }
+#endif
   if (!CServiceBroker::GetWinSystem()->SetVideoOutput(&picture))
   {
     CLog::Log(LOGWARNING, "LinuxRendererGLES::Configure: SetVideoOutput failed");
@@ -639,6 +667,7 @@ void CLinuxRendererGLES::DrawBlackBars()
 
 void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {
+  m_frameRendered = false;
 #ifdef CB1_HAS_HDR10_AI
   m_aiFrameRendered = false;
 #endif
@@ -712,6 +741,7 @@ void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigne
   }
 
   const bool rendered = Render(flags, index);
+  m_frameRendered = rendered;
 #ifdef CB1_HAS_HDR10_AI
   m_aiFrameRendered = rendered;
 #endif
@@ -724,6 +754,7 @@ void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigne
 
 void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsigned int alpha)
 {
+  m_frameRendered = false;
   if (!m_bConfigured)
     return;
 
@@ -765,6 +796,7 @@ void CLinuxRendererGLES::RenderUpdateVideo(bool clear, unsigned int flags, unsig
   }
 
   const bool rendered = Render(flags, index);
+  m_frameRendered = rendered;
 #ifdef CB1_HAS_HDR10_AI
   m_aiFrameRendered = rendered;
 #endif

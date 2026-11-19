@@ -52,10 +52,12 @@ public:
 
   void FlipPage(bool rendered, bool videoLayer, bool async);
 #ifdef HAVE_DVBRIDGE
-  bool FlipDVBridgePage(CDVBridgeState& state, bool restore, bool async = false);
+  bool FlipDVBridgePage(CDVBridgeState& state, bool restore, bool async = false,
+                        bool retainSignal = false);
   bool CompleteDVBridgePage(int timeoutMs = 0);
   bool SupportsNativeDVOutput(bool requireCurrentMode = true) const;
   bool SupportsDVOutputMode(bool requireCurrentMode = true) const;
+  bool RefreshDisplayInfoForVideo();
 #endif
 
   bool CanDoWindowed() override { return false; }
@@ -90,11 +92,14 @@ public:
   std::vector<std::string> GetConnectedOutputs() override;
 
 protected:
+  bool RequeueOutputProperties();
+  std::optional<uint64_t> m_queuedColorspace, m_queuedHdrMetadata;
   void OnLostDevice();
 
 #ifdef HAVE_DVBRIDGE
   bool StageOrdinaryHDR10Recovery();
   void CompleteOrdinaryHDR10Recovery();
+  const UTILS::CDisplayInfo* GetDisplayInfo() const { return m_info.get(); }
 #endif
   std::unique_ptr<CVideoSync> GetVideoSync(CVideoReferenceClock* clock) override;
 
@@ -115,6 +120,7 @@ private:
   KODI::UTILS::Colorimetry m_colorimetry = KODI::UTILS::Colorimetry::DEFAULT;
 
   std::unique_ptr<UTILS::CDisplayInfo> m_info;
+  std::vector<uint8_t> m_displayEdid;
 };
 
 } // namespace GBM

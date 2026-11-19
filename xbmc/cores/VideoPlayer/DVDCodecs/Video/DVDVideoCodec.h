@@ -24,6 +24,7 @@ extern "C" {
 #include <map>
 
 class CSetting;
+class VideoSourceSideData;
 
 // when modifying these structures, make sure you update all codecs accordingly
 #define FRAME_TYPE_UNDEF 0
@@ -69,6 +70,7 @@ public:
   StreamHdrType hdrType;
   StreamHdrType hdrTypeAlt;
   std::string strDVELType;
+  std::shared_ptr<const VideoSourceSideData> sourceSideData;
   CDVMetadataBuffer doviMetadata;
   DVBRIDGE::SourceInfo doviSourceInfo{};
   DVBRIDGE::SourceBinding doviSourceBinding{};
@@ -124,6 +126,11 @@ class CDVDCodecOptions;
 class CDVDVideoCodec
 {
 public:
+  void SetVideoProcessingGeneration(uint64_t generation)
+  {
+    m_videoProcessingGeneration = generation;
+    m_videoSourceSerial = 0;
+  }
 
   enum VCReturn
   {
@@ -256,6 +263,8 @@ public:
 
 protected:
   CProcessInfo &m_processInfo;
+  uint64_t m_videoProcessingGeneration{};
+  uint64_t m_videoSourceSerial{};
 };
 
 // callback interface for ffmpeg hw accelerators

@@ -30,7 +30,7 @@ public:
       const DVBRIDGE::OutputPreferences& preferences, uint64_t now, cb1_ai_result* result,
       bool required = true);
   bool Presented(DVBRIDGE::SourceBinding binding, bool success);
-  void DiscardBefore(DVBRIDGE::SourceBinding binding);
+  void DiscardBefore(DVBRIDGE::SourceBinding binding, uint64_t now);
   Decision Preparation(DVBRIDGE::SourceBinding binding, cb1_ai_status status, uint64_t now);
   bool FallbackEvent() { return m_activation.TakeFallbackEvent(); }
   bool Active() const { return m_active && !m_fallback; }

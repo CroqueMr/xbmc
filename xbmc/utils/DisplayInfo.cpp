@@ -113,6 +113,12 @@ void CDisplayInfo::Parse()
               // as the kernel. This UI capability remains libdisplay-info's.
               break;
             }
+            case DI_CTA_DATA_BLOCK_VIDEO_CAP:
+            {
+              const auto* cap = di_cta_data_block_get_video_cap(block);
+              m_rgbQuantizationSelectable |= cap && cap->selectable_rgb_quantization_range;
+              break;
+            }
             case DI_CTA_DATA_BLOCK_COLORIMETRY:
             {
               m_colorimetry = di_cta_data_block_get_colorimetry(block);

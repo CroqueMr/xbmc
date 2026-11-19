@@ -16,6 +16,7 @@ class PlaybackNotification
 public:
   static bool Pending() { return m_pending.load(std::memory_order_relaxed); }
   static uint64_t Generation() { return Pending() ? m_generation.load(std::memory_order_relaxed) : 0; }
+  static void ArmMasterRecovery() { m_masterRecovery.store(true); }
   static void StartVideo()
   {
     const auto component=CServiceBroker::GetSettingsComponent();
@@ -23,6 +24,7 @@ public:
     const bool enabled=settings && settings->GetBool("dvbridge.startupmode");
     std::lock_guard lock(m_mutex);
     m_generation.fetch_add(1,std::memory_order_relaxed);
+    m_masterRecovery.store(false);
     m_nativeFloor=nativeRevision.load(std::memory_order_relaxed);
     m_ordinaryFrame=false;
     m_nativeFrame={};
@@ -34,6 +36,7 @@ public:
     m_ordinaryFrame=false;
     m_nativeFrame={};
     m_pending.store(false,std::memory_order_relaxed);
+    m_masterRecovery.store(false);
   }
   static void RenderedOrdinary(uint64_t generation)
   {
@@ -69,6 +72,9 @@ public:
   }
   template<class Output> static void NativeOutputAccepted(const Output& output)
   {
+    if ((output.flags & CDVPlaybackInfo::HDMI) && output.requested==5 && output.effective==1 &&
+        m_masterRecovery.exchange(false))
+      EmitMasterRecovery();
     if (!Pending()) return;
     if (!(output.flags & (CDVPlaybackInfo::HDMI | CDVPlaybackInfo::HDR10))) return;
     {
@@ -83,16 +89,18 @@ public:
     if constexpr (requires { output.hdr10AI; })
       if (output.hdr10AI)
       {
-        EmitAI(output.effective,output.enhancement);
+        EmitAI(output.effective);
         return;
       }
 #endif
     Emit(CDVPlaybackInfo::Mode(output));
   }
   static void Emit(const std::string& text);
-  static void EmitAI(int mode,int preset);
+  static void EmitAI(int mode);
   static void HDR10Recovery();
+  static void EmitMasterRecovery();
 private:
+  inline static std::atomic<bool> m_masterRecovery{false};
   inline static std::atomic<bool> m_pending{false};
   inline static std::atomic<uint64_t> m_generation{0};
   inline static std::mutex m_mutex;

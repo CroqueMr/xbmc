@@ -21,6 +21,7 @@
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDCodecs/Video/DVDVideoCodecFFmpeg.h"
 #include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "settings/AdvancedSettings.h"
@@ -261,6 +262,9 @@ void CVideoPlayerVideo::OpenStream(CDVDStreamInfo& hint, std::unique_ptr<CDVDVid
   }
 
   m_pVideoCodec = std::move(codec);
+  if (m_pVideoCodec)
+    m_pVideoCodec->SetVideoProcessingGeneration(
+        CServiceBroker::GetDataCacheCore().ResetVideoProcessingInfo());
   m_hints = hint;
 
   // A decoder only fills this in when the stream has views of its own to declare, and
@@ -509,6 +513,8 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_RESET))
     {
+      const auto generation=CServiceBroker::GetDataCacheCore().ResetVideoProcessingInfo();
+      if (m_pVideoCodec) m_pVideoCodec->SetVideoProcessingGeneration(generation);
       if(m_pVideoCodec)
         m_pVideoCodec->Reset();
 
@@ -525,6 +531,8 @@ void CVideoPlayerVideo::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH)) // private message sent by (CVideoPlayerVideo::Flush())
     {
+      const auto generation=CServiceBroker::GetDataCacheCore().ResetVideoProcessingInfo();
+      if (m_pVideoCodec) m_pVideoCodec->SetVideoProcessingGeneration(generation);
       bool sync = std::static_pointer_cast<CDVDMsgBool>(pMsg)->m_value;
       if(m_pVideoCodec)
         m_pVideoCodec->Reset();
@@ -719,6 +727,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       SendMessage(msg, 10);
     }
 
+    m_pVideoCodec->SetVideoProcessingGeneration(
+        CServiceBroker::GetDataCacheCore().ResetVideoProcessingInfo());
     m_pVideoCodec->Reset();
     m_packets.clear();
     //picture.iFlags &= ~DVP_FLAG_ALLOCATED;
@@ -735,6 +745,8 @@ bool CVideoPlayerVideo::ProcessDecoderOutput(double &frametime, double &pts)
       SendMessage(msg, 10);
     }
 
+    m_pVideoCodec->SetVideoProcessingGeneration(
+        CServiceBroker::GetDataCacheCore().ResetVideoProcessingInfo());
     m_pVideoCodec->Reopen();
     m_packets.clear();
     m_renderManager.DiscardBuffer();
@@ -973,7 +985,7 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
 #endif
 #ifdef HAVE_DVBRIDGE
   if (HandleDVPlaybackFailure(pPicture)) return OUTPUT_ABORT;
-  DVBRIDGE::StreamTelemetry::SourceBits(pPicture->colorBits, pPicture->pixelFormat);
+  DVBRIDGE::StreamTelemetry::SourceBits(pPicture->colorBits,pPicture->pixelFormat,pPicture->doviSourceInfo);
   if (DVBRIDGE::DiagnosticsEnabled() && CDVPlaybackInfo::presented.load())
   {
     ++m_diagnosticPictures;
@@ -1002,8 +1014,7 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
       m_diagnosticTransitions = 0;
     }
   }
-  if (DVBRIDGE::StreamTelemetry::observing.load(std::memory_order_relaxed))
-    DVBRIDGE::StreamTelemetry::Counters(m_iDroppedFrames, m_renderManager.GetSkippedFrames());
+  DVBRIDGE::StreamTelemetry::Counters(m_iDroppedFrames, m_renderManager.GetSkippedFrames());
 #endif
   m_bAbortOutput = false;
 

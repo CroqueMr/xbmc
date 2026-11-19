@@ -15,6 +15,7 @@
 #include "cores/VideoPlayer/DVDStreamInfo.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 #ifdef HAVE_DVBRIDGE
@@ -64,6 +65,9 @@ public:
 #endif
 
 protected:
+  void CaptureSourceSideData(VideoPicture* picture);
+  std::optional<AVMasteringDisplayMetadata> m_sourceMasteringMetadata;
+  std::optional<AVContentLightMetadata> m_sourceLightMetadata;
   CDVDVideoCodec::VCReturn GetBasePicture(VideoPicture* picture);
 #ifdef HAVE_DVBRIDGE
   std::shared_ptr<dvbridge_fel> m_dvFel;

@@ -271,7 +271,8 @@ bool CEGLContextUtils::InitializeDisplay(EGLint renderingApi)
   return true;
 }
 
-bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool hdr, int alpha)
+bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool hdr, int alpha,
+                                   bool floating)
 {
   EGLint numMatched{0};
 
@@ -295,8 +296,11 @@ bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool
                {EGL_RENDERABLE_TYPE, renderableType}});
 
   EGLConfig* currentConfig(hdr ? &m_eglHDRConfig : &m_eglConfig);
+  const EGLConfig previousConfig = *currentConfig;
+  if (floating && !CEGLUtils::HasExtension(m_eglDisplay, "EGL_EXT_pixel_format_float"))
+    return false;
 
-  if (hdr)
+  if (hdr || floating)
 #if EGL_EXT_pixel_format_float
     attribs.Add({{EGL_COLOR_COMPONENT_TYPE_EXT, EGL_COLOR_COMPONENT_TYPE_FLOAT_EXT}});
 #else
@@ -317,7 +321,7 @@ bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool
     if (!hdr)
     {
       CEGLUtils::Log(LOGERROR, errorMsg);
-      if (!m_outputSurfaceTransaction)
+      if (!m_outputSurfaceTransaction && !floating)
         Destroy();
     }
     else
@@ -342,6 +346,7 @@ bool CEGLContextUtils::ChooseConfig(EGLint renderableType, EGLint visualId, bool
 
   if (visualId != 0 && visualId != id)
   {
+    *currentConfig = previousConfig;
     CLog::Log(LOGDEBUG, "failed to find EGL config with EGL_NATIVE_VISUAL_ID={}", visualId);
     return false;
   }
