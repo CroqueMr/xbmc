@@ -2286,6 +2286,7 @@ CVaapiRenderPicture* COutput::ProcessPicture(CVaapiProcessedPicture &pic)
 {
   CVaapiRenderPicture *retPic;
   retPic = m_bufferPool->GetVaapi();
+  retPic->decodeCompleted = false;
   retPic->DVDPic.SetParams(pic.DVDPic);
 
   // Stamp the surface fourcc so renderers can dispatch sampling per-fourcc
@@ -2301,11 +2302,12 @@ CVaapiRenderPicture* COutput::ProcessPicture(CVaapiProcessedPicture &pic)
 
   if (pic.source->UseVideoSurface())
   {
-    vaSyncSurface(m_config.dpy, pic.videoSurface);
+    retPic->decodeCompleted = vaSyncSurface(m_config.dpy, pic.videoSurface) == VA_STATUS_SUCCESS;
     pic.id = m_bufferPool->procPicId++;
     m_bufferPool->processedPicsAway.push_back(pic);
     retPic->procPic = pic;
     retPic->vadsp = m_config.dpy;
+    retPic->decodeSurfaceCount = m_config.maxReferences;
   }
   else
   {
