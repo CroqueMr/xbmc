@@ -13,6 +13,7 @@
 
 #include "RenderFactory.h"
 #include "ServiceBroker.h"
+#include "cores/DataCacheCore.h"
 #include "VideoShaders/VideoFilterShaderGLES.h"
 #include "VideoShaders/YUV2RGBShaderGLES.h"
 #include "VideoShaders/dither.h"
@@ -1852,6 +1853,17 @@ bool CLinuxRendererGLES::RenderShaderUpscaler(int index, int preset)
 
 bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 {
+#ifdef HAVE_DVBRIDGE
+  // A decoder flush can leave the previous picture selected until new video arrives.
+  if (const auto& picture = m_buffers[index].doviSourcePicture;
+      picture && picture->doviSourceInfo.informationGeneration &&
+      picture->doviSourceInfo.informationGeneration !=
+          CServiceBroker::GetDataCacheCore().GetVideoProcessingGeneration())
+  {
+    return false;
+  }
+#endif
+
   // obtain current field, if interlaced
   if( flags & RENDER_FLAG_TOP)
   {

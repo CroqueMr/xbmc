@@ -462,6 +462,16 @@ void CWinSystemGbmGLESContext::PublishVideoSource(
 
 void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 {
+#ifdef HAVE_DVBRIDGE
+  // Keep the last scanout during a flush and cancel only unsubmitted output.
+  if ((m_cb1FramePending || m_dvFrame) && m_dvBridge)
+  {
+    const auto generation = m_dvBridge->PendingSourceGeneration();
+    if (generation && generation != CServiceBroker::GetDataCacheCore().GetVideoProcessingGeneration())
+      DiscardDVBridgeFrame();
+  }
+#endif
+
   if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
       drm && drm->IsSDRRestorePending())
     CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
