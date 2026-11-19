@@ -24,6 +24,7 @@
 #include "messaging/ApplicationMessenger.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
+#include "rendering/RenderSystem.h"
 #include "settings/DisplaySettings.h"
 #include "settings/Settings.h"
 #include "settings/SettingsComponent.h"
@@ -351,7 +352,7 @@ void CWinSystemGbm::UpdateResolutions()
 
     CServiceBroker::GetWinSystem()->GetGfxContext().ResetOverscan(current);
     CDisplaySettings::GetInstance().AddResolutionInfo(current);
-    CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = current;
+    CDisplaySettings::GetInstance().SetDesktopResolutionInfo(current);
 
     CLog::Log(LOGINFO, "Found resolution {}x{} with {}x{}{} @ {:f} Hz{}", current.iWidth,
               current.iHeight, current.iScreenWidth, current.iScreenHeight,
@@ -371,7 +372,7 @@ void CWinSystemGbm::UpdateResolutions()
           current.iWidth == res.iWidth && current.iHeight == res.iHeight &&
           current.fRefreshRate == res.fRefreshRate && current.dwFlags == res.dwFlags)
       {
-        CDisplaySettings::GetInstance().GetResolutionInfo(RES_DESKTOP) = res;
+        CDisplaySettings::GetInstance().SetDesktopResolutionInfo(res);
       }
 
       // The layout matters as much as the geometry here: without it a half 3D mode prints
@@ -999,25 +1000,50 @@ bool CWinSystemGbm::RefreshDisplayInfoForVideo()
   return true;
 }
 
+namespace
+{
+double DVOutputTimingRate(const drmModeModeInfo* mode)
+{
+  if (!mode || !mode->hdisplay || (mode->hdisplay & 1) || !mode->vdisplay ||
+      mode->hdisplay > 3840 || mode->vdisplay > 2160 ||
+      uint64_t(mode->hdisplay) * mode->vdisplay < 5 * 3072u ||
+      mode->vscan > 1 ||
+      (mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN | DRM_MODE_FLAG_3D_MASK)))
+    return 0.0;
+  const double rate = mode->htotal && mode->vtotal
+                          ? mode->clock * 1000.0 / mode->htotal / mode->vtotal
+                          : 0.0;
+  return CResolutionUtils::IsCB1RefreshRate(rate) ? rate : 0.0;
+}
+} // namespace
+
 bool CWinSystemGbm::SupportsDVOutputMode(bool requireCurrentMode) const
 {
   if (!m_DRM) return false;
-  const auto usable = [](const drmModeModeInfo* mode) {
-    if (!mode || !mode->hdisplay || (mode->hdisplay & 1) || !mode->vdisplay ||
-        mode->hdisplay > 3840 || mode->vdisplay > 2160 ||
-        uint64_t(mode->hdisplay) * mode->vdisplay < 5 * 3072u ||
-        (mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN))) return false;
-    const double rate = mode->htotal && mode->vtotal ?
-        mode->clock * 1000.0 / mode->htotal / mode->vtotal : 0.0;
-    return CResolutionUtils::IsCB1RefreshRate(rate);
-  };
-  if (usable(m_DRM->GetSelectedMode())) return true;
+  if (DVOutputTimingRate(m_DRM->GetSelectedMode())) return true;
   if (requireCurrentMode) return false;
   auto* connector = m_DRM->GetConnector();
   if (!connector || !connector->IsConnected()) return false;
   for (int i = 0; i < connector->GetModesCount(); ++i)
-    if (usable(connector->GetModeForIndex(i))) return true;
+    if (DVOutputTimingRate(connector->GetModeForIndex(i))) return true;
   return false;
+}
+
+std::vector<CWinSystemGbm::DVOutputTiming> CWinSystemGbm::GetDVOutputTimings() const
+{
+  std::vector<DVOutputTiming> timings;
+  auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (!connector || !connector->IsConnected())
+    return timings;
+
+  for (int index = 0; index < connector->GetModesCount(); ++index)
+  {
+    const auto* mode = connector->GetModeForIndex(index);
+    const double refresh = DVOutputTimingRate(mode);
+    if (refresh > 0.0)
+      timings.push_back({index, mode->hdisplay, mode->vdisplay, refresh});
+  }
+  return timings;
 }
 
 bool CWinSystemGbm::SupportsNativeDVOutput(bool requireCurrentMode) const
@@ -1122,6 +1148,12 @@ bool CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async,
     DeferConnectorPreferences();
 
   auto atomic = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  bool wideTransition = false;
+  if (!StageNativeSDRSignal(rendered, wideTransition))
+  {
+    if (auto gui = CServiceBroker::GetGUI()) gui->GetWindowManager().MarkDirty();
+    return false;
+  }
   const bool transactional = rendered && atomic && (carrier || atomic->HasColorRangeTransition());
   struct gbm_bo* bo = nullptr;
 
@@ -1145,6 +1177,19 @@ bool CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async,
     auto& surface = m_GBM->GetDevice().GetSurface();
     surface.CompleteTransactionalBuffer(atomic->LastPageAccepted());
     if (atomic->LastPageAccepted()) surface.EndTransactionalMode();
+  }
+
+  if (rendered && atomic)
+  {
+    if (atomic->LastPageAccepted())
+      m_nativeSDRSubmitted = m_nativeSDRActive;
+    else if (wideTransition)
+    {
+      // Retain the previous framebuffer and render the next frame into BT.709.
+      m_queuedColorspace.reset();
+      m_nativeSDRRejected = true;
+      if (auto gui = CServiceBroker::GetGUI()) gui->GetWindowManager().MarkDirty();
+    }
   }
 
   if (ConnectorPreferencesAllowed())
@@ -1296,8 +1341,22 @@ bool CWinSystemGbm::SetVideoOutput(const VideoPicture* videoPicture)
                       : m_DRM->FindGuiPlane(current->GetFormat(), current->GetModifier());
 }
 
-void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture, bool sdrToBT709)
+void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture, bool nativeSDRShader)
 {
+  const bool nativeSDR = nativeSDRShader && videoPicture &&
+                         videoPicture->hdrType == StreamHdrType::HDR_TYPE_NONE &&
+                         videoPicture->color_transfer != AVCOL_TRC_SMPTE2084 &&
+                         videoPicture->color_transfer != AVCOL_TRC_ARIB_STD_B67;
+  m_nativeSDRSource = nativeSDR && videoPicture->color_primaries == AVCOL_PRI_BT2020;
+  m_nativeSDRRejected = false;
+  if (!m_nativeSDRSource)
+    m_nativeSDRActive = false;
+  if (!m_nativeSDRSource && m_nativeSDRCompositor)
+  {
+    SetGuiCompositing(0);
+    m_nativeSDRCompositor = false;
+  }
+
   m_queuedColorspace.reset();
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   if (!drm)
@@ -1317,15 +1376,112 @@ void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture, bool sdrToB
   if (videoPicture)
   {
     colorimetry = KODI::UTILS::GetColorimetry(*videoPicture);
-    if (sdrToBT709 && videoPicture->hdrType == StreamHdrType::HDR_TYPE_NONE &&
-        videoPicture->color_transfer != AVCOL_TRC_SMPTE2084 &&
-        videoPicture->color_transfer != AVCOL_TRC_ARIB_STD_B67)
+    if (nativeSDR)
       colorimetry = KODI::UTILS::Colorimetry::BT709_YCC;
   }
 
   m_colorimetry = colorimetry;
 
   ApplyColorspace();
+}
+
+std::optional<uint64_t> CWinSystemGbm::NativeSDRBT2020Colorspace() const
+{
+  const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  auto* connector = drm ? drm->GetConnector() : nullptr;
+  if (!connector || !connector->IsConnected() || !connector->GetType().starts_with("HDMI") ||
+      !connector->SupportsProperty("Colorspace") ||
+      connector->IsPropertyImmutable("Colorspace").value_or(false) || !m_info)
+    return {};
+
+  const auto target = IsYuvRequested() ? KODI::UTILS::Colorimetry::BT2020_YCC :
+                                        KODI::UTILS::Colorimetry::BT2020_RGB;
+  if (!m_info->SupportsColorimetry(target))
+    return {};
+  return connector->GetPropertyEnumValue("Colorspace", ColorimetryMap.at(target));
+}
+
+bool CWinSystemGbm::BeginFrameGuiComposite(bool guiWillRender)
+{
+  const bool wasNative = m_nativeSDRCompositor;
+  // Only the renderer that owns a single RGB scanout can compose both layers
+  // into BT.2020. Keep the existing CMS and CB1 transport owners independent.
+  const bool wide = m_nativeSDRSource && !m_nativeSDRRejected && ConnectorPreferencesAllowed() &&
+                    m_DRM && m_DRM->GetVideoPlane() && !m_DRM->GetGuiPlane() &&
+                    !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
+                        "videoscreen.cmsenabled") &&
+                    NativeSDRBT2020Colorspace().has_value();
+  if (wide && (!m_nativeSDRCompositor || !IsHdrComposite()))
+    m_nativeSDRCompositor = SetGuiCompositing(AVCOL_TRC_BT2020_10);
+  else if (!wide && m_nativeSDRCompositor)
+  {
+    SetGuiCompositing(0);
+    m_nativeSDRCompositor = false;
+  }
+
+  const bool compositing = BeginGuiComposite(guiWillRender);
+  m_nativeSDRActive = wide && m_nativeSDRCompositor && compositing;
+  if (wide && !m_nativeSDRActive)
+  {
+    SetGuiCompositing(0);
+    m_nativeSDRCompositor = false;
+    m_nativeSDRRejected = true;
+  }
+  if (wasNative != m_nativeSDRCompositor)
+  {
+    // BeginRender ran before negotiation. Match the GUI shaders to the FBO
+    // so the first frame also applies display range only once.
+    GetRenderSystem()->UpdateGUIShaderColorState();
+  }
+  return compositing;
+}
+
+bool CWinSystemGbm::StageNativeSDRSignal(bool rendered, bool& wideTransition)
+{
+  wideTransition = false;
+  if (!m_nativeSDRSubmitted && (!rendered || (!m_nativeSDRActive && !m_nativeSDRRejected)))
+    return true;
+
+  const bool wide = rendered ? m_nativeSDRActive.load() : m_nativeSDRSubmitted;
+  const auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+  auto* connector = drm ? drm->GetConnector() : nullptr;
+  if (!connector || !connector->SupportsProperty("Colorspace"))
+  {
+    m_nativeSDRSubmitted = false;
+    return !wide;
+  }
+
+  const auto committed = connector->GetPropertyValue("Colorspace");
+  if (wide)
+  {
+    const auto target = NativeSDRBT2020Colorspace();
+    if (!target || !drm->AddProperty(connector, "Colorspace", *target))
+    {
+      m_queuedColorspace.reset();
+      m_nativeSDRRejected = true;
+      return false;
+    }
+    m_queuedColorspace = target;
+  }
+  else
+  {
+    // An earlier wide request may have replaced the ordinary BT.709 request
+    // before it was accepted, even when no wide frame was ever submitted.
+    if (!m_nativeSDRSubmitted && m_queuedColorspace && m_queuedColorspace == committed)
+      return true;
+    ApplyColorspace();
+    if (!m_queuedColorspace)
+      return false;
+  }
+
+  const bool tagChanged = m_queuedColorspace != committed;
+  wideTransition = wide && (tagChanged || !drm->IsSelectedModeCommitted());
+  // Never attach a framebuffer in the new gamut to the old atomic request.
+  if (tagChanged || wideTransition)
+    drm->SetColorRangeTransition();
+  if (tagChanged)
+    drm->RequestModeset();
+  return true;
 }
 
 void CWinSystemGbm::ApplyColorspace()
@@ -1388,9 +1544,11 @@ void CWinSystemGbm::ApplyColorspace()
     CLog::LogF(LOGDEBUG, "setting connector colorspace to {} (source {}, {} output)",
                KODI::UTILS::ColorimetryToString(scanoutColorimetry),
                KODI::UTILS::ColorimetryToString(colorimetry), yuv ? "YCbCr" : "RGB");
-    drm->AddProperty(connector, "Colorspace", colorspace.value());
-    m_queuedColorspace = colorspace;
-    drm->SetActive(true);
+    if (drm->AddProperty(connector, "Colorspace", *colorspace))
+    {
+      m_queuedColorspace = colorspace;
+      drm->SetActive(true);
+    }
   }
 }
 

@@ -9,12 +9,21 @@
 #pragma once
 
 #include <cstring>
+#include <optional>
 #include <stdint.h>
 
 class CAEDeviceInfo;
 
+struct AEELDDtsCapabilities
+{
+  bool core;
+  bool hd;
+};
+
 class CAEELDParser {
 public:
-  static void Parse(const uint8_t *data, size_t length, CAEDeviceInfo& info);
+  static std::optional<AEELDDtsCapabilities> Parse(const uint8_t* data,
+                                                    size_t length,
+                                                    CAEDeviceInfo& info);
 };
 

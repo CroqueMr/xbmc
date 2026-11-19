@@ -96,9 +96,13 @@ public:
   DVBRIDGE::OutputCapabilities GetDVOutputCapabilities(const VideoPicture* picture,
       bool allowModeSwitch = false) const;
   bool CanRetainDVSource() const;
+  bool SupportsDVOutputTiming(const RESOLUTION_INFO& mode) const;
+  RESOLUTION ChooseHDR10FallbackResolution(RESOLUTION chosen) const;
   bool CompleteDVModeSwitch(const VideoPicture& picture);
   std::optional<RESOLUTION> PlayerLedResolution(double fps, bool atStartup = false) const;
   int PlayerLedResolutionReason(RESOLUTION resolution, int preference) const;
+  std::optional<RESOLUTION> PlayerLedStartupHDR10Resolution(RESOLUTION resolution,
+                                                           int preference) const;
   bool LldvSupportsPlaybackTiming(double fps, bool requireCurrentMode = false) const;
   bool DVModeSwitchDeferred()
   {
@@ -172,7 +176,7 @@ public:
   {
     return HasDVBridgeScreenshot() && m_sdrConversion;
   }
-  bool ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out);
+  bool ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out, bool videoOnly = false);
   bool RenderDVBridge(const CDVBridgeGLES::Layer& layer, std::shared_ptr<AVFrame> enhancement,
                        DVBRIDGE::SourceBinding enhancementBinding,
                        const CDVMetadataBuffer& metadata,
@@ -301,6 +305,7 @@ private:
 #endif
   DVBRIDGE::OutputCapabilities m_dvCapabilities;
   bool m_dvAvailableNativeDV{}, m_dvAvailableHDR10{};
+  std::vector<DVOutputTiming> m_dvOutputTimings;
   std::atomic<uint64_t> m_hdr10MaxBpc{0};
   DVBRIDGE::LldvConnectorStatus m_dvLldvStatus{};
   XbmcThreads::EndTime<> m_lldvEdidRefresh;

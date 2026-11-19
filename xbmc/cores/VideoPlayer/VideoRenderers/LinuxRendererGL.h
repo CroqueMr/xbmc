@@ -14,6 +14,8 @@
 
 #include "FrameBufferObject.h"
 #include "cores/VideoSettings.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/DVMetadataBuffer.h"
+#include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "RenderInfo.h"
 #include "BaseRenderer.h"
 #include "ColorManager.h"
@@ -225,6 +227,7 @@ protected:
   ETONEMAPMETHOD m_toneMapMethod = VS_TONEMAPMETHOD_OFF;
   bool m_passthroughHDR = false;
   bool m_hdrFboActive{false};
+  bool m_shaderSDRBT2020{false};
   bool m_pboSupported = true;
   bool m_pboUsed = false;
   bool m_nonLinStretch = false;

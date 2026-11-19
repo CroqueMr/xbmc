@@ -66,7 +66,9 @@ public:
   const RESOLUTION_INFO& GetResolutionInfo(RESOLUTION resolution) const;
   RESOLUTION_INFO& GetResolutionInfo(size_t index);
   RESOLUTION_INFO& GetResolutionInfo(RESOLUTION resolution);
-  size_t ResolutionInfoSize() const { return m_resolutions.size(); }
+  RESOLUTION_INFO GetResolutionInfoCopy(RESOLUTION resolution) const;
+  void SetDesktopResolutionInfo(const RESOLUTION_INFO& resolution);
+  size_t ResolutionInfoSize() const;
   void AddResolutionInfo(const RESOLUTION_INFO &resolution);
 
   const RESOLUTION_INFO& GetCurrentResolutionInfo() const { return GetResolutionInfo(m_currentResolution); }

@@ -935,7 +935,7 @@ void CApplication::Render()
        CServiceBroker::GetGUI()->GetWindowManager().HasDirtyRegions()))
     m_skipGuiRender = false;
   const bool guiWillRender = appPower->GetRenderGUI() && !m_skipGuiRender;
-  bool compositing = CServiceBroker::GetWinSystem()->BeginGuiComposite(guiWillRender);
+  bool compositing = CServiceBroker::GetWinSystem()->BeginFrameGuiComposite(guiWillRender);
 
   if (guiWillRender)
   {

@@ -19,6 +19,7 @@ public:
 
   void SetProjection(const GLfloat* proj) { m_proj = proj; }
   void SetSdrPeak(float peak) { m_sdrPeak = peak; }
+  void SetSDRBT2020(bool enabled) { m_sdrBT2020 = enabled; }
 
   GLint GetPosLoc() { return m_hPos; }
   GLint GetTexLoc() { return m_hTex; }
@@ -36,4 +37,6 @@ private:
   GLint m_hSamp{-1};
   GLint m_hProj{-1};
   GLint m_hSdrPeak{-1};
+  bool m_sdrBT2020{false};
+  GLint m_hSDRBT2020{-1};
 };

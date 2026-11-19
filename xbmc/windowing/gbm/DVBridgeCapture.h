@@ -8,5 +8,6 @@ namespace KODI::WINDOWING::GBM
 {
 bool HasDVBridgeScreenshot(CWinSystemBase& window);
 bool IsDVBridgeScreenshotSDR(CWinSystemBase& window);
-bool ReadDVBridgeScreenshot(CWinSystemBase& window, KODI::RENDERING::CAPTURE::ReadbackBuffer& out);
+bool ReadDVBridgeScreenshot(CWinSystemBase& window, KODI::RENDERING::CAPTURE::ReadbackBuffer& out,
+                            bool videoOnly = false);
 }

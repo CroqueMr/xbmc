@@ -1232,6 +1232,8 @@ bool CWinSystemGbmGLESContext::ConfigureGuiCompositing(int colorTransfer, float 
       m_guiCompositing = false;
       return false;
     }
+    const bool nativeSDR = colorTransfer == AVCOL_TRC_BT2020_10;
+    m_compositeShader->SetSDRBT2020(nativeSDR, nativeSDR);
     m_guiSDRGamma = gamma;
   }
   else
@@ -1640,7 +1642,10 @@ void CWinSystemGbmGLESContext::CompositeGui()
   m_compositeShader->SetInputPQ(false);
   m_compositeShader->SetOutputRange(1.0f, 0.0f);
   m_compositeShader->SetPlayerLed();
-  m_compositeShader->SetSDRBT2020(false);
+#ifdef HAVE_DVBRIDGE
+  if (m_sdrConversion)
+    m_compositeShader->SetSDRBT2020(false);
+#endif
 
   glDisableVertexAttribArray(posLoc);
   glDisableVertexAttribArray(texLoc);
@@ -1751,6 +1756,9 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
   const auto previous = [&] {
     std::lock_guard lock(m_dvCapabilityMutex);
     auto prior = m_dvLldvStatus;
+    if (lldvStatus.connectorId != prior.connectorId ||
+        lldvStatus.edidGeneration != prior.edidGeneration)
+      m_dvOutputTimings.clear();
     m_dvLldvStatus = lldvStatus;
     return prior;
   }();
@@ -1809,6 +1817,7 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
   }
   const bool availableNativeDV = SupportsNativeDVOutput(false);
   const bool availableHDR10 = SupportsHDR10Conversion(false);
+  auto timings = GetDVOutputTimings();
   std::lock_guard lock(m_dvCapabilityMutex);
   if (lldvStatus.edidGeneration != previous.edidGeneration ||
       lldvStatus.connectorId != previous.connectorId ||
@@ -1833,6 +1842,7 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
   m_dvCapabilities = caps;
   m_dvAvailableNativeDV = availableNativeDV;
   m_dvAvailableHDR10 = availableHDR10;
+  m_dvOutputTimings = std::move(timings);
   if (DVBRIDGE::DiagnosticsEnabled())
   {
     try
@@ -1851,6 +1861,57 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
     }
     catch (...) {}
   }
+}
+
+bool CWinSystemGbmGLESContext::SupportsDVOutputTiming(const RESOLUTION_INFO& mode) const
+{
+  if (mode.dwFlags & D3DPRESENTFLAG_MODEMASK)
+    return false;
+
+  const auto* end = mode.strId.data() + mode.strId.size();
+  int index = -1;
+  const auto parsed = std::from_chars(mode.strId.data(), end, index);
+  if (parsed.ec != std::errc{} || parsed.ptr != end || index < 0)
+    return false;
+
+  // The connector's mode indices can change before Kodi rebuilds its resolution catalogue.
+  std::lock_guard lock(m_dvCapabilityMutex);
+  return std::ranges::any_of(m_dvOutputTimings, [&](const DVOutputTiming& timing) {
+    return timing.index == index && timing.width == mode.iScreenWidth &&
+           timing.height == mode.iScreenHeight && std::abs(timing.refresh - mode.fRefreshRate) < 0.01;
+  });
+}
+
+RESOLUTION CWinSystemGbmGLESContext::ChooseHDR10FallbackResolution(RESOLUTION chosen) const
+{
+  const auto& display = CDisplaySettings::GetInstance();
+  const auto original = display.GetResolutionInfoCopy(chosen);
+  const auto advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
+  if (SupportsDVOutputTiming(original) || CResolutionUtils::HasWhitelist() ||
+      !advanced->m_videoAdjustRefreshOverrides.empty())
+    return chosen;
+  std::vector<RESOLUTION> candidates;
+  GetGfxContext().GetAllowedResolutions(candidates);
+  RESOLUTION best = chosen;
+  int bestArea = 0;
+  for (const RESOLUTION candidate : candidates)
+  {
+    const auto mode = display.GetResolutionInfoCopy(candidate);
+    if (std::abs(mode.fRefreshRate - original.fRefreshRate) < 0.01f &&
+        SupportsDVOutputTiming(mode))
+    {
+      const int area = mode.iScreenWidth * mode.iScreenHeight;
+      if (area > bestArea)
+      {
+        best = candidate;
+        bestArea = area;
+      }
+    }
+  }
+  if (best != chosen)
+    CLog::Log(LOGDEBUG, "CB1 HDR10 fallback: selected {} (original mode {})",
+              display.GetResolutionInfoCopy(best).strMode, original.strMode);
+  return best;
 }
 
 bool CWinSystemGbmGLESContext::CanRetainDVSource() const
@@ -1897,7 +1958,7 @@ std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedResolution(double f
   std::optional<RESOLUTION> rejected;
   for (size_t index = RES_DESKTOP; index < settings.ResolutionInfoSize(); ++index)
   {
-    const auto& mode = settings.GetResolutionInfo(index);
+    const auto mode = settings.GetResolutionInfoCopy(static_cast<RESOLUTION>(index));
     if (mode.iWidth == 3840 && mode.iHeight == 2160 &&
         mode.iScreenWidth == 3840 && mode.iScreenHeight == 2160 &&
         std::abs(mode.fRefreshRate - wanted) < 0.01 &&
@@ -1915,24 +1976,43 @@ std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedResolution(double f
 
 int CWinSystemGbmGLESContext::PlayerLedResolutionReason(RESOLUTION resolution, int preference) const
 {
+  const auto id = CDisplaySettings::GetInstance().GetResolutionInfoCopy(resolution).strId;
+  int modeIndex = -1;
+  const auto end = id.data() + id.size();
+  const auto parsed = std::from_chars(id.data(), end, modeIndex);
+  const bool validIndex = parsed.ec == std::errc{} && parsed.ptr == end && modeIndex >= 0;
+
   std::lock_guard lock(m_dvCapabilityMutex);
   if (resolution == RES_INVALID)
     return DVBRIDGE::LldvUnavailableLabel(m_dvLldvStatus, preference, false);
 
-  const auto& id = CDisplaySettings::GetInstance().GetResolutionInfo(resolution).strId;
-  int modeIndex = -1;
-  const auto end = id.data() + id.size();
-  const auto parsed = std::from_chars(id.data(), end, modeIndex);
-  if (parsed.ec != std::errc{} || parsed.ptr != end || modeIndex < 0)
-    return 41212;
   const auto& modes = m_dvLldvStatus.modeRejections;
-  const auto mode = std::ranges::find(modes, modeIndex, &std::pair<int, unsigned>::first);
-  if (mode == modes.end())
-    return 41212;
+  const auto mode = validIndex ? std::ranges::find(modes, modeIndex, &std::pair<int, unsigned>::first)
+                               : modes.end();
   auto target = m_dvLldvStatus;
-  target.currentTiming = true;
-  target.currentRejected = mode->second;
+  target.currentTiming = mode != modes.end();
+  target.currentRejected = target.currentTiming ? mode->second : 0;
   return DVBRIDGE::LldvUnavailableLabel(target, preference, false);
+}
+
+std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedStartupHDR10Resolution(
+    RESOLUTION resolution, int preference) const
+{
+  constexpr int timingUnavailable = 41212;
+  const int reason = PlayerLedResolutionReason(resolution, preference);
+  if (reason != DVBRIDGE::LLDV_DRIVER_REJECTED_LABEL && reason != timingUnavailable)
+    return std::nullopt;
+
+  const bool allowModeSwitch = resolution != RES_INVALID;
+  const auto target = allowModeSwitch ? ChooseHDR10FallbackResolution(resolution) : RES_INVALID;
+  if (allowModeSwitch &&
+      !SupportsDVOutputTiming(CDisplaySettings::GetInstance().GetResolutionInfoCopy(target)))
+    return std::nullopt;
+
+  const auto caps = GetDVOutputCapabilities(nullptr, allowModeSwitch);
+  if (!caps.hdr10 || caps.HDR10DepthLimited())
+    return std::nullopt;
+  return target;
 }
 
 bool CWinSystemGbmGLESContext::CompleteDVModeSwitch(const VideoPicture& picture)
@@ -3280,7 +3360,7 @@ bool KODI::WINDOWING::GBM::IsDVBridgeScreenshotSDR(CWinSystemBase& window)
   return gbm && gbm->IsDVBridgeScreenshotSDR();
 }
 
-bool CWinSystemGbmGLESContext::ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
+bool CWinSystemGbmGLESContext::ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out, bool videoOnly)
 {
   if (!m_dvFrame || !m_dvBridge)
   {
@@ -3293,13 +3373,16 @@ bool CWinSystemGbmGLESContext::ReadDVBridgeScreenshot(KODI::RENDERING::CAPTURE::
           m_guiCompositing, m_guiWillRender, m_nWidth, m_nHeight);
     return false;
   }
-  return m_dvBridge->ReadScreenshot(out);
+  // The other DV outputs have a packed carrier or display-linear RGB. Neither is BT.2020 PQ.
+  if (videoOnly && !m_hdrConversion && !m_dvBridge->UsesMasterSourceCarrier())
+    return false;
+  return m_dvBridge->ReadScreenshot(out, videoOnly);
 }
 
-bool KODI::WINDOWING::GBM::ReadDVBridgeScreenshot(CWinSystemBase& window, KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
+bool KODI::WINDOWING::GBM::ReadDVBridgeScreenshot(CWinSystemBase& window, KODI::RENDERING::CAPTURE::ReadbackBuffer& out, bool videoOnly)
 {
   auto* gbm = dynamic_cast<CWinSystemGbmGLESContext*>(&window);
-  return gbm && gbm->ReadDVBridgeScreenshot(out);
+  return gbm && gbm->ReadDVBridgeScreenshot(out, videoOnly);
 }
 
 bool CWinSystemGbmGLESContext::CB1AsyncAvailable() const
@@ -3372,10 +3455,33 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
     if (!CB1AsyncAvailable()) return false;
   }
   const auto capture = CServiceBroker::GetCaptureService();
-  const bool capturing = capture && !capture->TakeActive(
+  const auto preferences = DVBRIDGE::FrameOutputSettings(
+      !layer.sourceInfo.profile && layer.hdr10PlusSource,
+      !layer.sourceInfo.profile && layer.hlg);
+  bool capturing = capture && !capture->TakeActive(
       KODI::RENDERING::CAPTURE::CaptureContent::COMPOSITE).empty();
   const bool masterCapture=capturing && m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE;
-  if (masterCapture) m_dvBridge->InvalidateScreenshot();
+  if (masterCapture)
+    m_dvBridge->InvalidateScreenshot();
+  else if (capture && (m_hdrConversion || m_dvSelection.policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE))
+  {
+    // A paused frame may already have been consumed by scanout.
+    using namespace KODI::RENDERING::CAPTURE;
+    const auto requests = capture->TakeActive(CaptureContent::VIDEO);
+    if (!requests.empty())
+    {
+      const auto& spec = requests.front()->spec;
+      if (spec.cadence == CaptureCadence::ONESHOT && spec.format == CaptureFormat::NATIVE &&
+          !spec.width && !spec.height && (m_hdrConversion || CDVBridgeGLES::UsesMasterSourceCarrier(
+              m_dvSelection.policy.mode, preferences.masterIPT, metadata)))
+      {
+        m_dvBridge->InvalidateScreenshot();
+        // Direct HDR10 writes scanout only. Prepare its PQ RGB target for the video tap.
+        if (m_hdrConversion && !m_sdrConversion)
+          capturing = true;
+      }
+    }
+  }
   const bool guiAvailable = m_guiWillRender || CanReuseGuiComposite();
   const bool overlayFree = (!capturing || masterCapture) &&
       (!guiAvailable || GetGUIElementCount() == 0) && !m_dvOverlays;
@@ -3384,9 +3490,6 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
       m_previousSourceStream == layer.binding.stream &&
       DVBRIDGE::ContinuousPresentationPicture(layer.pts, m_previousSourcePts) &&
       m_dvSelection.reason == DVBRIDGE::OutputReason::None;
-  const auto preferences = DVBRIDGE::FrameOutputSettings(
-      !layer.sourceInfo.profile && layer.hdr10PlusSource,
-      !layer.sourceInfo.profile && layer.hlg);
   m_masterFramePeriodNs=m_continuousFrameEligible &&
       m_dvSelection.policy.mode==DVBRIDGE_MODE_MASTER_REFERENCE ?
       DVBRIDGE::MasterFramePeriodNs(CServiceBroker::GetDataCacheCore().GetVideoFps()) : 0;
@@ -4001,6 +4104,10 @@ bool CWinSystemGbmGLESContext::DestroyWindowSystem()
   if (!RetireDVContext()) return false;
   SelectPascalHDRMode(PascalHDRMode::None);
   m_pascalHDRScanout.reset();
+  {
+    std::lock_guard lock(m_dvCapabilityMutex);
+    m_dvOutputTimings.clear();
+  }
   if (!CWinSystemGbmEGLContext::DestroyWindowSystem()) return false;
   std::lock_guard lock(m_dvCapabilityMutex);
   const auto generation = m_dvCapabilities.generation + 1;
@@ -4063,7 +4170,8 @@ bool CWinSystemGbmGLESContext::CreateContext()
     const auto generation = m_dvCapabilities.generation + 1;
     m_dvCapabilities = {};
     m_dvAvailableNativeDV = m_dvAvailableHDR10 = false;
-  m_dvLldvStatus = {};
+    m_dvOutputTimings.clear();
+    m_dvLldvStatus = {};
     m_dvCapabilities.generation = generation;
     m_dvImportBinding = {};
     m_dvImportUsable = false;

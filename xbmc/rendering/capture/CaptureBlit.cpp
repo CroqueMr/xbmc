@@ -18,7 +18,17 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 
+#ifdef HAVE_DVBRIDGE
+#include "windowing/gbm/DVBridgeCapture.h"
+
+extern "C"
+{
+#include <libavutil/imgutils.h>
+}
+#endif
+
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -56,15 +66,51 @@ bool ClampToOutput(const CRect& srcRect, int& x0, int& y0, int& x1, int& y1, int
 }
 
 // Move a readback buffer's pixels and shape into a delivered CaptureResult.
-void FillResult(CaptureResult& result, ReadbackBuffer& buffer)
+void FillResult(CaptureResult& result, ReadbackBuffer& buffer, std::size_t offset = 0)
 {
-  result.pixels = std::make_shared<CHeapCapturePixels>(std::move(buffer.pixels));
+  result.pixels = std::make_shared<CHeapCapturePixels>(std::move(buffer.pixels), offset);
   result.width = buffer.width;
   result.height = buffer.height;
   result.stride = buffer.stride;
   result.format = buffer.format;
 }
 } // namespace
+
+bool CCaptureBlit::Capture(const CRect& visible, const CaptureSpec& spec, CaptureResult& result)
+{
+#ifdef HAVE_DVBRIDGE
+  auto& window = *CServiceBroker::GetWinSystem();
+  if (spec.cadence == CaptureCadence::ONESHOT && spec.format == CaptureFormat::NATIVE &&
+      !spec.width && !spec.height && KODI::WINDOWING::GBM::HasDVBridgeScreenshot(window))
+  {
+    int x0, y0, x1, y1, fbHeight;
+    ReadbackBuffer buffer;
+    if (!ClampToOutput(visible, x0, y0, x1, y1, fbHeight) ||
+        !KODI::WINDOWING::GBM::ReadDVBridgeScreenshot(window, buffer, true) || !buffer.pixels ||
+        buffer.width != static_cast<unsigned int>(window.GetGfxContext().GetWidth()) ||
+        buffer.height != static_cast<unsigned int>(fbHeight))
+      return false;
+
+    // Crop the decoded image: an odd left edge can split a TV-led carrier pair.
+    const int pixelBytes = av_image_get_linesize(buffer.format, 1, 0);
+    const auto pitch = static_cast<std::size_t>(std::abs(static_cast<int64_t>(buffer.stride)));
+    if (pixelBytes <= 0 || pitch < buffer.width * static_cast<std::size_t>(pixelBytes))
+      return false;
+    const int firstRow = buffer.stride < 0 ? fbHeight - y1 : y0;
+    const std::size_t offset = firstRow * pitch + x0 * static_cast<std::size_t>(pixelBytes);
+    buffer.width = static_cast<unsigned int>(x1 - x0);
+    buffer.height = static_cast<unsigned int>(y1 - y0);
+    // Source mastering and light levels do not describe a reconstructed or tone-mapped image.
+    result.hasDisplayMetadata = false;
+    result.hasLightMetadata = false;
+    FillResult(result, buffer, offset);
+    return true;
+  }
+#endif
+  const unsigned int width = spec.width ? spec.width : static_cast<unsigned int>(visible.Width());
+  const unsigned int height = spec.height ? spec.height : static_cast<unsigned int>(visible.Height());
+  return Blit(visible, width, height, spec.format) && Read(result);
+}
 
 #if defined(HAS_GL) || HAS_GLES == 3
 

@@ -16,6 +16,8 @@
 
 #include <alsa/asoundlib.h>
 
+struct AEELDDtsCapabilities;
+
 #define AE_MIN_PERIODSIZE 256
 
 class CAESinkALSA : public IAESink
@@ -93,7 +95,11 @@ private:
   static std::string GetParamFromName(const std::string &name, const std::string &param);
   static void EnumerateDevice(AEDeviceInfoList &list, const std::string &device, const std::string &description, snd_config_t *config);
   static bool SoundDeviceExists(const std::string& device);
-  static bool GetELD(snd_hctl_t *hctl, int device, CAEDeviceInfo& info, bool& badHDMI);
+  static bool GetELD(snd_hctl_t* hctl,
+                     int device,
+                     CAEDeviceInfo& info,
+                     bool& badHDMI,
+                     AEELDDtsCapabilities& dts);
 
   static void sndLibErrorHandler(const char *file, int line, const char *function, int err, const char *fmt, ...);
 };

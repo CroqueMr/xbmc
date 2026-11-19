@@ -114,6 +114,13 @@ CGBMUtils::CGBMDevice::CGBMSurface::CGBMSurfaceBuffer& CGBMUtils::CGBMDevice::CG
   return *m_buffers.back();
 }
 
+gbm_bo* CGBMUtils::CGBMDevice::CGBMSurface::GetLockedFrontBuffer() const
+{
+  if (!m_buffers.empty())
+    return m_buffers.back()->Get();
+  return m_scanoutBuffer ? m_scanoutBuffer->Get() : nullptr;
+}
+
 CGBMUtils::CGBMDevice::CGBMSurface::CGBMSurfaceBuffer::CGBMSurfaceBuffer(gbm_surface* surface)
   : m_surface(surface), m_buffer(gbm_surface_lock_front_buffer(surface))
 {

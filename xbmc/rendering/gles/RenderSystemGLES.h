@@ -93,6 +93,7 @@ public:
   bool ResetRenderSystem(int width, int height) override;
 
   bool BeginRender() override;
+  void UpdateGUIShaderColorState() override;
   bool EndRender() override;
   void PresentRender(bool rendered, bool videoLayer) override;
   void InvalidateColorBuffer() override;

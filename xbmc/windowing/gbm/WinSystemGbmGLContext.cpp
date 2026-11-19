@@ -246,6 +246,8 @@ bool CWinSystemGbmGLContext::SetGuiCompositing(int colorTransfer)
     m_compositeShader.reset();
   }
 
+  if (m_compositeShader)
+    m_compositeShader->SetSDRBT2020(colorTransfer == AVCOL_TRC_BT2020_10);
   return m_guiCompositing;
 }
 

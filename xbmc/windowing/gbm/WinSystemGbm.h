@@ -28,6 +28,7 @@
 #include <optional>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <gbm.h>
 
@@ -104,8 +105,13 @@ public:
 
   bool SetVideoOutput(const VideoPicture* videoPicture) override;
 
-  void SetColorimetry(const VideoPicture* videoPicture, bool sdrToBT709 = false) override;
-  KODI::UTILS::Colorimetry GetColorimetry() const override { return m_colorimetry; }
+  void SetColorimetry(const VideoPicture* videoPicture, bool nativeSDRShader = false) override;
+  KODI::UTILS::Colorimetry GetColorimetry() const override
+  {
+    return m_nativeSDRActive ? KODI::UTILS::Colorimetry::BT2020_YCC : m_colorimetry;
+  }
+  bool UsesNativeSDRBT2020() const override { return m_nativeSDRActive; }
+  bool BeginFrameGuiComposite(bool guiWillRender) override;
   KODI::UTILS::Eotf GetEotf() const override { return m_eotf; }
   bool SetHDR(const VideoPicture* videoPicture) override;
   bool IsHDRDisplay() override;
@@ -132,6 +138,16 @@ public:
   std::vector<std::string> GetConnectedOutputs() override;
 
 protected:
+#ifdef HAVE_DVBRIDGE
+  struct DVOutputTiming
+  {
+    int index;
+    int width;
+    int height;
+    double refresh;
+  };
+  std::vector<DVOutputTiming> GetDVOutputTimings() const;
+#endif
   virtual bool ConnectorPreferencesAllowed() const { return true; }
   void DeferConnectorPreferences();
   void ApplyColorspace();
@@ -213,6 +229,9 @@ private:
   //! True if >8 bit video in the active HDMI mode does not fit as RGB, but does as YCbCr
   bool ContentNeedsSubsampling() const;
 
+  std::optional<uint64_t> NativeSDRBT2020Colorspace() const;
+  bool StageNativeSDRSignal(bool rendered, bool& wideTransition);
+
   bool IsYuvRequested() const;
   bool IsYuvFormatCommitted(const CDRMConnector& connector) const;
   bool IsYuvFormat(const CDRMConnector& connector, std::optional<uint64_t> current) const;
@@ -255,6 +274,12 @@ private:
   int m_colorFormatSkip{0};
   std::string m_colorFormatFailedMode;
   std::string m_currentModeId;
+
+  bool m_nativeSDRSource{false};
+  bool m_nativeSDRCompositor{false};
+  std::atomic<bool> m_nativeSDRActive{false};
+  bool m_nativeSDRSubmitted{false};
+  bool m_nativeSDRRejected{false};
 
   //! Whether the "Colorspace" tag was last set for a YCbCr output
   bool m_scanoutYuv{false};
