@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "DVBridgeGLES.h"
+#include "VideoShaders/VideoFilterShaderGLES.h"
 #include "utils/DVBridgeDiagnosticLog.h"
 #include "DVBridgeShaders.h"
 #include "DVBridgeScreenshot.h"
@@ -51,9 +52,178 @@ void BackendLog(void*, pl_log_level level, const char* message)
 }
 }
 
+
+/* Native spatial interpolation only. Colour processing and transport stay in CB1. */
+class DVNativeScaler
+{
+public:
+  explicit DVNativeScaler(pl_gpu gpu) : m_gpu(gpu) {}
+  ~DVNativeScaler()
+  {
+    pl_tex_destroy(m_gpu, &m_texture);
+    glDeleteSamplers(1, &m_sampler);
+    glDeleteBuffers(1, &m_vertices);
+    glDeleteVertexArrays(1, &m_vao);
+  }
+
+  void SetMethod(ESCALINGMETHOD method) { m_method = method; }
+
+  static bool Fit(void* priv, const pl_frame* image, const pl_frame* target, pl_frame* fitted)
+  {
+    return static_cast<DVNativeScaler*>(priv)->Fit(*image, *target, *fitted);
+  }
+
+private:
+  struct State
+  {
+    GLint program{}, vao{}, buffer{}, draw{}, read{}, viewport[4]{}, active{};
+    GLint textures[2]{}, samplers[2]{};
+    GLboolean mask[4]{}, enabled[9]{};
+    static constexpr GLenum caps[] = {GL_BLEND, GL_DEPTH_TEST, GL_STENCIL_TEST,
+        GL_SCISSOR_TEST, GL_DITHER, GL_CULL_FACE, GL_RASTERIZER_DISCARD,
+        GL_SAMPLE_ALPHA_TO_COVERAGE, GL_SAMPLE_COVERAGE};
+    State()
+    {
+      glGetIntegerv(GL_CURRENT_PROGRAM, &program);
+      glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &vao);
+      glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &buffer);
+      glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
+      glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
+      glGetIntegerv(GL_VIEWPORT, viewport);
+      glGetIntegerv(GL_ACTIVE_TEXTURE, &active);
+      glGetBooleanv(GL_COLOR_WRITEMASK, mask);
+      for (int i = 0; i < 2; ++i)
+      {
+        glActiveTexture(i ? GL_TEXTURE2 : GL_TEXTURE0);
+        glGetIntegerv(GL_TEXTURE_BINDING_2D, &textures[i]);
+        glGetIntegerv(GL_SAMPLER_BINDING, &samplers[i]);
+        glBindSampler(i ? 2 : 0, 0);
+      }
+      for (size_t i = 0; i < std::size(caps); ++i)
+      {
+        enabled[i] = glIsEnabled(caps[i]);
+        glDisable(caps[i]);
+      }
+      glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    }
+    ~State()
+    {
+      for (int i = 0; i < 2; ++i)
+      {
+        glActiveTexture(i ? GL_TEXTURE2 : GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, textures[i]);
+        glBindSampler(i ? 2 : 0, samplers[i]);
+      }
+      glActiveTexture(active);
+      glBindVertexArray(vao);
+      glBindBuffer(GL_ARRAY_BUFFER, buffer);
+      glUseProgram(program);
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, read);
+      glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+      glColorMask(mask[0], mask[1], mask[2], mask[3]);
+      for (size_t i = 0; i < std::size(caps); ++i)
+        if (enabled[i]) glEnable(caps[i]); else glDisable(caps[i]);
+    }
+  };
+
+  bool Fit(const pl_frame& image, const pl_frame& target, pl_frame& fitted)
+  {
+    if (image.num_planes != 1 || target.num_planes != 1 || image.rotation ||
+        !image.planes[0].texture || !target.planes[0].texture ||
+        m_method == VS_SCALINGMETHOD_AUTO || glGetError() != GL_NO_ERROR)
+      return false;
+    State state;
+    if (!m_shader || m_compiledMethod != m_method)
+    {
+      std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> shader;
+      if (m_method == VS_SCALINGMETHOD_NEAREST || m_method == VS_SCALINGMETHOD_LINEAR)
+        shader = std::make_unique<Shaders::GLES::DefaultFilterShader>();
+      else
+        shader = std::make_unique<Shaders::GLES::ConvolutionFilterShader>(m_method, false);
+      if (!shader->CompileAndLink()) return false;
+      m_shader = std::move(shader);
+      m_compiledMethod = m_method;
+    }
+    const int width = target.planes[0].texture->params.w;
+    const int height = target.planes[0].texture->params.h;
+    const auto format = pl_find_fmt(m_gpu, PL_FMT_FLOAT, 4, 32, 32,
+        static_cast<pl_fmt_caps>(PL_FMT_CAP_RENDERABLE | PL_FMT_CAP_SAMPLEABLE));
+    pl_tex_params allocation{};
+    allocation.w = width; allocation.h = height; allocation.format = format;
+    allocation.sampleable = true; allocation.renderable = true;
+    if (!format || !pl_tex_recreate(m_gpu, &m_texture, &allocation)) return false;
+    GLenum inputTarget{};
+    const auto input = pl_opengl_unwrap(m_gpu, image.planes[0].texture, &inputTarget, nullptr, nullptr);
+    GLuint fbo{};
+    if (!input || inputTarget != GL_TEXTURE_2D ||
+        !pl_opengl_unwrap(m_gpu, m_texture, nullptr, nullptr, &fbo)) return false;
+    if (!m_vao) glGenVertexArrays(1, &m_vao);
+    if (!m_vertices) glGenBuffers(1, &m_vertices);
+    if (!m_sampler) glGenSamplers(1, &m_sampler);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glViewport(0, 0, width, height);
+    if (target.crop.x0 || target.crop.y0 || target.crop.x1 != width || target.crop.y1 != height)
+    {
+      constexpr GLfloat black[4] = {0, 0, 0, 1};
+      glClearBufferfv(GL_COLOR, 0, black);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, input);
+    GLint filter = m_method == VS_SCALINGMETHOD_NEAREST ? GL_NEAREST : GL_LINEAR;
+    m_shader->GetTextureFilter(filter);
+    glSamplerParameteri(m_sampler, GL_TEXTURE_MIN_FILTER, filter);
+    glSamplerParameteri(m_sampler, GL_TEXTURE_MAG_FILTER, filter);
+    glSamplerParameteri(m_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glSamplerParameteri(m_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindSampler(0, m_sampler);
+    const float sw = image.planes[0].texture->params.w;
+    const float sh = image.planes[0].texture->params.h;
+    float y0 = image.crop.y0 / sh, y1 = image.crop.y1 / sh;
+    if (image.planes[0].flipped) { y0 = 1 - y0; y1 = 1 - y1; }
+    const float x0 = 2 * target.crop.x0 / width - 1;
+    const float x1 = 2 * target.crop.x1 / width - 1;
+    const float top = 2 * target.crop.y0 / height - 1;
+    const float bottom = 2 * target.crop.y1 / height - 1;
+    const GLfloat vertices[] = {
+        x0, top, 0, image.crop.x0 / sw, y0,
+        x1, top, 0, image.crop.x1 / sw, y0,
+        x0, bottom, 0, image.crop.x0 / sw, y1,
+        x1, bottom, 0, image.crop.x1 / sw, y1};
+    constexpr GLfloat identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    m_shader->SetWidth(sw); m_shader->SetHeight(sh);
+    m_shader->SetSourceTexture(0); m_shader->SetAlpha(1);
+    m_shader->SetMatrices(identity, identity);
+    if (!m_shader->Enable()) return false;
+    glBindVertexArray(m_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_vertices);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
+    const auto position = m_shader->GetVertexLoc(), coord = m_shader->GetcoordLoc();
+    glVertexAttribPointer(position, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), nullptr);
+    glVertexAttribPointer(coord, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat),
+        reinterpret_cast<const void*>(3 * sizeof(GLfloat)));
+    glEnableVertexAttribArray(position); glEnableVertexAttribArray(coord);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    m_shader->Disable();
+    if (glGetError() != GL_NO_ERROR) return false;
+    fitted = image;
+    fitted.planes[0].texture = m_texture;
+    fitted.planes[0].flipped = false;
+    fitted.crop = target.crop;
+    return true;
+  }
+
+  pl_gpu m_gpu{};
+  pl_tex m_texture{};
+  GLuint m_vao{}, m_vertices{}, m_sampler{};
+  ESCALINGMETHOD m_method{VS_SCALINGMETHOD_LINEAR}, m_compiledMethod{VS_SCALINGMETHOD_MAX};
+  std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> m_shader;
+};
+
 struct CDVBridgeGLES::Context::State
 {
   pl_opengl gl{};
+  std::unique_ptr<DVNativeScaler> spatial;
   pl_log log{};
   dvbridge_shader_cache* shaderCache{};
   dvbridge_retirement_owner* owner{};
@@ -150,7 +320,12 @@ dvbridge_renderer* CDVBridgeGLES::Context::Attach()
 {
   if (m_state->quarantined || !m_state->inFlight.empty()) return nullptr;
   auto* renderer = dvbridge_renderer_create_with_owner(m_state->owner);
-  if (renderer) m_state->attached = true;
+  if (renderer)
+  {
+    if (!m_state->spatial) m_state->spatial = std::make_unique<DVNativeScaler>(m_state->gl->gpu);
+    dvbridge_renderer_set_spatial_fit(renderer, DVNativeScaler::Fit, m_state->spatial.get());
+    m_state->attached = true;
+  }
   return renderer;
 }
 
@@ -219,6 +394,7 @@ bool CDVBridgeGLES::Context::Close()
   m_state->ai.reset();
 #endif
   if (m_state->shaderCache) dvbridge_shader_cache_save(m_state->shaderCache);
+  m_state->spatial.reset();
   pl_opengl_destroy(&m_state->gl);
   dvbridge_shader_cache_close(m_state->shaderCache); m_state->shaderCache = nullptr;
   pl_log_destroy(&m_state->log);
@@ -246,6 +422,10 @@ bool CDVBridgeGLES::Context::FELHardwareUpscaling(uint64_t stream)
     m_state->felVppEnabled = DVBRIDGE::FELHardwareUpscalingEnabled();
   }
   return stream && m_state->felVppEnabled;
+}
+void CDVBridgeGLES::Context::SetSpatialMethod(ESCALINGMETHOD method)
+{
+  if (m_state->spatial) m_state->spatial->SetMethod(method);
 }
 pl_opengl CDVBridgeGLES::Context::GL() const { return m_state->gl; }
 pl_log CDVBridgeGLES::Context::Log() const { return m_state->log; }
@@ -537,7 +717,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
       geometry.source_width == m_sourceGeometry.source_width &&
       geometry.source_height == m_sourceGeometry.source_height &&
       geometry.x == m_sourceGeometry.x && geometry.y == m_sourceGeometry.y &&
-      geometry.width == m_sourceGeometry.width && geometry.height == m_sourceGeometry.height;
+      geometry.width == m_sourceGeometry.width && geometry.height == m_sourceGeometry.height &&
+      geometry.target_width == m_sourceGeometry.target_width &&
+      geometry.target_height == m_sourceGeometry.target_height &&
+      std::equal(std::begin(geometry.crop), std::end(geometry.crop), std::begin(m_sourceGeometry.crop)) &&
+      std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
+      base.scalingMethod == m_spatialMethod;
   if (m_aiFrame && m_aiOutputAccepted && !m_pending && m_hasCommitted && base.binding == m_committedBinding &&
       m_pendingBinding == m_committedBinding &&
       prediction.id.revision == m_committedRevision && policy.mode == m_committedMode &&
@@ -587,6 +772,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   if (!dvbridge_gl_frame_import(&imported,m_gl->gpu,base.layout,base.width,base.height,base.planes))
     return FrameStatus::Unsupported;
   HDR10Color(imported.frame,base);
+  m_spatialMethod = base.scalingMethod;
+  m_context->SetSpatialMethod(m_spatialMethod);
   m_context->Retain(base.lease);
   policy.revision = prediction.id.revision;
   m_live = m_advanced = m_aiFrame = true;
@@ -616,7 +803,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
       (policy.mode == DVBRIDGE_MODE_STANDARD ||
        (policy.mode == DVBRIDGE_MODE_ENHANCED_DV && !m_overlayVisible)) &&
       (policy.mode == DVBRIDGE_MODE_ENHANCED_DV ||
-       (geometry.x == 0 && geometry.y == 0 && geometry.width == 3840 && geometry.height == 2160) ||
+       (geometry.x == 0 && geometry.y == 0 &&
+        geometry.width == geometry.target_width && geometry.height == geometry.target_height) ||
        (preferences.optimizedDV && geometry.width == geometry.source_width && geometry.height == geometry.source_height)))
   {
     rendered = dvbridge_render_hdr10_ai_packed_overlay(m_renderer,&policy,&prediction,&imported.frame,
@@ -841,20 +1029,24 @@ void CDVBridgeGLES::SetOverlayVisible(bool visible)
 bool CDVBridgeGLES::SetNativeOverlay(unsigned texture, unsigned degamma, unsigned pq,
                                     const CRect& bounds, uint64_t content, bool inputPQ)
 {
+  const int width = m_scanout ? m_scanout->params.w : 0;
+  const int height = m_scanout ? m_scanout->params.h : 0;
+  const bool sizeChanged = m_nativeOverlay.texture &&
+      (m_nativeOverlay.texture->params.w != width || m_nativeOverlay.texture->params.h != height);
   float nextRect[4]{};
   if (!bounds.IsEmpty())
   {
-    nextRect[0] = std::clamp(std::floor(bounds.x1 / 2) * 2, 0.0f, 3840.0f);
-    nextRect[1] = std::clamp(std::floor(bounds.y1), 0.0f, 2160.0f);
-    nextRect[2] = std::clamp(std::ceil(bounds.x2 / 2) * 2, 0.0f, 3840.0f);
-    nextRect[3] = std::clamp(std::ceil(bounds.y2), 0.0f, 2160.0f);
+    nextRect[0] = std::clamp(std::floor(bounds.x1 / 2) * 2, 0.0f, float(width));
+    nextRect[1] = std::clamp(std::floor(bounds.y1), 0.0f, float(height));
+    nextRect[2] = std::clamp(std::ceil(bounds.x2 / 2) * 2, 0.0f, float(width));
+    nextRect[3] = std::clamp(std::ceil(bounds.y2), 0.0f, float(height));
   }
   const bool formatChanged = inputPQ != m_nativeOverlay.input_pq;
-  const bool enabled = m_gl && texture && degamma && pq &&
+  const bool enabled = m_gl && width > 0 && height > 0 && texture && degamma && pq &&
       (bounds.IsEmpty() || (nextRect[0] < nextRect[2] && nextRect[1] < nextRect[3]));
   const bool layoutChanged = m_nativeOverlayEnabled != enabled || (enabled &&
       (texture != m_nativeOverlayTextures[0] || degamma != m_nativeOverlayTextures[1] ||
-       pq != m_nativeOverlayTextures[2] || formatChanged ||
+       pq != m_nativeOverlayTextures[2] || formatChanged || sizeChanged ||
        !std::equal(std::begin(nextRect),std::end(nextRect),std::begin(m_nativeOverlay.rect))));
   if (layoutChanged || (enabled && content != m_nativeOverlayContent))
     ++m_nativeOverlayRevision;
@@ -868,12 +1060,12 @@ bool CDVBridgeGLES::SetNativeOverlay(unsigned texture, unsigned degamma, unsigne
   pl_tex* wrapped[]{&m_nativeOverlay.texture, &m_nativeOverlay.degamma, &m_nativeOverlay.pq};
   for (unsigned i = 0; i < 3; ++i)
   {
-    if (ids[i] == m_nativeOverlayTextures[i] && *wrapped[i] && !(i == 0 && formatChanged)) continue;
+    if (ids[i] == m_nativeOverlayTextures[i] && *wrapped[i] && !(i == 0 && (formatChanged || sizeChanged))) continue;
     pl_tex_destroy(m_gl->gpu, wrapped[i]);
     pl_opengl_wrap_params params{};
     params.texture = ids[i];
-    params.width = i ? 256 : 3840;
-    params.height = i ? 1 : 2160;
+    params.width = i ? 256 : width;
+    params.height = i ? 1 : height;
     params.iformat = i ? GL_R16F : inputPQ ? GL_RGBA16F : GL_RGBA8;
     *wrapped[i] = pl_opengl_wrap(m_gl->gpu, &params);
     m_nativeOverlayTextures[i] = ids[i];
@@ -905,8 +1097,13 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10)
 {
   if (!m_gl || m_pending || m_prepared) return false;
   pl_opengl_wrap_params output{};
-  output.width = 3840;
-  output.height = 2160;
+  const auto display = eglGetCurrentDisplay();
+  const auto surface = eglGetCurrentSurface(EGL_DRAW);
+  if (display == EGL_NO_DISPLAY || surface == EGL_NO_SURFACE ||
+      !eglQuerySurface(display, surface, EGL_WIDTH, &output.width) ||
+      !eglQuerySurface(display, surface, EGL_HEIGHT, &output.height) ||
+      output.width <= 0 || (output.width & 1) || output.height <= 0)
+    return false;
   GLint draw, read, red, green, blue, samples, encoding;
   glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &draw);
   glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
@@ -1017,7 +1214,7 @@ bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
   // Subtitle-only frames compose before packing. Other GUI retains 32F composition.
   const bool hdr10plus = m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS;
   if (m_hdr10 && !hdr10plus && allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
-      geometry.width == 3840 && geometry.height == 2160)
+      geometry.width == geometry.target_width && geometry.height == geometry.target_height)
   {
     m_direct = dvbridge_render_hdr10_direct(m_renderer, &*m_hdr10Session, &bl.frame,
         metadata.Data(), metadata.Size(), base.pts, elPts, geometry, m_scanout,
@@ -1165,7 +1362,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   const bool sameGeometry = geometry.source_width == m_sourceGeometry.source_width &&
       geometry.source_height == m_sourceGeometry.source_height &&
       geometry.x == m_sourceGeometry.x && geometry.y == m_sourceGeometry.y &&
-      geometry.width == m_sourceGeometry.width && geometry.height == m_sourceGeometry.height;
+      geometry.width == m_sourceGeometry.width && geometry.height == m_sourceGeometry.height &&
+      geometry.target_width == m_sourceGeometry.target_width &&
+      geometry.target_height == m_sourceGeometry.target_height &&
+      std::equal(std::begin(geometry.crop), std::end(geometry.crop), std::begin(m_sourceGeometry.crop)) &&
+      std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
+      base.scalingMethod == m_spatialMethod;
   if (m_geometryKnown && !sameGeometry)
     m_geometryRevision = DVBRIDGE::NextRevisionAfter(std::max(preferences.revision,base.binding.revision));
   m_sourceGeometry = geometry;
@@ -1237,6 +1439,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_pendingOverlayRevision = m_nativeOverlayRevision;
   m_pendingOverlayVisible = m_overlayVisible;
   m_requested = preferences;
+  m_spatialMethod = base.scalingMethod;
+  m_context->SetSpatialMethod(m_spatialMethod);
   policy.revision = revision;
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
   dvbridge_renderer_set_fel_nearest(m_renderer,preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416));
@@ -1320,7 +1524,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   {
     auto status = DVBRIDGE_DV_UNSUPPORTED;
     if (allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
-        geometry.width == 3840 && geometry.height == 2160)
+        geometry.width == geometry.target_width && geometry.height == geometry.target_height)
     {
       status = dvbridge_render_dv_policy_prepare_packed(m_renderer,&policy,&m_pendingIdentity,
           &bl.frame,metadata.Data(),metadata.Size(),base.pts,elPts,geometry,m_scanout,true,
@@ -1362,7 +1566,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   else
   {
     if (allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
-        geometry.width == 3840 && geometry.height == 2160)
+        geometry.width == geometry.target_width && geometry.height == geometry.target_height)
     {
       m_direct = dvbridge_render_hdr10_policy_direct(m_renderer,&policy,&m_pendingIdentity,
           &bl.frame,metadata.Data(),metadata.Size(),base.pts,elPts,geometry,m_scanout,
@@ -1516,14 +1720,14 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
 {
   using namespace KODI::RENDERING::CAPTURE;
   const bool master=m_effectiveMode==DVBRIDGE_MODE_MASTER_REFERENCE;
-  if (!m_prepared || (master && !m_direct)) return false;
+  if (!m_prepared || !m_scanout || (master && !m_direct)) return false;
   const auto framebuffer=master ? m_scanoutFramebuffer : GetPQFramebuffer();
   if (!master && !framebuffer) return false;
   GLint previous=0;
   glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING,&previous);
   glBindFramebuffer(GL_READ_FRAMEBUFFER,framebuffer);
   ReadbackBuffer pixels;
-  const bool read=ReadFramebufferRegion(0,0,3840,2160,master ? 8 : 16,master,pixels);
+  const bool read=ReadFramebufferRegion(0,0,m_scanout->params.w,m_scanout->params.h,master ? 8 : 16,master,pixels);
   glBindFramebuffer(GL_READ_FRAMEBUFFER,previous);
   if (!read) return false;
   if (master)
@@ -1775,7 +1979,8 @@ bool CDVBridgeGLES::Pack(unsigned int framebuffer, int width, int height, bool f
     return Failure("pack-without-prepared-frame");
   if (m_advanced && m_dvPolicyActive)
   {
-    if (framebuffer != m_scanoutFramebuffer || width != 3840 || height != 2160 || !m_scanout)
+    if (!m_scanout || framebuffer != m_scanoutFramebuffer ||
+        width != m_scanout->params.w || height != m_scanout->params.h)
       return Failure("enhanced-pack-target");
     m_packed = dvbridge_render_dv_policy_resolve(m_renderer,m_scanout,m_scanoutFramebuffer,flipY);
     if (m_packed)
@@ -1788,7 +1993,8 @@ bool CDVBridgeGLES::Pack(unsigned int framebuffer, int width, int height, bool f
   }
   if (m_direct)
   {
-    m_packed = framebuffer == 0 && width == 3840 && height == 2160 && flipY;
+    m_packed = m_scanout && framebuffer == m_scanoutFramebuffer &&
+        width == m_scanout->params.w && height == m_scanout->params.h && flipY;
     if (m_packed && m_live)
       m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,
           m_asyncEligible && (m_directUsable || m_effectiveMode == DVBRIDGE_MODE_MASTER_REFERENCE)};

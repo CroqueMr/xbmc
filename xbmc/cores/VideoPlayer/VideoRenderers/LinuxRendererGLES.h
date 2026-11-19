@@ -110,6 +110,7 @@ protected:
   virtual void LoadShaders(int field=FIELD_FULL);
   virtual void ReleaseShaders();
   void SetTextureFilter(GLenum method);
+  ESCALINGMETHOD SelectScalingMethod() const;
   void UpdateVideoFilter();
   void CheckVideoParameters(int index);
   AVColorPrimaries GetSrcPrimaries(AVColorPrimaries srcPrimaries, unsigned int width, unsigned int height);

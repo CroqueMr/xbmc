@@ -5,6 +5,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackInfo.h"
 #include "utils/DVBridgeDiagnosticState.h"
 #include "utils/Geometry.h"
+#include "cores/VideoSettings.h"
 #include <optional>
 #include <span>
 #include <vector>
@@ -37,7 +38,7 @@ public:
   static constexpr bool CanComposeSDRGUI(bool enabled, bool hdr10, bool capture,
                                          int width, int height, unsigned pqDraws)
   {
-    return enabled && !hdr10 && !capture && width == 3840 && height == 2160 && !pqDraws;
+    return enabled && !hdr10 && !capture && width > 0 && !(width & 1) && height > 0 && !pqDraws;
   }
   struct Layer;
   class Context
@@ -54,6 +55,7 @@ public:
     bool AsyncPreparation(uint64_t stream);
     bool AsyncPreparationConfigured() const;
     bool FELHardwareUpscaling(uint64_t stream);
+    void SetSpatialMethod(ESCALINGMETHOD method);
     pl_opengl GL() const;
     pl_log Log() const;
     void Retain(std::shared_ptr<void> base, std::shared_ptr<void> enhancement = {});
@@ -86,6 +88,7 @@ public:
   struct Layer
   {
     dvbridge_gl_layout layout;
+    ESCALINGMETHOD scalingMethod{VS_SCALINGMETHOD_LINEAR};
     int width;
     int height;
     dvbridge_gl_plane planes[3];
@@ -249,6 +252,7 @@ private:
   bool m_guiComposed{};
   uint64_t m_committedRevision{};
   dvbridge_geometry m_sourceGeometry{};
+  ESCALINGMETHOD m_spatialMethod{VS_SCALINGMETHOD_MAX};
   uint64_t m_geometryRevision{1};
   bool m_geometryKnown{};
   bool Failure(const char* stage);

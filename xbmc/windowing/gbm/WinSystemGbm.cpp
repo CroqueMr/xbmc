@@ -332,7 +332,9 @@ bool CWinSystemGbm::SupportsDVOutputMode(bool requireCurrentMode) const
 {
   if (!m_DRM) return false;
   const auto usable = [](const drmModeModeInfo* mode) {
-    if (!mode || mode->hdisplay != 3840 || mode->vdisplay != 2160 ||
+    if (!mode || !mode->hdisplay || (mode->hdisplay & 1) || !mode->vdisplay ||
+        mode->hdisplay > 3840 || mode->vdisplay > 2160 ||
+        uint64_t(mode->hdisplay) * mode->vdisplay < 5 * 3072u ||
         (mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN))) return false;
     const double rate = mode->htotal && mode->vtotal ?
         mode->clock * 1000.0 / mode->htotal / mode->vtotal : 0.0;
@@ -383,9 +385,9 @@ bool CWinSystemGbm::FlipDVBridgePage(CDVBridgeState& state, bool restore, bool a
   {
     const auto mode = drm->GetSelectedMode();
     const auto format = gbm_bo_get_format(bo);
-    valid = gbm_bo_get_width(bo) == 3840 && gbm_bo_get_height(bo) == 2160 &&
+    valid = mode && SupportsDVOutputMode() &&
+            gbm_bo_get_width(bo) == mode->hdisplay && gbm_bo_get_height(bo) == mode->vdisplay &&
             (format == DRM_FORMAT_XRGB8888 || format == DRM_FORMAT_ARGB8888) &&
-            mode && mode->hdisplay == 3840 && mode->vdisplay == 2160 &&
             !(mode->flags & (DRM_MODE_FLAG_INTERLACE | DRM_MODE_FLAG_DBLSCAN));
     if (valid)
     {

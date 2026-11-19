@@ -931,7 +931,7 @@ void CWinSystemGbmGLESContext::CompositeGui()
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, &previousFramebuffer);
     glGetIntegerv(GL_VIEWPORT, previousViewport);
     glBindFramebuffer(GL_FRAMEBUFFER, target);
-    glViewport(0, 0, 3840, 2160);
+    glViewport(0, 0, m_nWidth, m_nHeight);
   }
 #endif
 
@@ -1691,7 +1691,9 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
   };
   const bool hdr10 = m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10;
   if (!SupportsDVOutputMode()) return failure("output-format", "unsupported-current-mode");
-  if (m_nWidth != 3840 || m_nHeight != 2160) return failure("output-format", "drawable-size");
+  const auto selected = m_DRM->GetSelectedMode();
+  if (!selected || m_nWidth != selected->hdisplay || m_nHeight != selected->vdisplay)
+    return failure("output-format", "drawable-size");
   if (hdr10 ? GetOutputBitDepth() < 10 : GetOutputBitDepth() != 8)
     return failure("output-format", "drawable-depth");
   if (m_renderableType != EGL_OPENGL_ES3_BIT) return failure("output-format", "egl-renderable");
@@ -2123,7 +2125,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   m_preparedSourceStream = layer.binding.stream;
   m_preparedSourcePts = layer.pts;
   const bool subtitlesOnly = !capturing && m_guiWillRender && m_guiFbo.IsValid() &&
-      m_guiFboWidth == 3840 && m_guiFboHeight == 2160 && m_compositeShader &&
+      m_guiFboWidth == m_nWidth && m_guiFboHeight == m_nHeight && m_compositeShader &&
       m_dvSubtitleDraws && m_dvSubtitleDraws == GetGUIElementCount() &&
       (!m_dvPQSubtitleDraws || m_dvPQSubtitleDraws == m_dvSubtitleDraws);
   const bool pqSubtitles = subtitlesOnly && m_dvPQSubtitleDraws;
@@ -2138,12 +2140,12 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   // Prime the subtitle shader once; empty frames retain the lean native shader.
   const bool nativeOverlay = !m_hdrConversion &&
       (fullGUI || subtitlesOnly || (overlayFree && !m_dvBridge->NativeOverlayPrimed())) &&
-      m_guiFbo.IsValid() && m_guiFboWidth == 3840 && m_guiFboHeight == 2160 && m_compositeShader;
+      m_guiFbo.IsValid() && m_guiFboWidth == m_nWidth && m_guiFboHeight == m_nHeight && m_compositeShader;
   const bool nativeSubtitles = m_dvBridge->SetNativeOverlay(
       nativeOverlay ? (pqSubtitles ? m_dvPQSubtitleFbo.Texture() : m_guiFbo.Texture()) : 0,
       nativeOverlay ? m_compositeShader->GetDegammaTexture() : 0,
       nativeOverlay ? m_compositeShader->GetTransferTexture() : 0,
-      fullGUI && !enhancedSubtitles ? CRect(0,0,3840,2160) : m_dvSubtitleBounds,
+      fullGUI && !enhancedSubtitles ? CRect(0,0,m_nWidth,m_nHeight) : m_dvSubtitleBounds,
       fullGUI && !enhancedSubtitles ? m_dvGUIContentGeneration : m_dvSubtitleContent, pqSubtitles);
   if (std::getenv("CB1_PRESENTATION_AUDIT"))
   {

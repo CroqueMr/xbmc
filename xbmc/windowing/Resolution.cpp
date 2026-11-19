@@ -389,7 +389,6 @@ bool CResolutionUtils::IsCB1RefreshRate(double refresh)
 }
 
 RESOLUTION CResolutionUtils::ChooseBestResolution(float fps, int width, int height, bool is3D,
-                                                 bool allowNativeProgressiveRates,
                                                  RenderStereoMode outputMode)
 {
   const RenderStereoMode stereoMode = OutputMode(outputMode);
@@ -401,39 +400,11 @@ RESOLUTION CResolutionUtils::ChooseBestResolution(float fps, int width, int heig
   if (is3D)
     PerEyeSize(width, height);
 
-  // CB1 transport requires progressive 2160p, independent of GUI/source size
-  // and the ordinary playback whitelist or refresh override.
-  if (allowNativeProgressiveRates && !is3D && fps > 0.0f)
-  {
-    std::vector<RESOLUTION> modes;
-    CServiceBroker::GetWinSystem()->GetGfxContext().GetAllowedResolutions(modes);
-    float bestWeight = std::numeric_limits<float>::max();
-    float bestRefresh = std::numeric_limits<float>::max();
-    for (const auto mode : modes)
-    {
-      const auto info = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo(mode);
-      if (mode == RES_WINDOW || info.iScreenWidth != 3840 || info.iScreenHeight != 2160 ||
-          (info.dwFlags & (D3DPRESENTFLAG_INTERLACED | D3DPRESENTFLAG_MODE3DSBS | D3DPRESENTFLAG_MODE3DTB)) ||
-          !IsCB1RefreshRate(info.fRefreshRate))
-        continue;
-      const float candidate = RefreshWeight(info.fRefreshRate, fps);
-      if (candidate < bestWeight ||
-          (MathUtils::FloatEquals(candidate, bestWeight, 0.0001f) && info.fRefreshRate < bestRefresh))
-      {
-        res = mode;
-        bestWeight = candidate;
-        bestRefresh = info.fRefreshRate;
-      }
-    }
-    return res;
-  }
-
   if (!FindResolutionFromOverride(fps, width, is3D, res, weight, false)) //find a refreshrate from overrides
   {
     if (!FindResolutionFromOverride(fps, width, is3D, res, weight, true)) //if that fails find it from a fallback
     {
-      FindResolutionFromWhitelist(fps, width, height, is3D, res, allowNativeProgressiveRates,
-                                  stereoMode);
+      FindResolutionFromWhitelist(fps, width, height, is3D, res, stereoMode);
     }
   }
 
@@ -495,8 +466,7 @@ RenderStereoMode CResolutionUtils::ChooseStereoArrangement(RenderStereoMode want
 }
 
 void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int height, bool is3D,
-                                                  RESOLUTION &resolution, bool allowNativeProgressiveRates,
-                                                  RenderStereoMode outputMode)
+                                                  RESOLUTION &resolution, RenderStereoMode outputMode)
 {
   RESOLUTION_INFO curr = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo(resolution);
   CLog::Log(LOGINFO,
@@ -572,12 +542,7 @@ void CResolutionUtils::FindResolutionFromWhitelist(float fps, int width, int hei
         // them on playback start. Especially interlaced content is not properly detected
         // and this causes ugly double switching.
         // This won't allow 25p / 30p playback on native refreshrate by default
-        // Only the native DV renderer opts in to exact progressive cadence.
-        // Explicit user whitelists and all ordinary HDR/SDR calls stay unchanged.
-        const bool nativeDVRate = allowNativeProgressiveRates && !is3D &&
-            !(info.dwFlags & D3DPRESENTFLAG_INTERLACED) &&
-            MathUtils::FloatEquals(info.fRefreshRate, fps, 0.01f);
-        if (nativeDVRate || (info.fRefreshRate > 30) ||
+        if ((info.fRefreshRate > 30) ||
             (MathUtils::FloatEquals(info.fRefreshRate, 24.0f, 0.1f)))
           indexList.push_back(CDisplaySettings::GetInstance().GetStringFromRes(c));
       }
