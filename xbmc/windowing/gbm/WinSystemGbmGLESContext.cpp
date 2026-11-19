@@ -538,12 +538,17 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     if (!m_dvFrame || !StageCB1ConnectorPreferences(false)) return;
     bool presented = false;
     CDVBridgeGLES::Submission submitted;
+    const auto* output = m_sdrConversion && m_dvBridge ? m_dvBridge->HDR10Output() : nullptr;
+    const auto gamut = output && output->container.primaries == PL_COLOR_PRIM_BT_2020 ?
+        DVBRIDGE_GAMUT_BT2020 : DVBRIDGE_GAMUT_BT709;
+    const bool signalChange = output && m_sdrSignal != gamut;
+    bool signalRejected = false;
     if (m_dvFrame && m_dvBridge && m_dvBridge->ResolveHDR10(UseLimitedColor()))
     {
       submitted = m_dvBridge->CaptureSubmission();
       submitted.sourceSideData = m_videoSourceSideData;
-      const bool asynchronous = !m_pascalHDRActive && CreateCB1GPUFence(submitted);
-      if (!m_pascalHDRActive && !asynchronous && !m_dvBridge->Advanced()) glFinish();
+      const bool asynchronous = !signalChange && !m_pascalHDRActive && CreateCB1GPUFence(submitted);
+      if (!m_pascalHDRActive && !asynchronous && (signalChange || !m_dvBridge->Advanced())) glFinish();
       auto carrier = m_pascalHDRActive ? m_pascalHDRScanout->Blit() : nullptr;
       if (m_pascalHDRActive ? static_cast<bool>(carrier) : m_eglContext.TrySwapBuffers())
       {
@@ -551,7 +556,22 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         auto& surface = m_GBM->GetDevice().GetSurface();
         auto* bo = carrier ? surface.AdoptTransactionalBuffer(carrier.get(), carrier) :
                              surface.LockTransactionalBuffer();
-        const bool valid = drm && bo &&
+        bool signalReady = true;
+        if (drm && bo && signalChange)
+        {
+          VideoPicture signal;
+          const bool wide = gamut == DVBRIDGE_GAMUT_BT2020;
+          signal.color_transfer = AVCOL_TRC_BT709;
+          signal.color_primaries = wide ? AVCOL_PRI_BT2020 : AVCOL_PRI_BT709;
+          signal.color_space = wide ? AVCOL_SPC_BT2020_NCL : AVCOL_SPC_BT709;
+          signal.colorBits = GetOutputBitDepth();
+          SetHDR(nullptr);
+          SetColorimetry(&signal); // Set after clearing HDR so the SDR commit retains the selected tag.
+          const auto* connector = drm->GetConnector();
+          signalReady = !wide || (connector && m_queuedColorspace &&
+              m_queuedColorspace == connector->GetPropertyEnumValue("Colorspace", "BT2020_RGB"));
+        }
+        const bool valid = drm && bo && signalReady &&
             (m_sdrConversion || (drm->GetConnector()->SupportsProperty("DVBRIDGE_HDR10_DEEP_COLOR") ?
              drm->AddProperty(drm->GetConnector(), "DVBRIDGE_HDR10_DEEP_COLOR", 1) :
              FloatOutputUsable()));
@@ -562,6 +582,11 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         presented = drm && (nvidiaRestore ? (valid && FlipDVBridgePage(m_dvState,true,false,true,bo)) :
                             drm->FlipPageTransactional(valid ? bo : nullptr, false, asynchronous));
         CompleteCB1Mode(presented,true);
+        if (signalChange && bo)
+        {
+          if (presented) m_sdrSignal = gamut;
+          else signalRejected = gamut == DVBRIDGE_GAMUT_BT2020;
+        }
         submitted.hdr10plusAccepted = presented && drm && drm->HDR10PlusActive();
         if (!drm || !drm->HasPendingCB1Page()) surface.CompleteTransactionalBuffer(presented);
         if (carrier && presented) m_pascalHDRScanout->Presented();
@@ -588,7 +613,17 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
       if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM)) drm->SetDVActivationPending(false);
       m_dvState.Restored();
     }
-    else RejectDVOutputSurface();
+    else
+    {
+      if (signalRejected)
+      {
+        CLog::Log(LOGWARNING, "CB1 SDR: BT.2020 HDMI output rejected; rendering BT.709 instead");
+        m_sdrBT2020Rejected = true;
+        m_dvActivating = true; // An in-place gamut change may have no pending EGL surface.
+        m_dvSuperseded = true; // Retire the rejected gamut without failing the SDR circuit.
+      }
+      RejectDVOutputSurface();
+    }
     m_cb1FramePending = m_dvFrame = false;
     return;
   }
@@ -1274,7 +1309,7 @@ void CWinSystemGbmGLESContext::CompositeGui()
   //   D2P:          "FBO is empty/clean AND back buffer cache is invalid"
   bool hasPQSubtitles = false;
 #ifdef HAVE_DVBRIDGE
-  hasPQSubtitles = HasDVBridgeScreenshot() && m_dvPQSubtitleDraws != 0;
+  hasPQSubtitles = !m_sdrConversion && HasDVBridgeScreenshot() && m_dvPQSubtitleDraws != 0;
 #endif
   if (m_guiWillRender)
   {
@@ -1331,6 +1366,11 @@ void CWinSystemGbmGLESContext::CompositeGui()
       const float maximum = (1u << bits) - 1;
       m_compositeShader->SetOutputRange((219u << (bits - 8)) / maximum,
                                       (16u << (bits - 8)) / maximum);
+    }
+    if (m_sdrConversion)
+    {
+      const auto* output = m_dvBridge->HDR10Output();
+      m_compositeShader->SetSDRBT2020(output && output->container.primaries == PL_COLOR_PRIM_BT_2020);
     }
     if (playerLed)
     {
@@ -1435,6 +1475,7 @@ void CWinSystemGbmGLESContext::CompositeGui()
   m_compositeShader->SetInputPQ(false);
   m_compositeShader->SetOutputRange(1.0f, 0.0f);
   m_compositeShader->SetPlayerLed();
+  m_compositeShader->SetSDRBT2020(false);
 
   glDisableVertexAttribArray(posLoc);
   glDisableVertexAttribArray(texLoc);
@@ -1992,6 +2033,7 @@ void CWinSystemGbmGLESContext::ResetDVActivation(const VideoPicture* picture)
     m_dvActivationReason = DVBRIDGE::OutputReason::None;
     m_dvFailedStream = m_dvFailedPolicy = 0;
   }
+  m_sdrBT2020Rejected = false;
   if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM)) drm->ResetDVActivation();
 }
 
@@ -2014,6 +2056,11 @@ bool CWinSystemGbmGLESContext::RecoverDVActivation()
   {
     m_dvConfiguredOutput.reset();
     m_dvRecoveryPending = false;
+    if (m_sdrBT2020Rejected)
+    {
+      std::lock_guard lock(m_dvCapabilityMutex);
+      m_dvActivationReason = DVBRIDGE::OutputReason::None;
+    }
     return true;
   }
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
@@ -2104,12 +2151,7 @@ bool CWinSystemGbmGLESContext::ConfigureSDRConversion(const VideoPicture& pictur
   m_failedHDR10SetupRestore = true;
   if (m_hdrDeepColorPrevious && !drm->AddProperty(drm->GetConnector(),
       "DVBRIDGE_HDR10_DEEP_COLOR", *m_hdrDeepColorPrevious)) return false;
-  VideoPicture output;
-  output.color_transfer = AVCOL_TRC_BT709;
-  output.color_primaries = AVCOL_PRI_BT709;
-  output.color_space = AVCOL_SPC_BT709;
-  output.colorBits = GetOutputBitDepth();
-  SetColorimetry(&output);
+  m_sdrSignal.reset(); // The first rendered frame supplies the actual gamut.
   SetHDR(nullptr); // The native method returns false for SDR, including SDR-only displays.
   if (drm->GetConnector()->SupportsProperty("HDR_OUTPUT_METADATA") &&
       !drm->AddProperty(drm->GetConnector(), "HDR_OUTPUT_METADATA", 0)) return false;
@@ -2302,13 +2344,20 @@ bool CWinSystemGbmGLESContext::CaptureCB1ConnectorPreferences()
   {
     m_cb1LimitedRange = RequestedLimitedColor();
     m_cb1OrdinaryLimitedRange = OrdinaryShaderLimitedColor();
+    auto* connector = drm->GetConnector();
+    if (*m_cb1LimitedRange && connector &&
+        !connector->IsPropertyImmutable("Broadcast RGB").value_or(false))
+      m_sdrBroadcastRange = connector->GetPropertyEnumValue("Broadcast RGB", "Limited 16:235");
   }
   return true;
 }
 
 std::optional<bool> CWinSystemGbmGLESContext::TransportLimitedColor() const
 {
-  return m_cb1RestoringPreferences ? m_cb1OrdinaryLimitedRange : m_cb1LimitedRange;
+  if (m_cb1RestoringPreferences) return m_cb1OrdinaryLimitedRange;
+  // When the driver owns RGB quantization, give it full-range pixels.
+  if (m_sdrConversion && m_cb1ConnectorState.Before("Broadcast RGB")) return false;
+  return m_cb1LimitedRange;
 }
 
 bool CWinSystemGbmGLESContext::StageCB1ConnectorPreferences(bool restore)
@@ -2316,7 +2365,8 @@ bool CWinSystemGbmGLESContext::StageCB1ConnectorPreferences(bool restore)
   m_cb1RestoringPreferences = restore;
   if (!m_cb1ConnectorState.Captured()) return true;
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-  return drm && m_cb1ConnectorState.Stage(*drm, restore);
+  return drm && m_cb1ConnectorState.Stage(*drm, restore,
+      m_sdrConversion ? m_sdrBroadcastRange : std::nullopt);
 }
 
 bool CWinSystemGbmGLESContext::StageTransportPreferences()
@@ -2339,6 +2389,7 @@ void CWinSystemGbmGLESContext::CompleteCB1ConnectorRestore()
   m_cb1RestoringPreferences = false;
   m_cb1LimitedRange.reset();
   m_cb1OrdinaryLimitedRange.reset();
+  m_sdrBroadcastRange.reset();
   DeferConnectorPreferences();
 }
 
@@ -2425,6 +2476,11 @@ bool CWinSystemGbmGLESContext::BeginDVBridge()
   }
   m_hdrConversion = hdr10;
   m_sdrConversion = sdr;
+  if (sdr && m_dvPQSubtitleDraws)
+  {
+    m_dvPQSubtitleDraws = 0;
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  }
   if (!StageCB1ConnectorPreferences(false)) return failure("connector-preferences");
   DeferConnectorPreferences();
   m_compositeShader.reset();
@@ -2602,7 +2658,11 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
     m_masterSafety.Begin(masterBinding.stream,preferences.revision,masterBinding.revision,picture.pts,
         capabilities.isDV && preferences.output==DVBRIDGE::OutputMode::MasterReference);
   }
-  const auto selection = SelectedDVOutput(&picture, preferences, selectionCapabilities);
+  auto selection = SelectedDVOutput(&picture, preferences, selectionCapabilities);
+  if (selection.route == DVBRIDGE::OutputRoute::SDR &&
+      selection.policy.sdr.gamut == DVBRIDGE_GAMUT_BT2020 &&
+      (m_sdrBT2020Rejected || GetSDRBT2020Support() != SDRBT2020Support::Available))
+    selection.policy.sdr.gamut = DVBRIDGE_GAMUT_BT709;
   const auto binding = picture.doviSourceBinding.Valid() ?
       picture.doviSourceBinding : picture.doviMetadata.Binding();
   if (HasPendingDVOutputSurface() &&
@@ -2685,6 +2745,7 @@ bool CWinSystemGbmGLESContext::PrepareDVOutputFrame(const VideoPicture& picture)
     return true;
   }
   if (!HasPendingDVOutputSurface() && !SetVideoOutput(&picture)) return false;
+  m_dvSelection = selection;
   if (requested)
   {
     if (CDVBridgeGLES::Context::NewContextBlocked() ||
@@ -2888,7 +2949,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   if (m_cb1FramePending && m_dvFrame) return true;
   m_cb1FramePending = false;
   m_dvFrame = false;
-  if (!BeginDVBridge())
+  if (!BeginDVBridge() || (m_sdrConversion && !m_dvBridge->SetSDROutputRange(UseLimitedColor())))
     return false;
   if (m_dvBridge->PlayerLedCpuPending() && CB1AsyncAvailable())
   {

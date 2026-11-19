@@ -26589,3 +26589,27 @@ msgstr ""
 msgctxt "#41228"
 msgid "Normal keeps CB1 warnings, errors and key playback and display events. Enhanced includes detailed CB1 diagnostics. Kodi debug logging is controlled separately."
 msgstr ""
+
+msgctxt "#41270"
+msgid "SDR output gamut"
+msgstr ""
+
+msgctxt "#41271"
+msgid "Select the colour gamut used by SDR Rendering. BT.709 is compatible with standard SDR displays."
+msgstr ""
+
+msgctxt "#41272"
+msgid "BT.709"
+msgstr ""
+
+msgctxt "#41273"
+msgid "BT.2020"
+msgstr ""
+
+msgctxt "#41274"
+msgid "The display does not advertise BT.2020 RGB."
+msgstr ""
+
+msgctxt "#41275"
+msgid "The active HDMI driver cannot signal BT.2020 RGB."
+msgstr ""

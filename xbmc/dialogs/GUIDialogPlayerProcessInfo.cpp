@@ -432,7 +432,8 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         std::string(data.transaction.stage) : "");
     SetProperty("DV.ReferenceWarning", data.referenceWarning ? "Consider Reference" : "");
     SetProperty("DV.TVProfile", active && data.output.effective==8 ?
-        StringUtils::Format("BT.709 / {:g} nits / {:g}", data.output.target,data.output.sdrGamma) :
+        StringUtils::Format("{} / {:g} nits / {:g}",
+            data.output.gamut == 3 ? "BT.2020" : "BT.709", data.output.target, data.output.sdrGamma) :
         active && (data.output.lldv || data.output.effective==3 || data.output.effective==4 || data.output.effective==6) ?
         StringUtils::Format("{}{} / {:g} nits",
             data.output.panel==1 || data.output.panel==2 ? localizer.Get(40833+data.output.panel)+" · " : "",

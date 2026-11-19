@@ -110,6 +110,8 @@ public:
   bool IsHDRDisplay() override;
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
 #ifdef HAVE_DVBRIDGE
+  enum class SDRBT2020Support { Available, Display, Driver };
+  SDRBT2020Support GetSDRBT2020Support() const;
   DVBRIDGE::LldvConnectorStatus GetLldvConnectorStatus() const;
   bool FlipPlayerLedPage(CDVBridgeState& state, const DVBRIDGE::LldvTransport& packed,
                          bool async = false, gbm_bo* carrier = nullptr,

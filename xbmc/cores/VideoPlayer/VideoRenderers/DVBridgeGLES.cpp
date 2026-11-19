@@ -1641,6 +1641,17 @@ bool CDVBridgeGLES::SetHDR10Session(const dvbridge_hdr10_session& session, uint6
   return true;
 }
 
+bool CDVBridgeGLES::SetSDROutputRange(bool limited)
+{
+  if (m_hdr10Limited == limited) return true;
+  if (m_pending || m_prepared) return false;
+  m_geometryRevision = DVBRIDGE::NextRevisionAfter(
+      std::max({m_geometryRevision, m_committedRevision, m_pendingIdentity.revision}));
+  if (!m_geometryRevision) return false;
+  m_hdr10Limited = limited;
+  return true;
+}
+
 void CDVBridgeGLES::Reset()
 {
   Summary("reset");
@@ -1861,8 +1872,10 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       std::equal(std::begin(geometry.crop), std::end(geometry.crop), std::begin(m_sourceGeometry.crop)) &&
       std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
       base.scalingMethod == m_spatialMethod;
-  if (m_geometryKnown && !sameGeometry)
-    m_geometryRevision = DVBRIDGE::NextRevisionAfter(std::max(preferences.revision,base.binding.revision));
+  if ((m_geometryKnown && !sameGeometry) ||
+      (policy.mode == DVBRIDGE_MODE_SDR && policy.sdr.gamut != m_sdrGamut))
+    m_geometryRevision = DVBRIDGE::NextRevisionAfter(std::max({preferences.revision,base.binding.revision,m_geometryRevision}));
+  if (policy.mode == DVBRIDGE_MODE_SDR) m_sdrGamut = policy.sdr.gamut;
   m_sourceGeometry = geometry;
   m_geometryKnown = true;
   uint64_t revision = std::max({preferences.revision,base.binding.revision,m_geometryRevision});
@@ -2367,9 +2380,14 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
       default: return failed("unsupported-format",int(pixels.format));
     }
     const double gamma=m_requested.sdrPreset==0 ? 2.4 : m_requested.sdrPreset==1 ? 2.2 : m_requested.sdrGamma;
+    const auto* output=HDR10Output();
+    const bool wide=output && output->container.primaries==PL_COLOR_PRIM_BT_2020;
+    const auto matrix=wide ? pl_get_color_mapping_matrix(pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020),
+        pl_raw_primaries_get(PL_COLOR_PRIM_BT_709),PL_INTENT_RELATIVE_COLORIMETRIC) : pl_matrix3x3_identity;
     auto rgb=std::make_unique<uint8_t[]>(size_t(pixels.width)*pixels.height*8);
     if (!DVBRIDGE::DecodeSDRScreenshot(pixels.pixels.get(),pixels.width,pixels.height,
-        format,m_outputBits,m_hdr10Limited,gamma,reinterpret_cast<uint16_t*>(rgb.get()))) return failed("decode",int(pixels.format));
+        format,m_outputBits,m_hdr10Limited,gamma,reinterpret_cast<uint16_t*>(rgb.get()),
+        wide ? matrix.m : nullptr)) return failed("decode",int(pixels.format));
     pixels.pixels=std::move(rgb);
     pixels.stride=-int(pixels.width*8);
     pixels.format=AV_PIX_FMT_RGBA64LE;
@@ -3065,7 +3083,9 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   const auto* hdrOutput = HDR10Output();
   // Capture the executed mapping before commit releases its pending plan.
   const double displayBlack = hdrOutput ? hdrOutput->policy.expert_black_nits : 0;
-  const int displayGamut = hdrOutput ? static_cast<int>(hdrOutput->policy.tv.gamut) : 0;
+  const int displayGamut = !hdrOutput ? 0 : m_effectiveMode == DVBRIDGE_MODE_SDR ?
+      (hdrOutput->container.primaries == PL_COLOR_PRIM_BT_2020 ?
+          DVBRIDGE_GAMUT_BT2020 : DVBRIDGE_GAMUT_BT709) : hdrOutput->policy.tv.gamut;
   const float peak = m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS ? 992.0f :
       hdrOutput ? hdrOutput->nominal_target.hdr.max_luma :
       m_advanced && m_effectiveMode == DVBRIDGE_MODE_ENHANCED_DV ? static_cast<float>(m_requested.peak) :
@@ -3197,7 +3217,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   output.displayBlack = expert?displayBlack:0;
   if (m_effectiveMode==DVBRIDGE_MODE_SDR && hdrOutput)
   {
-    output.gamut=DVBRIDGE_GAMUT_BT709; output.manualPeak=peak;
+    output.gamut=displayGamut; output.manualPeak=peak;
     output.displayBlack=hdrOutput->nominal_target.hdr.min_luma;
     output.sdrGamma=m_requested.sdrPreset==0 ? 2.4 : m_requested.sdrPreset==1 ? 2.2 : m_requested.sdrGamma;
   }

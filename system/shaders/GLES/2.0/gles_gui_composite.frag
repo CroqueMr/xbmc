@@ -15,6 +15,7 @@ uniform sampler2D u_lutDegamma; // sRGB -> linear LUT (IEC 61966-2-1)
 uniform sampler2D u_lutTF;      // linear -> PQ LUT (1024 entries, sdrPeak baked in)
 uniform highp float u_ootfGamma; // HLG OOTF or negative SDR target gamma
                                 // PQ: 0.0 (use LUT path instead)
+uniform bool u_sdrBT2020;
 uniform bool u_inputPQ;         // CB1 subtitle layer already contains BT.2020 PQ.
 uniform highp vec2 u_outputRange; // CB1 exact bit-depth scale and black code.
 uniform highp float u_playerLedScale;
@@ -66,9 +67,10 @@ void main()
     return;
   }
 
-  // SDR movie composition stays in BT.709 and uses the independent target gamma.
+  // SDR overlays follow the film's gamut before encoding its target gamma.
   if (u_ootfGamma < 0.0)
   {
+    if (u_sdrBT2020) linear = bt709_to_bt2020 * linear;
     highp vec3 result = pow(max(linear, vec3(0.0)), vec3(-1.0 / u_ootfGamma));
 #if defined(KODI_LIMITED_RANGE)
     result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);

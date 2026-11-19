@@ -261,6 +261,9 @@ private:
   unsigned m_dvAttemptFailures{};
   DVBRIDGE::OutputRoute m_dvRejectedRoute{DVBRIDGE::OutputRoute::Vanilla};
   DVBRIDGE::OutputReason m_dvActivationReason{DVBRIDGE::OutputReason::None};
+  // Render-thread ownership. Empty signal requires a fresh SDR property commit.
+  std::optional<dvbridge_gamut> m_sdrSignal;
+  bool m_sdrBT2020Rejected{};
   std::optional<dvbridge_mode> m_dvConfiguredOutput;
   std::optional<dvbridge_mode> m_dvPriorConfiguredOutput;
   DVBRIDGE::OutputSelection m_dvSelection;
@@ -291,6 +294,7 @@ private:
   CDVBridgeState m_cb1ConnectorState;
   bool m_cb1RestoringPreferences{};
   std::optional<bool> m_cb1LimitedRange, m_cb1OrdinaryLimitedRange;
+  std::optional<uint64_t> m_sdrBroadcastRange;
   DVBRIDGE::DiagnosticFailures m_dvSetupFailures;
   DVBRIDGE::DiagnosticFailures m_dvScreenshotFailures;
   DVBRIDGE::DiagnosticInterval m_dvGuiDiagnostic;

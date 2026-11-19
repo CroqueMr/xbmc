@@ -157,7 +157,8 @@ void CRenderer::Render(int idx, float depth)
 
   // during HDR composite the m_isHDROverlay overlays render via
   // RenderHDROverlays instead
-  const bool hdrComposite = CServiceBroker::GetWinSystem()->IsHdrComposite();
+  const bool hdrComposite = CServiceBroker::GetWinSystem()->IsHdrComposite() &&
+      !ShouldConvertPQPaletteToSRGB(true);
   const RenderStereoView stereoView =
       CServiceBroker::GetWinSystem()->GetGfxContext().GetStereoView();
 
@@ -196,7 +197,7 @@ void CRenderer::Render(int idx, float depth)
 // FBO's sRGB->HDR conversion
 void CRenderer::RenderHDROverlays(int idx)
 {
-  if (!CServiceBroker::GetWinSystem()->IsHdrComposite())
+  if (!CServiceBroker::GetWinSystem()->IsHdrComposite() || ShouldConvertPQPaletteToSRGB(true))
     return;
 #ifdef HAVE_DVBRIDGE
   if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
