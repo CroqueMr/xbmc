@@ -239,7 +239,7 @@ public:
       {
         m_rpu.clear();
         m_bytes = 0;
-        return AVERROR(EAGAIN);
+        return AVERROR_EOF;
       }
       m_timing = {AV_NOPTS_VALUE, m_enhancement.front()->pts, m_epoch, false};
       m_bytes -= m_enhancement.front()->size;
@@ -251,11 +251,11 @@ public:
       return AVERROR(EAGAIN);
     auto rpu = m_rpu.find(m_base.front()->pts);
     const bool missing = rpu == m_rpu.end() || rpu->second.bytes.empty();
-    // A seek may leave a BL reference unit whose RPU was before the read point.
-    // Preserve that unit for decoding, but never allow it to become a picture.
-    const bool primer = m_resync && (end || (m_transportClock &&
-        m_lastDts[1] != AV_NOPTS_VALUE && m_base.front()->pts < m_lastDts[1]));
-    if (missing && !primer)
+    // At EOF no more metadata can arrive. Keep the BL for reference decoding
+    // even without its own RPU; Timing().presentable excludes that picture.
+    const bool seekPreroll = m_resync && m_transportClock &&
+        m_lastDts[1] != AV_NOPTS_VALUE && m_base.front()->pts < m_lastDts[1];
+    if (missing && !end && !seekPreroll)
       return AVERROR(EAGAIN);
     const auto* layer = m_enhancement.empty() ? nullptr : m_enhancement.front().get();
     const int baseSize = m_base.front()->size;

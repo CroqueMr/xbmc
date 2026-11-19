@@ -12,6 +12,7 @@
 #include "threads/CriticalSection.h"
 
 #include <array>
+#include <functional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -198,7 +199,7 @@ public:
   // Opt-in custom output staging. Ordinary creation/destruction is unchanged.
   bool BeginOutputSurface();
   bool StageOutputSurface(void* nativeWindow, EGLNativeWindowType nativeWindowLegacy);
-  bool CompleteOutputSurface(bool presented);
+  bool CompleteOutputSurface(bool presented, const std::function<void()>& releaseBuffers = {});
   bool BindPriorOutputSurface();
   bool HasOutputSurfaceTransaction() const { return m_outputSurfaceTransaction; }
   struct RetainedContext
@@ -208,14 +209,17 @@ public:
     EGLSurface surface, priorSurface;
   };
   RetainedContext RetainForRetirement();
-  static bool DestroyRetiredContext(RetainedContext& state);
+  static bool DestroyRetiredContext(RetainedContext& state,
+                                    const std::function<void()>& releaseBuffers = {});
+  bool DestroyAfterRelease(const std::function<void()>& releaseBuffers);
   bool InitializeDisplay(EGLint renderingApi);
   bool ChooseConfig(EGLint renderableType, EGLint visualId = 0, bool hdr = false, int alpha = 8,
-                    bool floating = false, bool probe = false);
+                    bool floating = false, bool probe = false, bool preserveSurface = false);
   bool CreateContext(CEGLAttributesVec contextAttribs);
   bool BindContext();
   void Destroy();
   void DestroySurface();
+  bool DestroySurfaceAfterRelease(const std::function<void()>& releaseBuffers);
   void DestroyContext();
   bool SetVSync(bool enable);
   bool TrySwapBuffers();
@@ -236,6 +240,7 @@ public:
   {
     return m_eglContext;
   }
+  void RestoreEGLConfig(EGLConfig config) { m_eglConfig = config; }
   EGLConfig GetEGLConfig() const
   {
     return m_eglConfig;

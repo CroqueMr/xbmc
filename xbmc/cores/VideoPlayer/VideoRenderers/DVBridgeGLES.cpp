@@ -2639,6 +2639,9 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
     pixels.stride=-int(pixels.width*8);
     pixels.format=AV_PIX_FMT_RGBA64LE;
   }
+  // The LLDV intermediate is display-linear and a converted IPT carrier
+  // cannot be decoded with the source matrices. Neither is verified PQ RGB.
+  pixels.colorEncodingVerified = sdr || (master ? UsesMasterSourceCarrier() : m_hdr10 && !m_playerLed);
   out=std::move(pixels);
   return true;
 }

@@ -13,6 +13,7 @@
 #include "Util.h"
 #include "guilib/TextureFormats.h"
 #include "pictures/Picture.h"
+#include "rendering/capture/CaptureConvert.h"
 #include "rendering/capture/CaptureHandle.h"
 #include "rendering/capture/CapturePixels.h"
 #include "rendering/capture/CaptureService.h"
@@ -65,16 +66,29 @@ unsigned int CaptureXbFormat(AVPixelFormat format)
 // Encode a delivered capture to the destination file; runs on the capture
 // service's callback worker.
 void WriteCapture(const KODI::RENDERING::CAPTURE::CaptureResult& result,
-                  const std::string& filename)
+                  const std::string& filename,
+                  bool displaySDR)
 {
   using namespace KODI::RENDERING::CAPTURE;
-  if (!result.pixels)
+  CaptureResult converted;
+  const bool hdr = result.color.transfer == AVCOL_TRC_SMPTE2084 ||
+                   result.color.transfer == AVCOL_TRC_ARIB_STD_B67;
+  if (displaySDR && result.content == CaptureContent::COMPOSITE && hdr && result.colorEncodingVerified)
+  {
+    if (!CaptureToDisplaySDR(result, converted))
+    {
+      CLog::Log(LOGERROR, "Unable to convert screenshot {} to sRGB", CURL::GetRedacted(filename));
+      return;
+    }
+  }
+  const auto& image = converted.pixels ? converted : result;
+  if (!image.pixels)
   {
     CLog::Log(LOGERROR, "Unable to write screenshot {}: no pixels", CURL::GetRedacted(filename));
     return;
   }
 
-  CScopedCapturePixels lock(*result.pixels);
+  CScopedCapturePixels lock(*image.pixels);
   if (!lock.data())
   {
     CLog::Log(LOGERROR, "Unable to write screenshot {}: pixel lock failed",
@@ -83,12 +97,12 @@ void WriteCapture(const KODI::RENDERING::CAPTURE::CaptureResult& result,
   }
 
   // OPAQUE: the encoder drops the framebuffer alpha through an X-variant source
-  const unsigned int format = CaptureXbFormat(result.format) | XB_FMT_OPAQUE;
-  const uint8_t* src0 = CaptureSrcRow0(lock.data(), result.stride, result.height);
+  const unsigned int format = CaptureXbFormat(image.format) | XB_FMT_OPAQUE;
+  const uint8_t* src0 = CaptureSrcRow0(lock.data(), image.stride, image.height);
 
-  if (!CPicture::CreateThumbnailFromSurface(src0, result.width, result.height,
-                                            static_cast<unsigned int>(result.stride), filename,
-                                            format, result.color))
+  if (!CPicture::CreateThumbnailFromSurface(src0, image.width, image.height,
+                                            static_cast<unsigned int>(image.stride), filename,
+                                            format, image.color))
     CLog::Log(LOGERROR, "Unable to write screenshot {}", CURL::GetRedacted(filename));
 }
 } // namespace
@@ -107,8 +121,7 @@ void CScreenShot::TakeScreenshot(const std::string& filename,
 
   CLog::Log(LOGDEBUG, "Saving screenshot {}", CURL::GetRedacted(filename));
 
-  // screenshots are tagged captures whatever their content: native depth
-  // kept, the display's coding carried as cICP by the writer
+  // The writer maps the standard composite to display SDR after readback.
   CaptureSpec spec;
   spec.content = content;
   spec.format = CaptureFormat::NATIVE;
@@ -116,7 +129,7 @@ void CScreenShot::TakeScreenshot(const std::string& filename,
   // failure dispatches an empty result because some consumers must act on
   // it (a bookmark still writes its DB row); here WriteCapture declines it
   auto handle = captureService->Submit(spec, [filename](const CaptureResult& result)
-                                       { WriteCapture(result, filename); });
+                                       { WriteCapture(result, filename, true); });
   handle->Detach();
 }
 
@@ -185,7 +198,7 @@ void CScreenShot::TakeScreenshot(KODI::RENDERING::CAPTURE::CaptureContent conten
                                  return;
                                }
                                CLog::Log(LOGDEBUG, "Saving screenshot {}", CURL::GetRedacted(file));
-                               WriteCapture(result, file);
+                               WriteCapture(result, file, true);
                              });
   handle->Detach();
 }
@@ -229,7 +242,7 @@ void CScreenShot::TakeScreenshotBoth()
                                      ? composite->substr(0, composite->length() - 4) + "-video.png"
                                      : *composite;
         CLog::Log(LOGDEBUG, "Saving screenshot {}", CURL::GetRedacted(file));
-        WriteCapture(result, file);
+        WriteCapture(result, file, false);
       });
   handle->Detach();
 }
