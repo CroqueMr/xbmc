@@ -225,6 +225,10 @@ bool CDVBridgeGLES::Context::Close()
   return true;
 }
 bool CDVBridgeGLES::Context::Quarantined() const { return m_state->quarantined; }
+bool CDVBridgeGLES::Context::AsyncPreparationConfigured() const
+{
+  return m_state->preparationStream && m_state->asyncPreparation;
+}
 bool CDVBridgeGLES::Context::AsyncPreparation(uint64_t stream)
 {
   if (stream && stream != m_state->preparationStream)

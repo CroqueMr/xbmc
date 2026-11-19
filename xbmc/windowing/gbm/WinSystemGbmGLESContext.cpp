@@ -79,7 +79,12 @@ using namespace std::chrono_literals;
 #ifdef HAVE_DVBRIDGE
 float CWinSystemGbmGLESContext::GetDisplayLatency()
 {
-  if (CB1AsyncPlayback())
+  // Native policy changes commit synchronously without changing the configured queue depth.
+  const bool authored = CB1AsyncAvailable() && !m_hdrConversion && !m_dvBridge->Advanced() &&
+      (m_dvSelection.policy.mode == DVBRIDGE_MODE_STANDARD ||
+       m_dvSelection.policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
+  const auto context = authored ? m_dvBridge->GetContext() : nullptr;
+  if (CB1AsyncPlayback() || (context && context->AsyncPreparationConfigured()))
   {
     const float refresh = m_DRM->GetCurrentMode().fRefreshRate;
     const float fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
@@ -346,7 +351,11 @@ bool CWinSystemGbmGLESContext::Show(bool raise)
 bool CWinSystemGbmGLESContext::BeginRender()
 {
   // A prepared picture already includes its GUI; wait before drawing it again.
-  if (m_cb1FramePending && m_dvFrame && !CompleteDVBridgePage(8)) return false;
+  if (m_cb1FramePending && m_dvFrame)
+  {
+    PresentFrame(false, true);
+    return false;
+  }
   return CRenderSystemGLES::BeginRender();
 }
 #endif
@@ -756,6 +765,15 @@ bool CWinSystemGbmGLESContext::BeginGuiComposite(bool guiWillRender)
 
   if (!m_guiFbo.BeginRender())
     return false;
+
+#ifdef HAVE_DVBRIDGE
+  if (m_dvState.Captured() || m_hdrConversion)
+  {
+    // CB1 can leave the video crop in GL; restore Kodi's GUI clip before clearing.
+    const auto& context = GetGfxContext();
+    CRenderSystemGLES::SetScissors(context.StereoCorrection(context.GetScissors()));
+  }
+#endif
 
   // Clear only when the FBO holds stale content; idle frames are already clean.
   if (!m_guiFboClean)
