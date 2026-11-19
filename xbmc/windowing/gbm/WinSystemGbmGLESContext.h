@@ -94,8 +94,18 @@ public:
   bool PrepareDVOutputFrame(const VideoPicture& picture);
 #ifdef CB1_HAS_HDR10_AI
   bool HDR10AILookaheadActive() const;
+  bool HDR10AISelectionPending() const
+  {
+    const auto preferences = DVBRIDGE::FrameOutputSettings();
+    std::lock_guard lock(m_dvCapabilityMutex);
+    return preferences.revision != m_aiSelectionPolicy;
+  }
   bool HDR10AIFrameCommitted() const
-  { return m_dvBridge && m_dvBridge->CommittedHDR10AI().has_value(); }
+  {
+    return m_dvBridge && m_dvContext &&
+        m_dvContext->HDR10AI().Current(m_aiActivation,DVBRIDGE::FrameOutputSettings()) &&
+        m_dvBridge->CommittedHDR10AI().has_value();
+  }
   bool PrepareHDR10AIQueue(const VideoPicture& picture,
       std::span<const CDVBridgeGLES::Layer> queue, bool end, bool paused,
       uint64_t presentationDeadline = 0);
@@ -215,6 +225,7 @@ private:
 #ifdef CB1_HAS_HDR10_AI
   DVBRIDGE::SourceBinding m_aiActivation{};
   uint64_t m_aiPolicy{};
+  uint64_t m_aiSelectionPolicy{}; // Last completed preparation or stop decision.
   bool m_aiReady{}, m_aiFallback{}, m_aiActive{};
 #endif
   DVBRIDGE::OutputCapabilities m_dvCapabilities;

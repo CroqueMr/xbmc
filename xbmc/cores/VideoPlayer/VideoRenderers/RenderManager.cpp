@@ -324,7 +324,11 @@ bool CRenderManager::PrepareHDR10AILookahead(std::unique_lock<CCriticalSection>&
   }
   // Let the video worker start its clock after the first committed AI image.
   if (m_aiGuiReady && !m_showVideo && m_pRenderer->HDR10AILookahead())
-    return m_aiQueueReady;
+  {
+    if (m_pRenderer->HDR10AIFrameCommitted()) return m_aiQueueReady;
+    m_aiStartPts = DVD_NOPTS_VALUE;
+    m_aiGuiReady = false;
+  }
   // Reuse only existing slots whose renderer fence has already completed.
   if (m_pRenderer->HDR10AILookahead()) ReleaseDiscardedBuffers(true);
   auto queue = m_queued;
@@ -386,6 +390,7 @@ bool CRenderManager::ExecuteHDR10AIQueuePreparation(
     std::unique_lock<CCriticalSection>& lock)
 {
   auto* renderer = m_pRenderer;
+  const bool lookahead = renderer->HDR10AILookahead();
   const auto generation = m_aiQueueGeneration;
   const double startPts = m_Queue[queue.front()].pts + m_Queue[queue.front()].duration;
   auto preparation = renderer->CaptureHDR10AIQueue(queue,m_aiEnd,paused,deadline);
@@ -415,6 +420,11 @@ bool CRenderManager::ExecuteHDR10AIQueuePreparation(
       return m_aiQueueReady = false;
     }
     // After rejection, fresh pending analysis is not yet a new selected frame.
+    if (outcome.lookahead && !lookahead)
+    {
+      m_aiStartPts = DVD_NOPTS_VALUE;
+      m_aiGuiReady = false;
+    }
     if (outcome.ready) m_aiQueuePreparationStale = false;
     m_aiQueueReady = outcome.ready;
   }
@@ -424,7 +434,12 @@ bool CRenderManager::ExecuteHDR10AIQueuePreparation(
     if (preparation.ready) m_aiQueuePreparationStale = false;
   }
   if (m_aiQueueReady && m_aiStartPts == DVD_NOPTS_VALUE)
+  {
     m_aiStartPts = startPts;
+    // A new AI epoch must select its primed head, not redraw the retained native frame.
+    if (m_pRenderer->HDR10AILookahead() && m_presentstep == PRESENT_FRAME)
+      m_presentstep = PRESENT_READY;
+  }
   return m_aiQueueReady;
 }
 
@@ -557,7 +572,13 @@ void CRenderManager::FrameMove()
       m_aiGuiReady = true;
       m_presentevent.notifyAll();
     }
-    if (m_aiStartPts == DVD_NOPTS_VALUE || m_pRenderer->HDR10AILookahead())
+    bool aiReselection = false;
+    if (m_pRenderer->HDR10AIQueueEligible())
+      if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+              CServiceBroker::GetWinSystem()))
+        aiReselection = window->HDR10AISelectionPending();
+    if (!m_aiQueueReady || m_aiQueuePreparationStale || m_aiStartPts == DVD_NOPTS_VALUE ||
+        m_pRenderer->HDR10AILookahead() || aiReselection)
     {
       PrepareHDR10AILookahead(lock2);
       if (m_aiQueuePreparationStale) return;
@@ -935,7 +956,8 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   {
     std::unique_lock lock(m_presentlock);
     // Pending readiness is normal; rejected ownership cannot render old RGB.
-    if (m_aiQueuePreparationStale) return;
+    if (m_aiQueuePreparationStale || (m_pRenderer->HDR10AILookahead() && !m_aiGuiReady &&
+        (m_aiStartPts == DVD_NOPTS_VALUE || m_presentstep != PRESENT_FRAME))) return;
   }
 #endif
 
