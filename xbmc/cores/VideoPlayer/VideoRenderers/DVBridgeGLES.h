@@ -200,7 +200,10 @@ public:
   bool Advanced() const { return m_advanced; }
   bool SetNativeOverlay(unsigned texture, unsigned degamma, unsigned pq,
                         const CRect& bounds, uint64_t content, bool inputPQ, bool optimized = false);
-  bool NativeOverlayComposed() const { return m_direct && m_nativeOverlayEnabled; }
+  bool NativeOverlayComposed() const
+  {
+    return (m_playerLed && m_guiComposed) || (m_direct && m_nativeOverlayEnabled);
+  }
   bool NativeOverlayPrimed() const { return m_nativeOverlayPrimed; }
   // GUI or subtitles will cover the next picture: send a full-raster L5.
   void SetOverlayVisible(bool visible);
