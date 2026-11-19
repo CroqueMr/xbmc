@@ -386,12 +386,10 @@ bool ReadEac3Joc(HeaderBits& bits,
   return bits.Valid();
 }
 
-void NeutralizeDolbyDialnorm(uint8_t* frame,
-                             unsigned int size,
-                             bool knownJoc,
-                             bool allowJoc)
+void NeutralizeDolbyDialnorm(uint8_t* frame, unsigned int size, bool knownJoc)
 {
-  if (size < 12 || frame[0] != 0x0b || frame[1] != 0x77)
+  // Preserve JOC. Updating the frame CRC does not repair protected Atmos metadata.
+  if (knownJoc || size < 12 || frame[0] != 0x0b || frame[1] != 0x77)
     return;
 
   const unsigned int bsid = frame[5] >> 3;
@@ -412,9 +410,9 @@ void NeutralizeDolbyDialnorm(uint8_t* frame,
       return;
     primarySize = Ac3FrameSize(rateCode, sizeCode);
   }
-  if (primarySize < 12 || primarySize > size)
-    return;
-  size = primarySize;
+  if (primarySize < 12 || primarySize != size)
+    return; // A dependent substream can carry Atmos metadata.
+
 
   const unsigned int mode = enhanced ? (frame[4] >> 1) & 7 : frame[6] >> 5;
   unsigned int first = 45;
@@ -446,10 +444,10 @@ void NeutralizeDolbyDialnorm(uint8_t* frame,
     if ((streamType != 0 && streamType != 2) || substream ||
         (rateCode == 3 && code == 3))
       return;
-    bool joc = knownJoc;
+    bool joc = false;
     if (!ReadEac3Joc(bits, mode, (frame[4] & 1) != 0, rateCode,
                      rateCode == 3 ? 6 : AC3BlkCod[code], streamType == 2, joc) ||
-        (joc && !allowJoc))
+        joc)
       return;
   }
 
@@ -649,7 +647,7 @@ void CAEStreamParser::GetPacket(uint8_t** buffer, unsigned int* bufferSize)
     if (m_dolbyDialnorm &&
         (m_info.m_type == CAEStreamInfo::STREAM_TYPE_AC3 ||
          m_info.m_type == CAEStreamInfo::STREAM_TYPE_EAC3))
-      NeutralizeDolbyDialnorm(*buffer, size, m_knownJoc, m_allowJoc);
+      NeutralizeDolbyDialnorm(*buffer, size, m_knownJoc);
     else if (m_trueHdDialnorm && m_info.m_type == CAEStreamInfo::STREAM_TYPE_TRUEHD)
       NeutralizeTrueHdDialnorm(*buffer, size);
     else if (m_dtsDialnorm && m_info.m_type >= CAEStreamInfo::STREAM_TYPE_DTS_512 &&

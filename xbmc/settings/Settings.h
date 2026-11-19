@@ -420,7 +420,6 @@ public:
   static constexpr auto SETTING_AUDIOOUTPUT_EAC3PASSTHROUGH = "audiooutput.eac3passthrough";
   static constexpr auto SETTING_AUDIOOUTPUT_DTSPASSTHROUGH = "audiooutput.dtspassthrough";
   static constexpr auto SETTING_AUDIOOUTPUT_DOLBYDIALNORM = "audiooutput.dolbydialnorm";
-  static constexpr auto SETTING_AUDIOOUTPUT_JOCDIALNORM = "audiooutput.jocdialnorm";
   static constexpr auto SETTING_AUDIOOUTPUT_TRUEHDDIALNORM = "audiooutput.truehddialnorm";
   static constexpr auto SETTING_AUDIOOUTPUT_DTSDIALNORM = "audiooutput.dtsdialnorm";
   static constexpr auto SETTING_AUDIOOUTPUT_TRUEHDPASSTHROUGH = "audiooutput.truehdpassthrough";

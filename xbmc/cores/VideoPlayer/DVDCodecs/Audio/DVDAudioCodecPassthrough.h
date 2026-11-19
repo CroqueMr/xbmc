@@ -42,7 +42,6 @@ private:
   unsigned int PackTrueHD();
   CAEStreamParser m_parser;
   std::shared_ptr<const CSettingBool> m_dolbyDialnorm;
-  std::shared_ptr<const CSettingBool> m_jocDialnorm;
   std::shared_ptr<const CSettingBool> m_trueHdDialnorm;
   std::shared_ptr<const CSettingBool> m_dtsDialnorm;
   bool m_knownJoc = false;

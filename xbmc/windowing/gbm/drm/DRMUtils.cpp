@@ -242,7 +242,7 @@ uint32_t CDRMUtils::DrmOpaqueFbGetFromBo(struct gbm_bo* bo)
                              ? DRM_MODE_FB_MODIFIERS : 0;
   const int result = drmModeAddFB2WithModifiers(
       m_fd, gbm_bo_get_width(bo), gbm_bo_get_height(bo), opaqueFormat,
-      handles, strides, offsets, modifiers, &fb->opaque_fb_id, flags);
+      handles, strides, offsets, flags ? modifiers : nullptr, &fb->opaque_fb_id, flags);
   if (result != 0)
   {
     fb->opaque_fb_id = 0;
@@ -814,8 +814,20 @@ bool CDRMUtils::FindConnector()
 
   if (connectorName == "Default")
   {
-    connector = std::ranges::find_if(m_connectors, [](auto& conn)
-                                     { return conn->GetEncoderId() > 0 && conn->IsConnected(); });
+    const auto connected = [](const auto& conn)
+    { return conn->GetEncoderId() > 0 && conn->IsConnected(); };
+    connector = std::ranges::find_if(m_connectors, connected);
+    if (connector != m_connectors.end())
+    {
+      const auto type = (*connector)->GetType();
+      if (type == "eDP" || type == "LVDS")
+      {
+        const auto hdmi = std::ranges::find_if(m_connectors, [&](const auto& conn)
+        { return conn->GetType() == "HDMI-A" && connected(conn); });
+        if (hdmi != m_connectors.end())
+          connector = hdmi;
+      }
+    }
   }
 
   if (connector == m_connectors.end())
