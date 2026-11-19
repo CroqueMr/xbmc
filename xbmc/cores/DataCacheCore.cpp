@@ -80,6 +80,14 @@ uint64_t CDataCacheCore::GetVideoProcessingGeneration()
   return m_videoProcessingGeneration;
 }
 
+bool CDataCacheCore::HasVideoHDR10PlusPrimary()
+{
+  std::unique_lock lock(m_videoPlayerSection);
+  return m_videoSourceSideData &&
+         m_videoSourceSideData->Generation() == m_videoProcessingGeneration &&
+         m_videoSourceSideData->HDR10PlusIsPrimary();
+}
+
 bool CDataCacheCore::HasVideoHDR10PlusSource()
 {
   std::unique_lock lock(m_videoPlayerSection);
