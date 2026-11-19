@@ -42,7 +42,7 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/HDR10AIBuffers.h"
 #endif
 #include "UpscalerSettings.h"
-#include "filesystem/File.h"
+#include "ShaderUpscalerPresets.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
 
 extern "C"
@@ -77,8 +77,7 @@ struct CLinuxRendererGLES::ShaderUpscaler
 
   ~ShaderUpscaler()
   {
-    for (auto* hook : hooks)
-      pl_mpv_user_shader_destroy(&hook);
+    KODI::VIDEO::UPSCALER::DestroyHooks(hooks);
     if (renderer)
       pl_renderer_destroy(&renderer);
     if (gl)
@@ -98,25 +97,7 @@ struct CLinuxRendererGLES::ShaderUpscaler
     renderer = pl_renderer_create(nullptr, gl->gpu);
     if (!renderer)
       return false;
-    constexpr std::array fsr{"FSRCNNX_x2_8-0-4-1.glsl"};
-    constexpr std::array anime{"Anime4K_Clamp_Highlights.glsl", "Anime4K_Restore_CNN_M.glsl",
-        "Anime4K_Upscale_CNN_x2_M.glsl", "Anime4K_AutoDownscalePre_x2.glsl",
-        "Anime4K_AutoDownscalePre_x4.glsl", "Anime4K_Upscale_CNN_x2_S.glsl"};
-    const auto files = method == VS_SCALINGMETHOD_FSRCNNX ? std::span<const char* const>{fsr}
-                                                       : std::span<const char* const>{anime};
-    for (const auto* name : files)
-    {
-      const std::string path = std::string{"special://xbmc/system/shaders/cb1/"} + name;
-      XFILE::CFileStream file;
-      if (!file.Open(path))
-        return false;
-      const std::string source{std::istreambuf_iterator<char>(file), {}};
-      const pl_hook* hook = pl_mpv_user_shader_parse(gl->gpu, source.data(), source.size());
-      if (!hook)
-        return false;
-      hooks.push_back(hook);
-    }
-    return true;
+    return KODI::VIDEO::UPSCALER::LoadHooks(gl->gpu, method, hooks);
   }
 };
 #endif
