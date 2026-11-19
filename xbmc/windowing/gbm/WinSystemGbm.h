@@ -52,8 +52,10 @@ public:
 
   void FlipPage(bool rendered, bool videoLayer, bool async);
 #ifdef HAVE_DVBRIDGE
-  bool FlipDVBridgePage(CDVBridgeState& state, bool restore);
-  bool SupportsNativeDVOutput() const;
+  bool FlipDVBridgePage(CDVBridgeState& state, bool restore, bool async = false);
+  bool CompleteDVBridgePage(int timeoutMs = 0);
+  bool SupportsNativeDVOutput(bool requireCurrentMode = true) const;
+  bool SupportsDVOutputMode(bool requireCurrentMode = true) const;
 #endif
 
   bool CanDoWindowed() override { return false; }
