@@ -3,7 +3,7 @@
   <section id="player" label="14200" help="38100">
     <category id="videoplayer" label="14215" help="38103">
       <group id="99" label="40810">
-        <setting id="videoplayer.sdrupscaler" type="integer" label="41302" help="41304">
+        <setting id="videoplayer.upscaler1080pandabove" type="integer" label="41302" help="41304">
           <requirement>HAVE_DVBRIDGE</requirement><level>0</level><default>-1</default>
           <constraints><options>
             <option label="41301">-1</option><option label="16316">16</option>
@@ -17,7 +17,7 @@
           </options></constraints>
           <control type="list" format="string" />
         </setting>
-        <setting id="videoplayer.hdrupscaler" type="integer" label="41303" help="41304">
+        <setting id="videoplayer.upscalerbelow1080p" type="integer" label="41303" help="41304">
           <requirement>HAVE_DVBRIDGE</requirement><level>0</level><default>-1</default>
           <constraints><options>
             <option label="41301">-1</option><option label="16316">16</option>

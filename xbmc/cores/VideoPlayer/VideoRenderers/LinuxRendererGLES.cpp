@@ -1034,8 +1034,7 @@ ESCALINGMETHOD CLinuxRendererGLES::ResolveScalingMethod(ESCALINGMETHOD method) c
 ESCALINGMETHOD CLinuxRendererGLES::AutoUpscalingOverride() const
 {
   using namespace KODI::VIDEO::UPSCALER;
-  if (Get(false, KODI_DEFAULT) == VS_SCALINGMETHOD_AUTO ||
-      Get(true, KODI_DEFAULT) == VS_SCALINGMETHOD_AUTO)
+  if (Get(m_sourceWidth, m_sourceHeight, KODI_DEFAULT) == VS_SCALINGMETHOD_AUTO)
     return ResolveScalingMethod(VS_SCALINGMETHOD_AUTO);
   return VS_SCALINGMETHOD_LINEAR;
 }
@@ -1063,7 +1062,7 @@ void CLinuxRendererGLES::UpdateVideoFilter()
           srcRect.Width(), srcRect.Height(), dstRect.Width(), dstRect.Height()))
   {
     const auto override = static_cast<ESCALINGMETHOD>(
-        KODI::VIDEO::UPSCALER::Get(m_passthroughHDR, requested));
+        KODI::VIDEO::UPSCALER::Get(m_sourceWidth, m_sourceHeight, requested));
     if (override == requested || Supports(override))
       requested = override;
   }
@@ -1913,7 +1912,8 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
 #endif
 #ifdef HAVE_DVBRIDGE
   int upscaler = -1;
-  const int preset = KODI::VIDEO::UPSCALER::Get(m_passthroughHDR, KODI::VIDEO::UPSCALER::KODI_DEFAULT);
+  const int preset = KODI::VIDEO::UPSCALER::Get(
+      m_sourceWidth, m_sourceHeight, KODI::VIDEO::UPSCALER::KODI_DEFAULT);
   if (KODI::VIDEO::UPSCALER::UsesShaderHooks(preset) && RenderShaderUpscaler(index, preset))
     upscaler = preset;
   else

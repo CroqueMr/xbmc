@@ -205,7 +205,7 @@ ESCALINGMETHOD OutputScalingMethod(const CDVBridgeGLES::Layer& layer,
                 geometry.placement[2] - geometry.placement[0],
                 geometry.placement[3] - geometry.placement[1]))
     return layer.scalingMethod;
-  const int method = Get(mode != DVBRIDGE_MODE_SDR, layer.scalingMethod);
+  const int method = Get(geometry.source_width, geometry.source_height, layer.scalingMethod);
   if (mode != DVBRIDGE_MODE_MASTER_REFERENCE &&
       (method == VS_SCALINGMETHOD_FSR1_RCAS || UsesShaderHooks(method)))
     return layer.scalingMethod;
