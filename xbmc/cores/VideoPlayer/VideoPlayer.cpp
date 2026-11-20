@@ -5751,10 +5751,29 @@ bool CVideoPlayer::OnAction(const CAction &action)
       break;
 #endif
     case ACTION_SHOW_VIDEOMENU:   // start button
+    case ACTION_SHOW_BLURAY_TOP_MENU:
+    case ACTION_SHOW_BLURAY_POPUP_MENU:
       {
         THREAD_ACTION(action);
-        CLog::LogF(LOGDEBUG, "Trying to go to the menu");
-        if (pMenus->OnMenu())
+        const int menuAction = action.GetID();
+        if (menuAction != ACTION_SHOW_VIDEOMENU && !IsBlurayInput())
+          return false;
+
+        bool opened;
+        if (menuAction == ACTION_SHOW_VIDEOMENU)
+          opened = pMenus->OnMenu();
+#if defined(HAVE_LIBBLURAY)
+        else
+        {
+          auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
+          opened = menuAction == ACTION_SHOW_BLURAY_TOP_MENU ? bluray.OnTopMenu()
+                                                           : bluray.OnPopupMenu();
+        }
+#else
+        else
+          return false;
+#endif
+        if (opened)
         {
           if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
           {

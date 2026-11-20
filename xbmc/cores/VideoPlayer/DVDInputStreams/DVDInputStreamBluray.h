@@ -99,6 +99,8 @@ public:
   * \return true if the menu is successfully opened, false otherwise
   */
   bool OnMenu() override;
+  bool OnTopMenu();
+  bool OnPopupMenu();
   void OnBack() override
   {
     if(IsInMenu())
