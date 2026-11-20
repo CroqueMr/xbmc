@@ -3463,8 +3463,9 @@ void CVideoPlayer::HandleMessages()
       m_renderManager.Flush(false, false);
       m_processInfo->ResetVideoCodecInfo();
       m_renderManager.ResetPictureInfo();
-      if (!m_renderManager.IsDiscMenuOnly())
-        m_overlayContainer.Clear(DVDOverlaySource::MENU);
+      m_renderManager.SetDiscMenuOnly(false);
+      m_renderManager.SetDiscMenuPage({});
+      m_overlayContainer.Clear(DVDOverlaySource::MENU);
 #ifdef HAVE_DVBRIDGE
       DVBRIDGE::PlaybackNotification::StartVideo();
 #endif
