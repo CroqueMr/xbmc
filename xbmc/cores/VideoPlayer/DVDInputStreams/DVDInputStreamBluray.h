@@ -101,6 +101,7 @@ public:
   bool OnMenu() override;
   bool WaitingForReadablePlaylist() const;
   bool HdmvEndPending() const { return m_hdmvEndPending; }
+  bool WaitingForHdmvProgram() const { return m_hdmvEndPending || m_hdmvEndReleased; }
   void ReleaseHdmvEnd();
   bool OnTopMenu();
   bool OnPopupMenu();

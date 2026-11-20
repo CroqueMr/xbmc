@@ -653,7 +653,10 @@ void CDVDInputStreamBluray::ProcessEvent() {
 #endif
 #if defined(BD_HDMV_END_HOLD)
     if (m_event.param == 1)
+    {
       m_hdmvEndPending = true;
+      break;
+    }
 #endif
     /* when a title ends, playlist WILL eventually change */
     FreeTitleInfo();
@@ -984,7 +987,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
       if (m_hold == HOLD_ERROR || m_aborted || HasGivenUpReading())
         return -1;
 
-      if (m_hold == HOLD_HELD || m_hdmvEndPending)
+      if (m_hold == HOLD_HELD || WaitingForHdmvProgram() || m_hdmvProgramEnded)
         return 0;
 
 #if defined(BD_BDJ_PRESENTATION_TIMING)
@@ -1016,7 +1019,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
       ProcessEvent();
       if (m_hold == HOLD_ERROR || m_aborted || HasGivenUpReading())
         return -1;
-      if (m_hdmvEndPending || (idle && WaitingForReadablePlaylist()))
+      if (WaitingForHdmvProgram() || m_hdmvProgramEnded || (idle && WaitingForReadablePlaylist()))
         return result;
 #if defined(BD_BDJ_PRESENTATION_TIMING)
       if (m_bdjWaitingForPlaylist || m_hold == HOLD_HELD)

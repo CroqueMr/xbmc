@@ -1055,6 +1055,8 @@ bool CVideoPlayer::WaitForBlurayPlaylist()
     return true;
   }
 
+  if (bluray.WaitingForHdmvProgram())
+    return true;
   if (!bluray.WaitingForReadablePlaylist())
     return false;
 
