@@ -176,6 +176,7 @@ public:
         return Reject("nal-header");
       const int type = (packet->data[begin[1]] >> 1) & 63;
       hasPicture |= type < 32;
+      if (type == 63) return Reject("interleaved-layer");
       if (type == 62)
       {
         if (!rpu.empty()) return Reject("multiple-rpu");
@@ -271,8 +272,6 @@ public:
     auto rpu = m_rpu.find(baseIdentity);
     const bool missing = rpu == m_rpu.end() || rpu->second.bytes.empty();
     const bool bothSeen = rpu != m_rpu.end() && rpu->second.layers == 3;
-    if (m_enhancement.empty() && !end && missing)
-      return AVERROR(EAGAIN);
     // The BL is still a decoder reference when its exact RPU is proven missing.
     const bool seekPreroll = m_resync && m_transportClock && m_lastDts[1] != AV_NOPTS_VALUE &&
         av_compare_ts(basePts, m_clocks[0], m_lastDts[1], m_clocks[1]) < 0;

@@ -2052,7 +2052,8 @@ void CVideoPlayer::Process()
       // The last picture can still be queued after both decoders reach EOF.
       // Keep servicing playback commands until it has reached presentation.
       if (m_VideoPlayerAudio->HasData() || m_VideoPlayerVideo->HasData() ||
-          (m_CurrentVideo.id >= 0 && m_renderManager.HasPendingVideoPresentation()))
+          (m_CurrentVideo.id >= 0 && g_application.GetRenderGUI() &&
+           m_renderManager.HasPendingVideoPresentation()))
       {
         CThread::Sleep(100ms);
         continue;
