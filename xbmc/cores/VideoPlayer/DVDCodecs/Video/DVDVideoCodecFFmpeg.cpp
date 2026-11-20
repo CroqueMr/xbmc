@@ -985,6 +985,13 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
         break;
       if (paired != VC_NONE)
         return paired;
+      if (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN)
+      {
+        if (result == VC_NONE)
+          return VC_NONE; // A BL was consumed. Retry before acknowledging end of output.
+        if (result == VC_ERROR || result == VC_REOPEN || result == VC_FLUSHED)
+          return VC_FATAL; // Terminal FEL cannot resume with a partial decoder epoch.
+      }
       if (result == VC_EOF || ((m_codecControlFlags & DVD_CODEC_CTRL_DRAIN) &&
           ((m_hints.codecOptions & CODEC_BLURAY_NAVIGATION) || m_dvLayerEpoch ||
            dvbridge_fel_has_enhancement(m_dvFel.get()))))
@@ -1135,6 +1142,10 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVid
       }
       else
       {
+#ifdef HAVE_DVBRIDGE
+        if (m_dvFel && ret != VC_BUFFER && ret != VC_EOF)
+          return ret == VC_FATAL ? HandleHwFatal() : static_cast<VCReturn>(ret);
+#endif
         m_eof = true;
         CLog::Log(LOGDEBUG, "CDVDVideoCodecFFmpeg::GetPicture - eof hw accel");
         return VC_EOF;
@@ -1177,10 +1188,8 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVid
   // The base advanced. During terminal drain an empty VAAPI output slot
   // must not end playback before the remaining BL pictures are classified.
 #ifdef HAVE_DVBRIDGE
-  const bool continueBaseDrain = m_dvFel && !m_dvLayerEpoch &&
-      !(m_hints.codecOptions & CODEC_BLURAY_NAVIGATION) &&
-      (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN) &&
-      !dvbridge_fel_has_enhancement(m_dvFel.get());
+  const bool continueBaseDrain = m_dvFel && (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN) &&
+                                 !(m_codecControlFlags & DVD_CODEC_CTRL_POLL);
 #else
   constexpr bool continueBaseDrain = false;
 #endif
