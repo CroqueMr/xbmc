@@ -289,10 +289,7 @@ namespace OVERLAY {
 
     std::shared_ptr<struct KODI::SUBTITLES::STYLE::style> m_overlayStyle;
     std::atomic<bool> m_isSettingsChanged{false};
-    // Whether last frame had any image/SPU overlay. Used by PrepareOverlays
-    // to detect arrival/disappearance transitions (image/SPU have no
-    // per-frame change signal of their own, unlike libass detect_change).
-    bool m_prevHadImageSpu{false};
+    std::vector<const CDVDOverlay*> m_previousBitmapOverlays;
     KODI::SUBTITLES::BitmapOptions m_bitmapOptions;
     std::atomic<bool> m_bitmapSettingsChanged{true};
     CRect m_bitmapBounds;
