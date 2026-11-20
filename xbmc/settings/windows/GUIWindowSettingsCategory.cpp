@@ -11,6 +11,8 @@
 #include "GUIPassword.h"
 #include "GUIUserMessages.h"
 #include "ServiceBroker.h"
+#include "application/ApplicationComponents.h"
+#include "application/ApplicationPlayer.h"
 #include "input/actions/Action.h"
 #include "input/actions/ActionIDs.h"
 #include "settings/DisplaySettings.h"
@@ -107,7 +109,11 @@ bool CGUIWindowSettingsCategory::OnMessage(CGUIMessage &message)
     {
       if (message.GetParam1() == GUI_MSG_WINDOW_RESIZE)
       {
-        if (IsActive() && CDisplaySettings::GetInstance().GetCurrentResolution() != CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution())
+        // Playback timing is temporary; retain the desktop return resolution.
+        if (IsActive() &&
+            !CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>()->IsPlaying() &&
+            CDisplaySettings::GetInstance().GetCurrentResolution() !=
+                CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution())
         {
           CDisplaySettings::GetInstance().SetCurrentResolution(CServiceBroker::GetWinSystem()->GetGfxContext().GetVideoResolution(), true);
           CreateSettings();

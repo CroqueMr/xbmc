@@ -26040,11 +26040,15 @@ msgid "FEL upscaling"
 msgstr ""
 
 msgctxt "#40908"
-msgid "Choose FEL upscaling: VAAPI or nearest neighbour on the GPU. If VAAPI is unavailable, nearest neighbour is used."
+msgid "FEL upscaling: VAAPI, GPU bilinear or Reference GPU. Master Reference always uses Reference GPU. If VAAPI is unavailable, GPU bilinear is used."
 msgstr ""
 
 msgctxt "#40909"
-msgid "Nearest neighbour (GPU)"
+msgid "Bilinear (GPU)"
+msgstr ""
+
+msgctxt "#40995"
+msgid "Reference (GPU)"
 msgstr ""
 
 msgctxt "#40911"
@@ -26097,6 +26101,18 @@ msgstr ""
 
 msgctxt "#40971"
 msgid "Source pixels unchanged. HDR10+ curve and saturation are not translated. Requires full-source analysis."
+msgstr ""
+
+msgctxt "#41012"
+msgid "HDR10+ playback"
+msgstr ""
+
+msgctxt "#41013"
+msgid "Remember the HDR10+ playback mode. Automatic fallback does not change this choice."
+msgstr ""
+
+msgctxt "#41014"
+msgid "HDR10+ native"
 msgstr ""
 
 msgctxt "#40970"
@@ -26196,15 +26212,15 @@ msgid "Adjust only bitmap subtitles in their authoring domain before composition
 msgstr ""
 
 msgctxt "#40980"
-msgid "CM4.0 metadata"
+msgid "Add CM4.0 metadata"
 msgstr ""
 
 msgctxt "#40981"
-msgid "Reference and Master only. Adds default CM4 metadata without changing video pixels. Automatic selection uses the original L2 trims."
+msgid "Adds CM4 metadata without changing video pixels or removing L2 trims. TV rendering may change. Reference and Master only."
 msgstr ""
 
 msgctxt "#40982"
-msgid "CM2.9 without L2 trims"
+msgid "Only if source has no L2 trims"
 msgstr ""
 
 msgctxt "#40983"

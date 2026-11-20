@@ -650,7 +650,8 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
   ClearNextHDR10AI();
   if (preferences.hdr10Source == DVBRIDGE::HDR10SourceMode::Native)
     return StopHDR10AI() ? Decision::Native : Decision::Wait;
-  if (m_state->aiStopping && !StopHDR10AI()) return Decision::Wait;
+  const bool retiring = m_state->aiStopping;
+  if (retiring && !StopHDR10AI()) return Decision::Wait;
   if (queue.empty() || !result) return Decision::Ignore;
   // Retire completed RGB leases even while anticipation is incomplete.
   if (Poll() == DVBRIDGE_DV_FAILED)
@@ -671,8 +672,8 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
   {
     cb1_hdr10plus_dovi_result description{};
     const bool direct=metadata && cb1_hdr10plus_dovi_describe(&description,metadata.get(),nullptr)==CB1_HDR10PLUS_DOVI_OK;
-    // The existing stop fence retires prior analysis/leases before changing strategy.
-    if(direct && !StopHDR10AI())return Decision::Wait;
+    // A stop completed at entry already retired prior analysis/leases.
+    if(direct && !retiring && !StopHDR10AI())return Decision::Wait;
     const auto status = direct ? (m_state->gl && !Quarantined() ?
         HDR10AI().Begin(m_state->gl->gpu,bundle,preferences,head.binding,head.pts,now,true,true) :
         HDR10AI().RecordStatus("metadata-context",CB1_AI_INCOMPATIBLE)) :
@@ -1542,7 +1543,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
   policy.revision = revision;
   dvbridge_renderer_set_optimized_dv(m_renderer,preferences.optimizedDV);
-  dvbridge_renderer_set_fel_nearest(m_renderer,preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416));
+  dvbridge_renderer_set_fel_filter(m_renderer, preferences.felUpscaling == 2 ? DVBRIDGE_FEL_REFERENCE : preferences.felUpscaling == 1 || (enhancement && enhancement->layout != DVBRIDGE_Y416) ? DVBRIDGE_FEL_BILINEAR : DVBRIDGE_FEL_DEFAULT);
   dvbridge_renderer_set_processing_optimizations(m_renderer,preferences.processingOptimizations);
   dvbridge_renderer_set_overlay_visible(m_renderer,m_overlayVisible);
   m_fallback = fallback;
@@ -1986,8 +1987,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
       return FrameStatus::Failed;
     if (m_hardwareFELFilter != effectiveFilter)
       DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 FEL filter selection: requested={} backend={}",
-          master ? "reference" : preferences.felUpscaling == 1 ? "nearest" : "vaapi",
-          master ? "reference-gpu" : preferences.felUpscaling == 1 ? "shader" : "vaapi-vpp");
+          master || preferences.felUpscaling == 2 ? "reference" : preferences.felUpscaling == 1 ? "bilinear" : "vaapi",
+          master || preferences.felUpscaling == 2 ? "reference-gpu" : preferences.felUpscaling == 1 ? "shader" : "vaapi-vpp");
     if (m_felVppStream != base.binding.stream)
     {
       m_rawELCache.clear();
@@ -2041,7 +2042,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHardwareFrame(const Layer& base
       else if (status == DVBRIDGE_VPP_FAILED)
       {
         m_felVppEnabled = false;
-        DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 FEL upscaling: VAAPI unavailable, using nearest GPU reconstruction");
+        DVBRIDGE::DiagnosticLog(LOGINFO,"CB1 FEL upscaling: VAAPI unavailable, using bilinear GPU reconstruction");
       }
     }
     if (!imported->scaled)
@@ -2298,8 +2299,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
       DVBRIDGE::DiagnosticLog(LOGINFO,
           "CB1 FEL presented: applicable={} requested={} executed={} backend={}",
           submission.felBackend != 0,
-          submission.felFilter < 0 ? "not-applicable" : submission.felFilter == 1 ? "nearest" : "vaapi",
-          submission.felBackend == 3 ? "reference" : submission.felBackend == 0 ? "not-applicable" : submission.felBackend == 2 ? "vaapi" : "nearest",
+          submission.felFilter < 0 ? "not-applicable" : submission.felFilter == 2 ? "reference" : submission.felFilter == 1 ? "bilinear" : "vaapi",
+          submission.felBackend == 3 ? "reference" : submission.felBackend == 0 ? "not-applicable" : submission.felBackend == 2 ? "vaapi" : "bilinear",
           submission.felBackend == 3 ? "reference-gpu" : submission.felBackend == 2 ? "vaapi-vpp" : submission.felBackend == 1 ? "shader" : "not-applicable"))
   {
     m_reportedFELStream=submission.identity.stream;
@@ -2529,7 +2530,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   m_submission = {};
 #ifdef CB1_HAS_HDR10_AI
   // The accepted page owns its immutable current fence; future commands follow it.
-  if (m_aiFrame) m_context->AdvanceNextHDR10AI(m_committedBinding,DVBRIDGE::FrameOutputSettings());
+  if (m_aiFrame) m_context->AdvanceNextHDR10AI(m_committedBinding,
+      DVBRIDGE::FrameOutputSettings(m_requested.hdr10Source == DVBRIDGE::HDR10SourceMode::HDR10PlusDV));
 #endif
   return true;
 }

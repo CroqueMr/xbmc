@@ -1844,7 +1844,8 @@ void CDVDVideoCodecFFmpeg::PrepareHDR10AIReopen()
 
 unsigned CDVDVideoCodecFFmpeg::GetHDR10AIBufferCount() const
 {
-  const auto mode = DVBRIDGE::hdr10PlaybackMode.load();
+  const auto mode = m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS ?
+      DVBRIDGE::hdr10PlusPlaybackMode.load() : DVBRIDGE::hdr10PlaybackMode.load();
   const bool hdr10 = DVBRIDGE::IsHDR10AIInput(
       m_hints.hdrType, mode == DVBRIDGE::HDR10SourceMode::HDR10PlusDV) &&
       !m_hints.dovi.rpu_present_flag;

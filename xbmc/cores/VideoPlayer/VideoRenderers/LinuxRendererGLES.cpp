@@ -220,7 +220,7 @@ bool CLinuxRendererGLES::Configure(const VideoPicture &picture, float fps, unsig
 
 #ifdef CB1_HAS_HDR10_AI
   m_aiOutputPending = HDR10AILookahead() &&
-      DVBRIDGE::FrameOutputSettings().hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
+      DVBRIDGE::FrameOutputSettings(picture.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS).hdr10Source != DVBRIDGE::HDR10SourceMode::Native;
   if (m_aiOutputPending)
   {
     // Keep the GUI output until AI preparation selects DV or native HDR10.
@@ -296,6 +296,8 @@ bool CLinuxRendererGLES::ConfigureVideoOutput(const VideoPicture& picture)
     CLog::Log(LOGWARNING, "LinuxRendererGLES::Configure: HDR passthrough active but GUI "
                           "compositing not supported by windowing system");
 
+  // AI priming may have compiled the ordinary shader before HDR was selected.
+  m_reloadShaders = true;
   m_bConfigured = true;
   return true;
 }

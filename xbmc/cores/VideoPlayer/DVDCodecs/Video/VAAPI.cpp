@@ -1098,10 +1098,19 @@ CDVDVideoCodec::VCReturn CDecoder::Check(AVCodecContext* avctx)
 
 #ifdef CB1_HAS_HDR10_AI
   if (state == VAAPI_OPEN &&
-      m_hdr10AIBuffers != static_cast<ICallbackHWAccel*>(avctx->opaque)->GetHDR10AIBufferCount())
+      m_hdr10AIBuffers < static_cast<ICallbackHWAccel*>(avctx->opaque)->GetHDR10AIBufferCount())
   {
-    static_cast<ICallbackHWAccel*>(avctx->opaque)->PrepareHDR10AIReopen();
-    return CDVDVideoCodec::VC_REOPEN;
+    // Finish output reads before Reopen destroys the codec-owned VA context.
+    Reset();
+    {
+      std::unique_lock lock(m_DecoderSection);
+      state = m_DisplayState;
+    }
+    if (state == VAAPI_OPEN)
+    {
+      static_cast<ICallbackHWAccel*>(avctx->opaque)->PrepareHDR10AIReopen();
+      return CDVDVideoCodec::VC_REOPEN;
+    }
   }
 #endif
   if (state == VAAPI_LOST)

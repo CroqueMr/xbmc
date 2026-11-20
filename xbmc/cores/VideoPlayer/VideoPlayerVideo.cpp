@@ -1131,6 +1131,9 @@ CVideoPlayerVideo::EOutputState CVideoPlayerVideo::OutputPicture(const VideoPict
   int buffer = m_renderManager.WaitForBuffer(m_bAbortOutput, maxWaitTime);
   if (buffer < 0)
   {
+    if (m_bAbortOutput)
+      return OUTPUT_ABORT;
+
     // The render buffer pool can fill up in trick-play FF, with more new pictures decoded than
     // are taken out at the display rate.
     // Drop the picture to let the renderer naturally drain the pool and make room for next iteration.

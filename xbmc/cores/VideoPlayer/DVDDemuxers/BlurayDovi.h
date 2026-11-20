@@ -178,8 +178,9 @@ public:
     ResyncPreroll();
     if (m_base.empty() || m_enhancement.empty())
       return AVERROR(EAGAIN);
-    if (m_resync && ((m_base.front()->pts != m_enhancement.front()->pts &&
-                     IsIrap(*m_base.front(), false)) ||
+    // Equal presentation heads need no prefix recovery despite unequal layer DTS.
+    if (m_resync && m_base.front()->pts != m_enhancement.front()->pts &&
+        (IsIrap(*m_base.front(), false) ||
         (m_base.front()->dts != AV_NOPTS_VALUE &&
         m_enhancement.front()->dts != AV_NOPTS_VALUE &&
         m_enhancement.front()->dts < m_base.front()->dts)))
@@ -240,6 +241,22 @@ public:
 
   bool Pending() const { return !m_base.empty() || !m_enhancement.empty() || !m_rpu.empty(); }
   const char* LastError() const { return m_error; }
+  struct QueueState
+  {
+    int64_t basePts, baseDts, elPts, elDts;
+    size_t basePackets, elPackets, rpuPackets;
+    bool resync, baseIrap, elIrap;
+    int restartPeer;
+  };
+  QueueState GetState() const
+  {
+    const auto* base = m_base.empty() ? nullptr : m_base.front().get();
+    const auto* el = m_enhancement.empty() ? nullptr : m_enhancement.front().get();
+    return {base ? base->pts : AV_NOPTS_VALUE, base ? base->dts : AV_NOPTS_VALUE,
+            el ? el->pts : AV_NOPTS_VALUE, el ? el->dts : AV_NOPTS_VALUE,
+            m_base.size(), m_enhancement.size(), m_rpu.size(),
+            m_resync, base && IsIrap(*base, false), el && IsIrap(*el, true), m_restartPeer};
+  }
   int64_t BasePTS() const { return m_base.empty() ? AV_NOPTS_VALUE : m_base.front()->pts; }
   int64_t RpuPTS() const { return m_rpu.empty() ? AV_NOPTS_VALUE : m_rpu.begin()->first; }
   size_t TakePrerollCount() { const auto count=m_preroll; m_preroll=0; return count; }
