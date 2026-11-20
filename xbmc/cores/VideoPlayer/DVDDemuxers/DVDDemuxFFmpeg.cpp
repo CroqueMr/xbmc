@@ -1304,9 +1304,12 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
 #endif
 #ifdef HAVE_DVBRIDGE
           if (m_blurayDovi && m_pkt.pkt.stream_index == m_blurayBase &&
-              m_blurayTiming.valid && (m_blurayTiming.basePts == AV_NOPTS_VALUE ||
-                                       m_blurayTiming.basePts == m_pkt.pkt.pts))
+              m_blurayTiming.valid)
+          {
             pPacket->doviLayerTimes = m_blurayTiming;
+            pPacket->doviLayerTimes.baseFlags = m_pkt.pkt.flags;
+            pPacket->videoDecodeOnly |= (m_pkt.pkt.flags & AV_PKT_FLAG_DISCARD) != 0;
+          }
 #endif
 
           CDVDInputStream::IDisplayTime* inputStream = m_pInput->GetIDisplayTime();
@@ -2162,7 +2165,16 @@ CDemuxStream* CDVDDemuxFFmpeg::AddStream(int streamIdx)
 #ifdef HAVE_DVBRIDGE
           sideData = av_packet_side_data_get(pStream->codecpar->coded_side_data,
                                             pStream->codecpar->nb_coded_side_data, AV_PKT_DATA_HEVC_CONF);
-          if (sideData && sideData->size >= 23 && sideData->size <= 1024 * 1024)
+          if (m_blurayDovi && streamIdx == m_blurayBase)
+          {
+            const auto* enhancement = m_blurayDovi->EnhancementParameters();
+            st->doviDeclaredEL = true;
+            st->doviELWidth = enhancement->width;
+            st->doviELHeight = enhancement->height;
+            if (enhancement->extradata_size > 0)
+              st->doviELConfig = FFmpegExtraData(enhancement->extradata, enhancement->extradata_size);
+          }
+          else if (sideData && sideData->size >= 23 && sideData->size <= 1024 * 1024)
             st->doviELConfig = FFmpegExtraData(sideData->data, sideData->size);
 #endif
         }
@@ -3434,13 +3446,14 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
         report("missing-dv-config");
         return;
       }
-      if (!join->Configure(bl->codecpar, el->codecpar, bl->time_base, el->time_base, transport) ||
-          avcodec_parameters_copy(combined.get(), join->BaseParameters()) < 0)
-      {
-        CLog::Log(LOGWARNING, "DV layers: HEVC normalization unavailable");
-        report("normalization-unavailable");
-        return;
-      }
+    }
+    if (!join->Configure(bl->codecpar, el->codecpar, bl->time_base, el->time_base,
+                         bluray || transport) ||
+        avcodec_parameters_copy(combined.get(), join->BaseParameters()) < 0)
+    {
+      CLog::Log(LOGWARNING, "DV layers: HEVC normalization unavailable");
+      report("normalization-unavailable");
+      return;
     }
     auto* config = av_packet_side_data_new(&combined->coded_side_data,
         &combined->nb_coded_side_data, AV_PKT_DATA_DOVI_CONF,
@@ -3483,7 +3496,7 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
     m_blurayEnhancement = el->index;
     bl->discard = el->discard = AVDISCARD_NONE;
     m_blurayDovi = std::move(join);
-    CLog::Log(LOGINFO, "DV {}: joined Profile 7 input, BL={} EL={} normalization={} clocks={}/{}:{}/{}",
+    CLog::Log(LOGINFO, "DV {}: separate Profile 7 input, BL={} EL={} normalization={} clocks={}/{}:{}/{}",
         bluray ? "Blu-ray" : m_bMatroska ? "Matroska" : mov ? "MP4" : "MPEG-TS", bl->id, el->id,
         normalize ? "HEVC Annex B" : "none", bl->time_base.num, bl->time_base.den,
         el->time_base.num, el->time_base.den);
@@ -3500,10 +3513,10 @@ int CDVDDemuxFFmpeg::ReadBlurayDovi(AVPacket* packet)
     const int result = m_blurayDovi->Take(packet, end);
     if (result == 0)
     {
-      const auto source = m_blurayDovi->Timing();
-      const auto clock = m_pFormatContext->streams[m_blurayBase]->time_base;
+      const auto& source = m_blurayDovi->Timing();
       m_blurayTiming = {source.basePts, source.enhancementPts, source.epoch,
-                        clock.num, clock.den, true, source.presentable};
+                       source.clock.num, source.clock.den, true, source.presentable,
+                       source.enhancement, source.enhancement ? source.enhancement->size : 0};
       packet->stream_index = m_blurayBase;
     }
     return result;

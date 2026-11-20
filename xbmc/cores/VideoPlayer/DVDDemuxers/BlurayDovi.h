@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -40,7 +41,7 @@ struct CBlurayVideoWindow
   }
 };
 
-// Present separate HEVC layers as the joined stream consumed by CB1.
+// Queue each HEVC track in decode order. Only RPU follows picture identity.
 class CBlurayDovi
 {
 public:
@@ -54,6 +55,9 @@ public:
     if (!filter || baseClock.num <= 0 || baseClock.den <= 0 ||
         enhancementClock.num <= 0 || enhancementClock.den <= 0)
       return false;
+    // Use the historical BL timebase if no exact common tick fits AVRational.
+    // Push still checks exactness of each individual identity before admitting it.
+    const auto clock = av_gcd_q(baseClock, enhancementClock, INT_MAX, baseClock);
     std::array<Filter, 2> prepared;
     const AVCodecParameters* parameters[] = {base, enhancement};
     const AVRational clocks[] = {baseClock, enhancementClock};
@@ -70,10 +74,13 @@ public:
         return false;
     }
     m_filters = std::move(prepared);
+    m_clocks = {baseClock, enhancementClock};
+    m_clock = clock;
     m_transportClock = transportClock;
     return true;
   }
   const AVCodecParameters* BaseParameters() const { return m_filters[0]->par_out; }
+  const AVCodecParameters* EnhancementParameters() const { return m_filters[1]->par_out; }
   const AVCodecParameters* OriginalBaseParameters() const
   { return m_filters[0] ? m_filters[0]->par_in : nullptr; }
 
@@ -110,15 +117,7 @@ public:
       if (!input || !normalized || av_bsf_send_packet(filter, input.get()) < 0 ||
           av_bsf_receive_packet(filter, normalized.get()) < 0)
         return Reject("hevc-normalization");
-      const auto from = filter->time_base_out, to = m_filters[0]->time_base_out;
-      if (av_cmp_q(from, to))
-      {
-        const auto pts = normalized->pts;
-        av_packet_rescale_ts(normalized.get(), from, to);
-        // PTS identifies the picture; DTS/duration use FFmpeg's native rescaling.
-        if (pts != AV_NOPTS_VALUE && av_compare_ts(pts, from, normalized->pts, to))
-          return Reject("layer-time-base");
-      }
+      normalized->time_base = m_clocks[enhancement];
       packet = normalized.get();
     }
     if (m_transportClock && enhancement && packet->pts != AV_NOPTS_VALUE &&
@@ -153,6 +152,10 @@ public:
       if (m_resync && !enhancement) return SkipPreroll();
       return Reject("packet");
     }
+    const int64_t identity = Identity(packet->pts, enhancement);
+    if (identity == AV_NOPTS_VALUE ||
+        av_compare_ts(packet->pts, m_clocks[enhancement], identity, m_clock))
+      return Reject("layer-time-base");
     auto& queue = enhancement ? m_enhancement : m_base;
     if (queue.size() >= MAX_PACKETS)
       return Reject(enhancement ? "enhancement-queue" : "base-queue");
@@ -160,6 +163,7 @@ public:
       return Reject("duplicate-layer-pts");
 
     std::vector<uint8_t> layer, rpu;
+    bool hasPicture = false;
     auto begin = Start(packet->data, packet->size, 0);
     if (begin[0] != 0)
       return Reject("annex-b");
@@ -170,27 +174,23 @@ public:
       if (size < 2 || packet->data[begin[1]] & 0x80 || !(packet->data[begin[1]+1] & 7))
         return Reject("nal-header");
       const int type = (packet->data[begin[1]] >> 1) & 63;
+      hasPicture |= type < 32;
       if (type == 62)
       {
         if (!rpu.empty()) return Reject("multiple-rpu");
-        if (!enhancement)
+        if (enhancement)
           layer.insert(layer.end(), packet->data, packet->data + begin[0]);
         rpu.insert(rpu.end(), {0, 0, 0, 1});
         rpu.insert(rpu.end(), packet->data + begin[1], packet->data + next[0]);
       }
-      else if (enhancement)
-      {
-        layer.insert(layer.end(), {0, 0, 0, 1, 0x7e, 1});
-        layer.insert(layer.end(), packet->data + begin[1], packet->data + next[0]);
-      }
-      else if (!rpu.empty())
+      else if (enhancement && !rpu.empty())
         layer.insert(layer.end(), packet->data + begin[0], packet->data + next[0]);
       if (layer.size() + rpu.size() > MAX_BYTES - m_bytes)
         return Reject("byte-limit");
       begin = next;
     }
-    if ((enhancement || !rpu.empty()) && layer.empty()) return Reject("missing-layer");
-    const auto saved = m_rpu.find(packet->pts);
+    if (!rpu.empty() && !hasPicture) return Reject("missing-layer");
+    const auto saved = m_rpu.find(identity);
     const unsigned layerBit = enhancement ? 2 : 1;
     if (saved != m_rpu.end() && (saved->second.layers & layerBit))
       return Reject("duplicate-layer-pts");
@@ -201,7 +201,7 @@ public:
     if (saved == m_rpu.end() && m_rpu.size() >= 2 * MAX_PACKETS)
       return Reject("rpu-queue");
     Packet owned;
-    if (!enhancement && rpu.empty())
+    if (!enhancement || rpu.empty())
       owned.reset(av_packet_clone(packet));
     else
     {
@@ -212,14 +212,16 @@ public:
       std::memcpy(owned->data, layer.data(), layer.size());
     }
     if (!owned) return Reject("allocation");
-    if (enhancement && m_resync && m_elAnchor == AV_NOPTS_VALUE && IsIrap(*owned, true))
+    if (enhancement && m_resync && m_elAnchor == AV_NOPTS_VALUE && IsIrap(*owned))
       m_elAnchor = packet->pts;
     const size_t bytes = owned->size + (store ? rpu.size() : 0);
     if (bytes > MAX_BYTES - m_bytes) return Reject("byte-limit");
     m_bytes += bytes;
     queue.push_back(std::move(owned));
-    auto& record = m_rpu[packet->pts];
+    auto& record = m_rpu[identity];
     record.layers |= layerBit;
+    if (!enhancement && !rpu.empty())
+      record.baseHasRpu = true;
     if (store) record.bytes = std::move(rpu);
     if (record.emitted && record.layers == 3)
     {
@@ -241,39 +243,48 @@ public:
         m_bytes = 0;
         return AVERROR_EOF;
       }
-      m_timing = {AV_NOPTS_VALUE, m_enhancement.front()->pts, m_epoch, false};
-      m_bytes -= m_enhancement.front()->size;
-      av_packet_move_ref(output, m_enhancement.front().get());
+      const auto& tail = m_enhancement.front();
+      av_packet_unref(output); // No BL timestamp, duration or metadata on EL-only work.
+      m_timing = {AV_NOPTS_VALUE, Identity(tail->pts, true), m_epoch, false, m_clock,
+                  std::shared_ptr<const AVPacket>(std::move(m_enhancement.front()))};
+      m_bytes -= m_timing.enhancement->size;
       m_enhancement.pop_front();
-      return 0; // Explicit EL-only terminal unit; never sent to the BL decoder.
+      return 0; // Only EL remains. No BL bytes are admitted to the base decoder.
     }
+    const auto basePts = m_base.front()->pts;
+    const auto baseIdentity = Identity(basePts, false);
+    auto rpu = m_rpu.find(baseIdentity);
+    const bool missing = rpu == m_rpu.end() || rpu->second.bytes.empty();
+    const bool bothSeen = rpu != m_rpu.end() && rpu->second.layers == 3;
     if (m_enhancement.empty() && !end)
       return AVERROR(EAGAIN);
-    auto rpu = m_rpu.find(m_base.front()->pts);
-    const bool missing = rpu == m_rpu.end() || rpu->second.bytes.empty();
-    // At EOF no more metadata can arrive. Keep the BL for reference decoding
-    // even without its own RPU; Timing().presentable excludes that picture.
-    const bool seekPreroll = m_resync && m_transportClock &&
-        m_lastDts[1] != AV_NOPTS_VALUE && m_base.front()->pts < m_lastDts[1];
-    if (missing && !end && !seekPreroll)
+    // The BL is still a decoder reference when its exact RPU is proven missing.
+    const bool seekPreroll = m_resync && m_transportClock && m_lastDts[1] != AV_NOPTS_VALUE &&
+        av_compare_ts(basePts, m_clocks[0], m_lastDts[1], m_clocks[1]) < 0;
+    if (missing && !end && !seekPreroll && !bothSeen)
       return AVERROR(EAGAIN);
-    const auto* layer = m_enhancement.empty() ? nullptr : m_enhancement.front().get();
-    const int baseSize = m_base.front()->size;
-    const size_t rpuSize = missing ? 0 : rpu->second.bytes.size();
-    const size_t extra = (layer ? layer->size : 0) + rpuSize;
-    if (extra > MAX_BYTES - static_cast<size_t>(baseSize))
+    const size_t baseSize = m_base.front()->size;
+    const size_t rpuSize = missing || rpu->second.baseHasRpu ? 0 : rpu->second.bytes.size();
+    if (rpuSize > MAX_BYTES - baseSize)
       return AVERROR_INVALIDDATA;
-    Packet joined(av_packet_clone(m_base.front().get()));
-    if (!joined || av_grow_packet(joined.get(), extra) < 0)
-      return AVERROR(ENOMEM);
-    if (layer) std::memcpy(joined->data + baseSize, layer->data, layer->size);
     if (rpuSize)
-      std::memcpy(joined->data + baseSize + (layer ? layer->size : 0), rpu->second.bytes.data(), rpuSize);
-    m_timing = {joined->pts, layer ? layer->pts : AV_NOPTS_VALUE, m_epoch, !missing};
-    m_bytes -= baseSize + (layer ? layer->size : 0);
-    av_packet_move_ref(output, joined.get());
+    {
+      auto* base = m_base.front().get();
+      if (av_packet_make_writable(base) < 0 || av_grow_packet(base, rpuSize) < 0)
+        return AVERROR(ENOMEM);
+      std::memcpy(base->data + baseSize, rpu->second.bytes.data(), rpuSize);
+    }
+    m_timing = {baseIdentity, AV_NOPTS_VALUE, m_epoch, !missing, m_clock, {}};
+    if (!m_enhancement.empty())
+    {
+      m_timing.enhancementPts = Identity(m_enhancement.front()->pts, true);
+      m_timing.enhancement = std::shared_ptr<const AVPacket>(std::move(m_enhancement.front()));
+      m_bytes -= m_timing.enhancement->size;
+      m_enhancement.pop_front();
+    }
+    m_bytes -= baseSize;
+    av_packet_move_ref(output, m_base.front().get());
     m_base.pop_front();
-    if (layer) m_enhancement.pop_front();
     if (rpu != m_rpu.end())
     {
       rpu->second.emitted = true;
@@ -283,7 +294,8 @@ public:
         m_rpu.erase(rpu);
       }
     }
-    if (!missing && m_elAnchor != AV_NOPTS_VALUE && output->pts >= m_elAnchor)
+    if (!missing && m_elAnchor != AV_NOPTS_VALUE &&
+        av_compare_ts(basePts, m_clocks[0], m_elAnchor, m_clocks[1]) >= 0)
       m_resync = false;
     return 0;
   }
@@ -293,8 +305,10 @@ public:
     int64_t basePts{AV_NOPTS_VALUE}, enhancementPts{AV_NOPTS_VALUE};
     uint64_t epoch{0};
     bool presentable{false};
+    AVRational clock{};
+    std::shared_ptr<const AVPacket> enhancement;
   };
-  SourceTiming Timing() const { return m_timing; }
+  const SourceTiming& Timing() const { return m_timing; }
 
   bool Pending() const { return !m_base.empty() || !m_enhancement.empty() || !m_rpu.empty(); }
   const char* LastError() const { return m_error; }
@@ -313,14 +327,14 @@ public:
             el ? el->pts : AV_NOPTS_VALUE, el ? el->dts : AV_NOPTS_VALUE,
             m_base.size(), m_enhancement.size(), size_t(std::count_if(m_rpu.begin(), m_rpu.end(),
               [](const auto& item) { return !item.second.bytes.empty(); })),
-            m_resync, base && IsIrap(*base, false), el && IsIrap(*el, true), m_restartPeer};
+            m_resync, base && IsIrap(*base), el && IsIrap(*el), m_restartPeer};
   }
   int64_t BasePTS() const { return m_base.empty() ? AV_NOPTS_VALUE : m_base.front()->pts; }
   int64_t RpuPTS() const
   {
     const auto entry = std::find_if(m_rpu.begin(), m_rpu.end(),
       [](const auto& item) { return !item.second.bytes.empty(); });
-    return entry == m_rpu.end() ? AV_NOPTS_VALUE : entry->first;
+    return entry == m_rpu.end() ? AV_NOPTS_VALUE : av_rescale_q(entry->first, m_clock, m_clocks[0]);
   }
   size_t TakePrerollCount() { const auto count=m_preroll; m_preroll=0; return count; }
   bool TakeDiscontinuity() { const bool changed=m_discontinuity; m_discontinuity=false; return changed; }
@@ -341,7 +355,12 @@ private:
   using Filter = std::unique_ptr<AVBSFContext, ReleaseFilter>;
   std::array<Filter, 2> m_filters;
 
-  static bool IsIrap(const AVPacket& packet, bool wrapped)
+  int64_t Identity(int64_t pts, bool enhancement) const
+  {
+    return av_rescale_q(pts, m_clocks[enhancement], m_clock);
+  }
+
+  static bool IsIrap(const AVPacket& packet)
   {
     bool irap = false;
     auto begin = Start(packet.data, packet.size, 0);
@@ -350,15 +369,8 @@ private:
     while (begin[0] < packet.size)
     {
       const auto next = Start(packet.data, packet.size, begin[1]);
-      int payload = begin[1];
-      int size = next[0] - payload;
-      if (wrapped)
-      {
-        if (size < 4 || ((packet.data[payload] >> 1) & 63) != 63)
-          return false;
-        payload += 2;
-        size -= 2;
-      }
+      const int payload = begin[1];
+      const int size = next[0] - payload;
       if (size < 2 || (packet.data[payload] & 0x80) || !(packet.data[payload+1] & 7))
         return false;
       const int type = (packet.data[payload] >> 1) & 63;
@@ -395,6 +407,7 @@ private:
     std::vector<uint8_t> bytes;
     unsigned layers{0};
     bool emitted{false};
+    bool baseHasRpu{false};
   };
   // Retain emitted metadata until the peer arrives, so late conflicts cannot escape validation.
   std::map<int64_t, Rpu> m_rpu;
@@ -409,5 +422,7 @@ private:
   uint64_t m_epoch{1};
   uint64_t* m_epochs{};
   bool m_transportClock{false};
+  std::array<AVRational, 2> m_clocks{{{1, 90000}, {1, 90000}}};
+  AVRational m_clock{1, 90000};
   SourceTiming m_timing;
 };

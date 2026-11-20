@@ -97,6 +97,8 @@ void CDVDStreamInfo::Clear()
   dovi = {};
 #ifdef HAVE_DVBRIDGE
   doviELConfig = {};
+  doviDeclaredEL = false;
+  doviELWidth = doviELHeight = 0;
 #endif
 
   channels   = 0;
@@ -123,7 +125,9 @@ bool CDVDStreamInfo::Equal(const CDVDStreamInfo& right, int compare)
     return false;
   }
 #ifdef HAVE_DVBRIDGE
-  if (compare & COMPARE_EXTRADATA && doviELConfig != right.doviELConfig)
+  if (compare & COMPARE_EXTRADATA &&
+      (doviELConfig != right.doviELConfig || doviDeclaredEL != right.doviDeclaredEL ||
+       doviELWidth != right.doviELWidth || doviELHeight != right.doviELHeight))
     return false;
 #endif
 
@@ -275,6 +279,9 @@ void CDVDStreamInfo::Assign(const CDVDStreamInfo& right, bool withextradata)
   dovi = right.dovi;
 #ifdef HAVE_DVBRIDGE
   doviELConfig = withextradata ? right.doviELConfig : FFmpegExtraData{};
+  doviDeclaredEL = right.doviDeclaredEL;
+  doviELWidth = right.doviELWidth;
+  doviELHeight = right.doviELHeight;
 #endif
 
   // AUDIO
@@ -348,6 +355,9 @@ void CDVDStreamInfo::Assign(const CDemuxStream& right, bool withextradata)
     dovi = stream->dovi;
 #ifdef HAVE_DVBRIDGE
     doviELConfig = withextradata ? stream->doviELConfig : FFmpegExtraData{};
+    doviDeclaredEL = stream->doviDeclaredEL;
+    doviELWidth = stream->doviELWidth;
+    doviELHeight = stream->doviELHeight;
 #endif
   }
   else if (right.type == StreamType::SUBTITLE)

@@ -182,6 +182,8 @@ public:
   AVDOVIDecoderConfigurationRecord dovi{};
 #ifdef HAVE_DVBRIDGE
   FFmpegExtraData doviELConfig;
+  bool doviDeclaredEL{false};
+  int doviELWidth{0}, doviELHeight{0};
 #endif
 };
 
