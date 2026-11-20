@@ -2084,6 +2084,10 @@ void CVideoPlayer::Process()
           if (m_CurrentVideo.inited)
             m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN));
         }
+        if (bluray && bluray->WaitingForReadablePlaylist() &&
+            !m_VideoPlayerVideo->HasData() && !m_VideoPlayerAudio->HasData() &&
+            !m_renderManager.HasPendingVideoPresentation())
+          WaitForBlurayPlaylist();
 #endif
         // The disc ended this still's video input. Unlike an ordinary read
         // timeout, release its delayed pictures before waiting for navigation.
