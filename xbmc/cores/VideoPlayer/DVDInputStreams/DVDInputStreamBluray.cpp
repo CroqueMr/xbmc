@@ -836,7 +836,7 @@ bool CDVDInputStreamBluray::CanContinuePlayItem(uint32_t next) const
 
 bool CDVDInputStreamBluray::HoldEvent()
 {
-  if (m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
+  if (m_aborted || m_hold == HOLD_ERROR)
     return true;
 
   switch (m_event.event)
@@ -948,11 +948,11 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
   {
     do {
 
-      if (m_hold == HOLD_HELD)
-         return 0;
-
       if (m_hold == HOLD_ERROR || m_aborted || HasGivenUpReading())
         return -1;
+
+      if (m_hold == HOLD_HELD)
+        return 0;
 
 #if defined(BD_BDJ_PRESENTATION_TIMING)
       if (m_bdjWaitingForPlaylist)
@@ -980,6 +980,8 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         m_hold = HOLD_NONE;
 
       ProcessEvent();
+      if (m_hold == HOLD_ERROR || m_aborted || HasGivenUpReading())
+        return -1;
 #if defined(BD_BDJ_PRESENTATION_TIMING)
       if (m_bdjWaitingForPlaylist || m_hold == HOLD_HELD)
         return result;
@@ -1240,8 +1242,6 @@ void CDVDInputStreamBluray::SendMenuOverlays(int64_t pts)
   group->bForced       = true;
   group->iPTSStartTime = static_cast<double>(pts);
   group->iPTSStopTime  = 0;
-  group->SetDiscMenu(true);
-  group->SetOverlayContainerFlushable(false);
 
   // A menu, so that only the next page ends or replaces it and never a subtitle, and not
   // flushable: a seek flushes the container, and libbluray will not draw the page again on
@@ -1459,7 +1459,7 @@ int CDVDInputStreamBluray::GetTime()
 
 bool CDVDInputStreamBluray::PosTime(int ms)
 {
-  if (m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
+  if (m_aborted || m_hold == HOLD_ERROR)
     return false;
 
   if(bd_seek_time(m_bd, ms * 90) < 0)
@@ -1507,7 +1507,7 @@ void CDVDInputStreamBluray::GetChapterName(std::string& name, int ch)
 
 bool CDVDInputStreamBluray::SeekChapter(int ch)
 {
-  if (m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
+  if (m_aborted || m_hold == HOLD_ERROR)
     return false;
 
   if(m_titleInfo && bd_seek_chapter(m_bd, ch-1) < 0)
@@ -1823,14 +1823,14 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
 
   /* process any current event */
   ProcessEvent();
-  if (m_hold == HOLD_ERROR || m_hold == HOLD_EXIT)
+  if (m_hold == HOLD_ERROR || m_aborted || HasGivenUpReading())
     return NEXTSTREAM_NONE;
 
   /* process all queued up events */
   while(bd_get_event(m_bd, &m_event))
   {
     ProcessEvent();
-    if (m_hold == HOLD_ERROR || m_hold == HOLD_EXIT)
+    if (m_hold == HOLD_ERROR || m_aborted || HasGivenUpReading())
       return NEXTSTREAM_NONE;
   }
 
@@ -1838,9 +1838,6 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
   if (m_bdjWaitingForPlaylist)
     return NEXTSTREAM_RETRY;
 #endif
-  // The last read error can be queued with the events of a clip boundary
-  if (HasGivenUpReading())
-    return NEXTSTREAM_NONE;
 
   if(m_hold == HOLD_STILL)
     return NEXTSTREAM_RETRY;
@@ -1851,7 +1848,7 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
 
 void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
 {
-  if (m_bd == nullptr || !m_navmode || m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
+  if (m_bd == nullptr || !m_navmode || m_aborted || m_hold == HOLD_ERROR)
     return;
 
   int ret = bd_user_input(m_bd, -1, vk);
@@ -1869,7 +1866,7 @@ void CDVDInputStreamBluray::UserInput(bd_vk_key_e vk)
       if (HoldEvent())
         break;
       ProcessEvent();
-      if (m_hold == HOLD_ERROR || m_hold == HOLD_EXIT)
+      if (m_hold == HOLD_ERROR || m_aborted)
         return;
     }
   }
