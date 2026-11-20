@@ -99,6 +99,7 @@ public:
     m_discontinuity = false;
     m_restartPeer = -1;
     m_elAnchor = AV_NOPTS_VALUE;
+    m_retiredRpu = AV_NOPTS_VALUE;
     m_timing = {};
     m_epoch = m_epochs ? ++*m_epochs : m_epoch + 1;
   }
@@ -190,6 +191,9 @@ public:
       begin = next;
     }
     if (!rpu.empty() && !hasPicture) return Reject("missing-layer");
+    const bool retired = identity <= m_retiredRpu;
+    if (retired && (!enhancement || !rpu.empty()))
+      return Reject("late-layer-rpu");
     const auto saved = m_rpu.find(identity);
     const unsigned layerBit = enhancement ? 2 : 1;
     if (saved != m_rpu.end() && (saved->second.layers & layerBit))
@@ -198,8 +202,17 @@ public:
         saved->second.bytes != rpu)
       return Reject("conflicting-rpu");
     const bool store = !rpu.empty() && (saved == m_rpu.end() || saved->second.bytes.empty());
-    if (saved == m_rpu.end() && m_rpu.size() >= 2 * MAX_PACKETS)
-      return Reject("rpu-queue");
+    if (!retired && saved == m_rpu.end() && m_rpu.size() >= 2 * MAX_PACKETS)
+    {
+      const auto oldest = m_rpu.begin();
+      // Keep a bounded window for cross-track RPU validation. A very late
+      // EL without RPU is still useful to the enhancement decoder as a reference.
+      if (!oldest->second.emitted || !oldest->second.baseHasRpu || identity <= oldest->first)
+        return Reject("rpu-queue");
+      m_retiredRpu = oldest->first;
+      m_bytes -= oldest->second.bytes.size();
+      m_rpu.erase(oldest);
+    }
     Packet owned;
     if (!enhancement || rpu.empty())
       owned.reset(av_packet_clone(packet));
@@ -218,6 +231,8 @@ public:
     if (bytes > MAX_BYTES - m_bytes) return Reject("byte-limit");
     m_bytes += bytes;
     queue.push_back(std::move(owned));
+    if (retired)
+      return true;
     auto& record = m_rpu[identity];
     record.layers |= layerBit;
     if (!enhancement && !rpu.empty())
@@ -256,7 +271,7 @@ public:
     auto rpu = m_rpu.find(baseIdentity);
     const bool missing = rpu == m_rpu.end() || rpu->second.bytes.empty();
     const bool bothSeen = rpu != m_rpu.end() && rpu->second.layers == 3;
-    if (m_enhancement.empty() && !end)
+    if (m_enhancement.empty() && !end && missing)
       return AVERROR(EAGAIN);
     // The BL is still a decoder reference when its exact RPU is proven missing.
     const bool seekPreroll = m_resync && m_transportClock && m_lastDts[1] != AV_NOPTS_VALUE &&
@@ -419,6 +434,7 @@ private:
   bool m_discontinuity{false};
   int m_restartPeer{-1};
   int64_t m_elAnchor{AV_NOPTS_VALUE};
+  int64_t m_retiredRpu{AV_NOPTS_VALUE};
   uint64_t m_epoch{1};
   uint64_t* m_epochs{};
   bool m_transportClock{false};
