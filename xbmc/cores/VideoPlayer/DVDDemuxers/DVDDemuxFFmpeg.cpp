@@ -270,6 +270,7 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
   m_speed = DVD_PLAYSPEED_NORMAL;
   m_program = UINT_MAX;
   m_seekToKeyFrame = false;
+  m_seekPreroll = false;
 
   const AVIOInterruptCB int_cb = { interrupt_cb, this };
 
@@ -805,6 +806,7 @@ void CDVDDemuxFFmpeg::Flush()
 #ifdef HAVE_DVBRIDGE
   if (m_blurayDovi)
     m_blurayDovi->Reset(true);
+  m_blurayTiming = {};
 #endif
   if (m_pFormatContext)
   {
@@ -821,6 +823,7 @@ void CDVDDemuxFFmpeg::Flush()
   m_displayTime = 0;
   m_dtsAtDisplayTime = DVD_NOPTS_VALUE;
   m_seekToKeyFrame = false;
+  m_seekPreroll = false;
 
   if (m_offsetMetadata)
     m_offsetMetadata->Flush();
@@ -1188,7 +1191,10 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
       }
       else
       {
-        ParsePacket(&m_pkt.pkt);
+#ifdef HAVE_DVBRIDGE
+        if (!(m_blurayTiming.valid && m_blurayTiming.basePts == AV_NOPTS_VALUE))
+#endif
+          ParsePacket(&m_pkt.pkt);
 
         if (IsProgramChange())
         {
@@ -1281,6 +1287,12 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
                                               stream->time_base.den);
 
           CDVDDemuxUtils::StoreSideData(pPacket, &m_pkt.pkt);
+#ifdef HAVE_DVBRIDGE
+          if (m_blurayDovi && m_pkt.pkt.stream_index == m_blurayBase &&
+              m_blurayTiming.valid && (m_blurayTiming.basePts == AV_NOPTS_VALUE ||
+                                       m_blurayTiming.basePts == m_pkt.pkt.pts))
+            pPacket->doviLayerTimes = m_blurayTiming;
+#endif
 
           CDVDInputStream::IDisplayTime* inputStream = m_pInput->GetIDisplayTime();
           if (inputStream)
@@ -1392,6 +1404,7 @@ DemuxPacket* CDVDDemuxFFmpeg::Read()
 bool CDVDDemuxFFmpeg::SeekTime(double time, bool backwards, double* startpts)
 {
   bool hitEnd = false;
+  m_seekPreroll = false;
 
   if (!m_pInput)
     return false;
@@ -1519,6 +1532,7 @@ bool CDVDDemuxFFmpeg::SeekTime(double time, bool backwards, double* startpts)
           const int64_t anchor = dvbridge_fel_seek_point_at(m_pFormatContext, id, target, &layerPosition, original);
           if (anchor != AV_NOPTS_VALUE)
           {
+            m_seekPreroll = anchor < target;
             seek_pts = av_rescale_q(anchor, video->time_base, AV_TIME_BASE_Q);
             backwards = true;
             CLog::Log(LOGDEBUG, "DV FEL: random-access preroll begins at {} us for {} ms seek",
@@ -1543,6 +1557,7 @@ bool CDVDDemuxFFmpeg::SeekTime(double time, bool backwards, double* startpts)
 
     if (ret < 0)
     {
+      m_seekPreroll = false;
       // demuxer can return failure, if seeking behind eof
       if (beyondEof)
       {
@@ -3285,6 +3300,7 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
       return;
     }
   m_blurayDovi.reset();
+  m_blurayTiming = {};
   m_blurayBase = m_blurayEnhancement = -1;
   m_blurayAwaitBase = false;
   const bool mov = std::strcmp(format, "mov") == 0 || std::strncmp(format, "mov,", 4) == 0;
@@ -3353,7 +3369,7 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
       report("incompatible-layer-clocks");
       return;
     }
-    auto join = std::make_unique<CBlurayDovi>();
+    auto join = std::make_unique<CBlurayDovi>(&m_blurayEpoch, bluray || transport);
     std::unique_ptr<AVCodecParameters, AVCodecParametersDeleter> combined(avcodec_parameters_alloc());
     if (!combined || avcodec_parameters_copy(combined.get(), bl->codecpar) < 0)
     {
@@ -3388,7 +3404,7 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
         report("missing-dv-config");
         return;
       }
-      if (!join->Configure(bl->codecpar, el->codecpar, bl->time_base, el->time_base) ||
+      if (!join->Configure(bl->codecpar, el->codecpar, bl->time_base, el->time_base, transport) ||
           avcodec_parameters_copy(combined.get(), join->BaseParameters()) < 0)
       {
         CLog::Log(LOGWARNING, "DV layers: HEVC normalization unavailable");
@@ -3449,12 +3465,27 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
 
 int CDVDDemuxFFmpeg::ReadBlurayDovi(AVPacket* packet)
 {
-  int result = m_blurayDovi->Take(packet);
+  m_blurayTiming = {};
+  auto take = [&](bool end = false) {
+    const int result = m_blurayDovi->Take(packet, end);
+    if (result == 0)
+    {
+      const auto source = m_blurayDovi->Timing();
+      const auto clock = m_pFormatContext->streams[m_blurayBase]->time_base;
+      m_blurayTiming = {source.basePts, source.enhancementPts, source.epoch,
+                        clock.num, clock.den, true, source.presentable};
+      packet->stream_index = m_blurayBase;
+    }
+    return result;
+  };
+  int result = take();
   while (result == AVERROR(EAGAIN))
   {
     result = av_read_frame(m_pFormatContext, packet);
     if (result < 0)
     {
+      if (result == AVERROR_EOF && take(true) == 0)
+        return 0;
       if (result == AVERROR_EOF && m_blurayDovi->Pending())
         CLog::Log(LOGWARNING, "DV Blu-ray: incomplete layer pair at end of stream");
       return result;
@@ -3485,7 +3516,7 @@ int CDVDDemuxFFmpeg::ReadBlurayDovi(AVPacket* packet)
     av_packet_unref(packet);
     if (!accepted)
       return AVERROR_INVALIDDATA;
-    result = m_blurayDovi->Take(packet);
+    result = take();
   }
   if (result == 0)
     if (const auto count = m_blurayDovi->TakePrerollCount())

@@ -266,6 +266,9 @@ public:
    */
   virtual bool SeekTime(double time, bool backwards = false, double* startpts = nullptr) = 0;
 
+  // The last seek deliberately acquired earlier decoder references.
+  virtual bool HasSeekPreroll() const { return false; }
+
   /*
    * Seek to a specified chapter.
    * startpts can be updated to the point where display should start

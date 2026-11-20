@@ -46,6 +46,9 @@ extern "C"
 {
 #include "dvbridge_fel.h"
 #include <libavutil/hwcontext.h>
+#ifdef HAVE_LIBVA
+#include <libavutil/hwcontext_vaapi.h>
+#endif
 }
 #endif
 
@@ -573,6 +576,7 @@ void CDVDVideoCodecFFmpeg::Dispose()
 #ifdef HAVE_DVBRIDGE
   m_dvPending.clear();
   m_dvFel.reset();
+  m_dvLayerEpoch = 0;
   m_dvFailed = false;
   m_dvNativeOutput = false;
 #endif
@@ -684,6 +688,18 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   if (!packet.pData)
     return true;
 
+#ifdef HAVE_DVBRIDGE
+  const auto& layer = packet.doviLayerTimes;
+  if (m_dvFel && layer.valid && m_dvLayerEpoch && layer.epoch != m_dvLayerEpoch)
+  {
+    if (layer.epoch < m_dvLayerEpoch)
+    {
+      m_dvFailed = true;
+      return true;
+    }
+    Reset(); // Both native decoders and pending pictures share this boundary.
+  }
+#endif
   if (m_eof)
   {
     Reset();
@@ -717,12 +733,24 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   avpkt->side_data = static_cast<AVPacketSideData*>(packet.pSideData);
   avpkt->side_data_elems = packet.iSideDataElems;
 
-  int ret = avcodec_send_packet(m_pCodecContext, avpkt);
+  int ret;
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel && layer.valid && layer.basePts == AV_NOPTS_VALUE)
+    ret = 0; // An explicit terminal EL unit is not a BL access unit.
+  else
+#endif
+    ret = avcodec_send_packet(m_pCodecContext, avpkt);
 #ifdef HAVE_DVBRIDGE
   // Submit once, only after BL accepted the packet (Kodi retries EAGAIN).
   if (ret == 0 && m_dvFel)
   {
-    if (!dvbridge_fel_submit(m_dvFel.get(), avpkt))
+    if (packet.doviLayerTimes.valid) m_dvLayerEpoch = packet.doviLayerTimes.epoch;
+    const auto& timing = packet.doviLayerTimes;
+    const dvbridge_fel_source source{timing.basePts, timing.enhancementPts,
+        {timing.clockNum, timing.clockDen}, timing.epoch, timing.presentable};
+    const bool submitted = timing.valid ? dvbridge_fel_submit_source(m_dvFel.get(), avpkt, &source) :
+                                         dvbridge_fel_submit(m_dvFel.get(), avpkt);
+    if (!submitted)
       m_dvFailed = true;
     else
       ReportDVStartup(2, "fel-input-accepted");
@@ -735,6 +763,10 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   av_buffer_unref(&avpkt->buf);
   av_free(avpkt);
 
+#ifdef HAVE_DVBRIDGE
+  if (m_dvFel && layer.valid && layer.basePts == AV_NOPTS_VALUE)
+    return true;
+#endif
   // try again
   if (ret == AVERROR(EAGAIN))
   {
@@ -779,70 +811,102 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
 #ifdef HAVE_DVBRIDGE
   if (m_dvFel)
   {
-    auto emit = [&]() -> VCReturn
+    for (;;)
     {
-      if (m_dvPending.empty())
-        return VC_NONE;
-      auto& base = m_dvPending.front();
-      if (base->doviSourcePts == AV_NOPTS_VALUE)
-        return VC_FATAL;
-      AVFrame* enhancement = nullptr;
-      int result = dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts,
-                                     &enhancement);
-      if (result == 2)
+      auto emit = [&]() -> VCReturn
       {
-        m_dvPending.pop_front();
+        while (!m_dvPending.empty())
+        {
+          auto& base = m_dvPending.front();
+          if (base->doviSourcePts == AV_NOPTS_VALUE)
+            return VC_FATAL;
+          AVFrame* enhancement = nullptr;
+          int result = dvbridge_fel_take(m_dvFel.get(), base->doviSourcePts,
+                                         &enhancement);
+          if (result == 2)
+          {
+            m_dvPending.pop_front();
+            continue;
+          }
+          if (result < 0)
+          {
+            CLog::Log(LOGERROR, "DV FEL: cannot pair {} pending base pictures; stopping without substitution",
+                      m_dvPending.size());
+            return VC_FATAL;
+          }
+          if (!result)
+            return VC_NONE;
+          if (m_dvLayerEpoch && (!base->doviMetadata.Data() ||
+              !(base->doviMetadata.Binding() == base->doviSourceBinding)))
+          {
+            av_frame_free(&enhancement);
+            return VC_FATAL;
+          }
+          ReportDVStartup(4, "el-decoded");
+#ifdef HAVE_LIBVA
+          if (base->iFlags & DVP_FLAG_DROPPED)
+          {
+            // Preroll bypasses the renderer's normal EL completion check. Consume
+            // its decode report before retiring the image, as Kodi does for BL.
+            const auto* frames = enhancement->hw_frames_ctx ?
+                reinterpret_cast<const AVHWFramesContext*>(enhancement->hw_frames_ctx->data) : nullptr;
+            const auto* device = frames ?
+                reinterpret_cast<const AVVAAPIDeviceContext*>(frames->device_ctx->hwctx) : nullptr;
+            if (!device || vaSyncSurface(device->display,
+                static_cast<VASurfaceID>(reinterpret_cast<uintptr_t>(enhancement->data[3]))) != VA_STATUS_SUCCESS)
+            {
+              CLog::Log(LOGERROR, "DV FEL: discarded picture decode did not complete at {}",
+                        base->doviSourcePts);
+              av_frame_free(&enhancement);
+              return VC_FATAL;
+            }
+          }
+#endif
+          base->doviEnhancement = {enhancement, [](AVFrame* f) { av_frame_free(&f); }};
+          // The pairing owner consumed the exact EL from this stream/reset epoch.
+          base->doviEnhancementBinding = base->doviMetadata.Binding();
+          pVideoPicture->CopyRef(*base);
+          m_dvPending.pop_front();
+          ReportDVStartup(8, "fel-paired");
+          return VC_PICTURE;
+        }
+        return VC_NONE;
+      };
+      VCReturn paired = emit();
+      if (paired != VC_NONE)
+        return paired;
+      if (m_dvFailed || dvbridge_fel_failed(m_dvFel.get()))
+        return VC_FATAL;
+      if (m_codecControlFlags & DVD_CODEC_CTRL_POLL)
         return VC_BUFFER;
-      }
-      if (result < 0)
+      if (m_dvPending.size() >= DVEnhancementPendingPictures)
+        return VC_FATAL;
+      auto base = std::make_shared<VideoPicture>();
+      base->Reset();
+      VCReturn result = GetBasePicture(base.get());
+      if (m_pCodecContext->hw_frames_ctx)
       {
-        CLog::Log(LOGERROR, "DV FEL: cannot pair {} pending base pictures; stopping without substitution",
-                  m_dvPending.size());
-        return VC_FATAL;
+        auto* frames = reinterpret_cast<AVHWFramesContext*>(m_pCodecContext->hw_frames_ctx->data);
+        if (!dvbridge_fel_device(m_dvFel.get(), frames->device_ref))
+          return VC_FATAL;
       }
-      if (!result)
-        return VC_NONE;
-      ReportDVStartup(4, "el-decoded");
-      base->doviEnhancement = {enhancement, [](AVFrame* f) { av_frame_free(&f); }};
-      // The pairing owner consumed the exact EL from this stream/reset epoch.
-      base->doviEnhancementBinding = base->doviMetadata.Binding();
-      pVideoPicture->CopyRef(*base);
-      m_dvPending.pop_front();
-      ReportDVStartup(8, "fel-paired");
-      return VC_PICTURE;
-    };
-    VCReturn paired = emit();
-    if (paired != VC_NONE)
-      return paired;
-    if (m_dvFailed || dvbridge_fel_failed(m_dvFel.get()))
-      return VC_FATAL;
-    if (m_codecControlFlags & DVD_CODEC_CTRL_POLL)
-      return VC_BUFFER;
-    if (m_dvPending.size() >= DVEnhancementPendingPictures)
-      return VC_FATAL;
-    auto base = std::make_shared<VideoPicture>();
-    base->Reset();
-    VCReturn result = GetBasePicture(base.get());
-    if (m_pCodecContext->hw_frames_ctx)
-    {
-      auto* frames = reinterpret_cast<AVHWFramesContext*>(m_pCodecContext->hw_frames_ctx->data);
-      if (!dvbridge_fel_device(m_dvFel.get(), frames->device_ref))
+      if (result == VC_PICTURE)
+      {
+        ReportDVStartup(1, "base-decoded");
+        m_dvPending.push_back(std::move(base));
+      }
+      if (result == VC_EOF || (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
+        if (!dvbridge_fel_drain(m_dvFel.get()))
+          return VC_FATAL;
+      paired = emit();
+      if (paired != VC_NONE)
+        return paired;
+      if (result == VC_EOF && !m_dvPending.empty())
         return VC_FATAL;
+      if (result == VC_PICTURE && (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
+        continue; // Retire internal preroll until a real picture or native EOF.
+      return result == VC_PICTURE ? VC_BUFFER : result;
     }
-    if (result == VC_PICTURE)
-    {
-      ReportDVStartup(1, "base-decoded");
-      m_dvPending.push_back(std::move(base));
-    }
-    if (result == VC_EOF || (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
-      if (!dvbridge_fel_drain(m_dvFel.get()))
-        return VC_FATAL;
-    paired = emit();
-    if (paired != VC_NONE)
-      return paired;
-    if (result == VC_EOF && !m_dvPending.empty())
-      return VC_FATAL;
-    return result == VC_PICTURE ? VC_BUFFER : result;
   }
 #endif
   const auto result = GetBasePicture(pVideoPicture);
@@ -1176,6 +1240,7 @@ void CDVDVideoCodecFFmpeg::Reset()
   m_dvPending.clear();
   dvbridge_fel_reset(m_dvFel.get());
   m_dvFailed = false;
+  m_dvLayerEpoch = 0;
 #endif
   m_started = false;
   m_startedInput = false;
@@ -1477,6 +1542,9 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
     sourceInfo.minLuma = av_q2d(sourceMastering.min_luminance);
   }
   pVideoPicture->doviSourcePts = m_pFrame->best_effort_timestamp;
+#ifdef HAVE_DVBRIDGE
+  if (m_dvLayerEpoch) pVideoPicture->doviSourcePts = m_pFrame->pts;
+#endif
   if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
     sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DOVI_METADATA);
@@ -1520,6 +1588,17 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
       }
     }
   }
+
+#ifdef HAVE_DVBRIDGE
+  if (m_dvLayerEpoch)
+  {
+    const auto* raw = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DOVI_RPU_BUFFER);
+    if (m_pFrame->pts == AV_NOPTS_VALUE || m_pFrame->decode_error_flags ||
+        (m_pFrame->flags & AV_FRAME_FLAG_CORRUPT) || !raw || !raw->data || raw->size < 5 ||
+        raw->data[0] != 25 || (raw->data[1] >> 2) != 2)
+      pVideoPicture->doviMetadata.Reset();
+  }
+#endif
 
   if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_HDR10 ||
       pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)

@@ -10,6 +10,7 @@
 
 #include "BlurayOffsetMetadata.h"
 #include "DVDDemux.h"
+#include "cores/VideoPlayer/Interface/DemuxPacket.h"
 #include "threads/CriticalSection.h"
 #include "threads/SystemClock.h"
 #include <map>
@@ -104,6 +105,7 @@ public:
   DemuxPacket* ReadInternal(bool keep);
 
   bool SeekTime(double time, bool backwards = false, double* startpts = NULL) override;
+  bool HasSeekPreroll() const override { return m_seekPreroll; }
   bool SeekByte(int64_t pos);
   int GetStreamLength() override;
   CDemuxStream* GetStream(int iStreamId) const override;
@@ -185,6 +187,8 @@ protected:
   int m_blurayBase{-1}, m_blurayEnhancement{-1};
   unsigned m_doviGroups{0};
   bool m_blurayAwaitBase{false};
+  DemuxPacket::DoviLayerTimes m_blurayTiming;
+  uint64_t m_blurayEpoch{0};
 #endif
 
   CCriticalSection m_critSection;
@@ -246,6 +250,7 @@ protected:
   int m_displayTime = 0;
   double m_dtsAtDisplayTime;
   bool m_seekToKeyFrame = false;
+  bool m_seekPreroll = false;
   double m_startTime = 0;
   std::vector<ChapterFFmpeg> m_chapters;
 };
