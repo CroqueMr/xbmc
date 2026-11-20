@@ -1053,6 +1053,16 @@ bool CVideoPlayer::WaitForBlurayPlaylist()
 
   m_HasVideo = true;
   m_renderManager.SetDiscMenuOnly(true);
+  UpdatePlayState(0);
+  if (!m_State.streamsReady)
+  {
+    if (m_playerOptions.fullscreen)
+      CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
+    IPlayerCallback* callback = &m_callback;
+    const CFileItem item = m_item;
+    m_outboundEvents->Submit([callback, item]() { callback->OnAVStarted(item); });
+    m_State.streamsReady = true;
+  }
   return true;
 #else
   return false;
@@ -1093,8 +1103,6 @@ bool CVideoPlayer::OpenDemuxStream()
     CLog::Log(LOGERROR, "{} - Error creating demuxer", __FUNCTION__);
     return false;
   }
-
-  m_renderManager.SetDiscMenuOnly(false);
 
   // A matroska remux of a 3D disc carries the same plane offsets in its dependent view.
   // The Blu-ray input stream's store wins when there is one; otherwise the demuxer's is
@@ -3446,7 +3454,8 @@ void CVideoPlayer::HandleMessages()
       m_renderManager.Flush(false, false);
       m_processInfo->ResetVideoCodecInfo();
       m_renderManager.ResetPictureInfo();
-      m_overlayContainer.Clear(DVDOverlaySource::MENU);
+      if (!m_renderManager.IsDiscMenuOnly())
+        m_overlayContainer.Clear(DVDOverlaySource::MENU);
 #ifdef HAVE_DVBRIDGE
       DVBRIDGE::PlaybackNotification::StartVideo();
 #endif

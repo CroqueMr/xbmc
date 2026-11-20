@@ -127,6 +127,7 @@ public:
   bool Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers = 0);
   bool AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop, EINTERLACEMETHOD deintMethod, bool wait);
   void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts);
+  bool IsDiscMenuOnly() const { return m_discMenuOnly; }
   void SetDiscMenuOnly(bool enabled);
   void SetDiscMenuPage(std::shared_ptr<CDVDOverlayGroup> page);
   void ShowVideo(bool enable);

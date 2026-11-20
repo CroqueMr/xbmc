@@ -611,7 +611,6 @@ void CRenderManager::FrameMove()
   {
     m_playerPort->UpdateGuiRender(true);
     m_playerPort->UpdateVideoRender(false);
-    return;
   }
 
   bool firstFrame = false;
@@ -1543,6 +1542,7 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
 #endif
   m_queued.push_back(m_free.front());
   m_free.pop_front();
+  SetDiscMenuOnly(false);
   m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
 
   // signal to any waiters to check state
