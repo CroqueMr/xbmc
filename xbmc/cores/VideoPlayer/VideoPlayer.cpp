@@ -1743,7 +1743,7 @@ void CVideoPlayer::ProcessBdjPresentation()
     CLog::Log(LOGDEBUG, "BD-J presentation: released seq {} at video pts {}", event.seq, pts);
   }
 
-  if (m_bdjDraining && bluray.WaitingForBdjPlaylist() &&
+  if (m_bdjDraining && (bluray.WaitingForBdjPlaylist() || bluray.HdmvEndPending()) &&
       !m_VideoPlayerVideo->HasData() && !m_VideoPlayerAudio->HasData() &&
       !m_renderManager.HasPendingVideoPresentation())
   {
@@ -1752,6 +1752,7 @@ void CVideoPlayer::ProcessBdjPresentation()
       bluray.ReleaseBdjEnd();
       CLog::Log(LOGDEBUG, "BD-J presentation: drained through sequence {}", seq);
     }
+    bluray.ReleaseHdmvEnd();
     m_bdjPresentationEvents.clear();
   }
   bluray.PollBdjEvents();
@@ -2054,8 +2055,11 @@ void CVideoPlayer::Process()
       if(next == CDVDInputStream::NEXTSTREAM_RETRY)
       {
 #if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
-        if (!m_bdjDraining && IsBlurayInput() &&
-            static_cast<CDVDInputStreamBluray&>(*m_pInputStream).WaitingForBdjPlaylist())
+        const auto* bluray = IsBlurayInput()
+                                 ? static_cast<CDVDInputStreamBluray*>(m_pInputStream.get())
+                                 : nullptr;
+        if (!m_bdjDraining && bluray &&
+            (bluray->WaitingForBdjPlaylist() || bluray->HdmvEndPending()))
         {
           m_bdjDraining = true;
           CLog::Log(LOGDEBUG, "BD-J presentation: draining the outgoing playlist");

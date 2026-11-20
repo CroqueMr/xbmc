@@ -100,6 +100,8 @@ public:
   */
   bool OnMenu() override;
   bool WaitingForReadablePlaylist() const;
+  bool HdmvEndPending() const { return m_hdmvEndPending; }
+  void ReleaseHdmvEnd();
   bool OnTopMenu();
   bool OnPopupMenu();
   void OnBack() override
@@ -288,6 +290,8 @@ protected:
   uint32_t m_angle = 0;
   std::atomic_bool m_menu{false};
   bool m_isInMainMenu = false;
+  bool m_hdmvEndPending{false};
+  bool m_hdmvEndReleased{false};
   std::atomic_bool m_menuShows{false};
   bool m_navmode = false;
 #if defined(BD_BDJ_PRESENTATION_TIMING)
