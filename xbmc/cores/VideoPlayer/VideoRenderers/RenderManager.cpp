@@ -813,6 +813,7 @@ void CRenderManager::UnInit()
   CancelPendingConfigure();
 
   m_overlays.UnInit();
+  m_discMenuBufferInvalidated = true;
   m_debugRenderer.Dispose();
 
   m_captureBlit.reset();
@@ -847,6 +848,7 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
     if (m_pRenderer)
     {
       m_overlays.Flush();
+      m_discMenuBufferInvalidated = true;
       m_debugRenderer.Flush();
 #ifdef CB1_HAS_HDR10_AI
       // Reset display timing even when its decoded pictures survive.
@@ -1095,14 +1097,17 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   if (m_discMenuOnly)
   {
     if (!gui)
+    {
+      m_overlays.RenderHDROverlays(menuBuffer);
       return;
+    }
 
     std::shared_ptr<CDVDOverlayGroup> page;
     {
       std::unique_lock lock(m_discMenuLock);
       page = m_discMenuPage;
     }
-    if (page != m_renderedDiscMenuPage)
+    if (m_discMenuBufferInvalidated.exchange(false) || page != m_renderedDiscMenuPage)
     {
       m_overlays.Release(menuBuffer);
       if (page)
@@ -1542,7 +1547,6 @@ bool CRenderManager::AddVideoPicture(const VideoPicture& picture, volatile std::
 #endif
   m_queued.push_back(m_free.front());
   m_free.pop_front();
-  SetDiscMenuOnly(false);
   m_playerPort->UpdateRenderBuffers(m_queued.size(), m_discard.size(), m_free.size());
 
   // signal to any waiters to check state
@@ -1840,6 +1844,11 @@ void CRenderManager::PrepareNextRender()
     m_discard.push_back(m_presentsource);
     m_presentsource = idx;
     m_queued.pop_front();
+    if (m_discMenuOnly)
+    {
+      SetDiscMenuOnly(false);
+      m_playerPort->UpdateVideoRender(m_pRenderer->VideoBypassesFramebuffer());
+    }
 #ifdef HAVE_DVBRIDGE
     if (cb1Async)
       m_clockSync.m_cb1Latency.Selected(m_Queue[idx].pts, DVBRIDGE::MonotonicNowNs());
@@ -1857,6 +1866,11 @@ void CRenderManager::PrepareNextRender()
     m_presentsourcePast = m_presentsource;
     m_presentsource = m_queued.front();
     m_queued.pop_front();
+    if (m_discMenuOnly)
+    {
+      SetDiscMenuOnly(false);
+      m_playerPort->UpdateVideoRender(m_pRenderer->VideoBypassesFramebuffer());
+    }
 #ifdef HAVE_DVBRIDGE
     if (cb1Async)
       m_clockSync.m_cb1Latency.Selected(m_Queue[m_presentsource].pts, DVBRIDGE::MonotonicNowNs());

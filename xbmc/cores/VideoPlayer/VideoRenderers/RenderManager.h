@@ -224,6 +224,7 @@ protected:
   std::unique_ptr<KODI::RENDERING::CAPTURE::CCaptureBlit> m_captureBlit;
   OVERLAY::CRenderer m_overlays;
   std::atomic_bool m_discMenuOnly{false};
+  std::atomic_bool m_discMenuBufferInvalidated{false};
   CCriticalSection m_discMenuLock;
   std::shared_ptr<CDVDOverlayGroup> m_discMenuPage;
   std::shared_ptr<CDVDOverlayGroup> m_renderedDiscMenuPage;
