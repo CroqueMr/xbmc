@@ -418,6 +418,7 @@ public:
 
 protected:
   bool IsBlurayInput() const;
+  bool IsBluraySecondary(const CDemuxStream* stream) const;
   bool WaitForBlurayPlaylist();
   bool m_blurayDemuxDeferred{false};
   friend class CSelectionStreams;

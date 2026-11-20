@@ -2044,6 +2044,21 @@ bool CDVDInputStreamBluray::MouseClick(const CPoint &point)
   return false;
 }
 
+bool CDVDInputStreamBluray::IsSecondaryStream(int pid, bool video) const
+{
+  if (!m_clip)
+    return false;
+
+  const auto* streams = video ? m_clip->sec_video_streams : m_clip->sec_audio_streams;
+  const auto count = video ? m_clip->sec_video_stream_count : m_clip->sec_audio_stream_count;
+  for (unsigned int i = 0; i < count; ++i)
+  {
+    if (streams[i].pid == pid)
+      return true;
+  }
+  return false;
+}
+
 bool CDVDInputStreamBluray::WaitingForReadablePlaylist() const
 {
 #if defined(BD_BDJ_WAITING_FOR_PLAYLIST)

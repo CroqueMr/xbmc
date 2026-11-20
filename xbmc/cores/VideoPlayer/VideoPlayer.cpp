@@ -1180,6 +1180,18 @@ void CVideoPlayer::UpdateHasVideoAudio()
     m_HasAudio = false;
 }
 
+bool CVideoPlayer::IsBluraySecondary(const CDemuxStream* stream) const
+{
+#if defined(HAVE_LIBBLURAY)
+  return IsBlurayInput() && stream &&
+         (stream->type == StreamType::VIDEO || stream->type == StreamType::AUDIO) &&
+         static_cast<const CDVDInputStreamBluray&>(*m_pInputStream)
+             .IsSecondaryStream(stream->dvdNavId, stream->type == StreamType::VIDEO);
+#else
+  return false;
+#endif
+}
+
 void CVideoPlayer::OpenDefaultStreams(bool reset)
 {
   // if input stream dictate, we will open later
@@ -1200,6 +1212,9 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   PredicateVideoFilter vf(m_processInfo->GetVideoSettings().m_VideoStream);
   for (const auto& stream : m_SelectionStreams.Get(StreamType::VIDEO, vf))
   {
+    if (m_pDemuxer && IsBluraySecondary(m_pDemuxer->GetStream(stream.demuxerId, stream.id)))
+      continue;
+
     if (OpenStream(m_CurrentVideo, stream.demuxerId, stream.id, stream.source, reset))
     {
       valid = true;
@@ -1221,6 +1236,9 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
     PredicateAudioFilter af(m_processInfo->GetVideoSettings().m_AudioStream, m_playerOptions.preferStereo);
     for (const auto& stream : m_SelectionStreams.Get(StreamType::AUDIO, af))
     {
+      if (m_pDemuxer && IsBluraySecondary(m_pDemuxer->GetStream(stream.demuxerId, stream.id)))
+        continue;
+
       if(OpenStream(m_CurrentAudio, stream.demuxerId, stream.id, stream.source, reset))
       {
         valid = true;
@@ -1487,7 +1505,7 @@ bool CVideoPlayer::IsBetterStream(const CCurrentStream& current, CDemuxStream* s
   if (m_playerOptions.videoOnly && current.type != StreamType::VIDEO)
     return false;
 
-  if(stream->disabled)
+  if (stream->disabled || IsBluraySecondary(stream))
     return false;
 
   if (m_pInputStream && (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) ||
