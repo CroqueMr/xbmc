@@ -721,6 +721,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
       pid = m_clip->pg_streams[m_event.param - 1].pid;
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PG_TEXTST_STREAM {}, {}", m_event.param,
               pid);
+    m_pgStreamNumber = m_event.param;
     m_player->OnDiscNavResult(static_cast<void*>(&pid), BD_EVENT_PG_TEXTST_STREAM);
     break;
 
@@ -1814,6 +1815,52 @@ std::shared_ptr<CDVDInputStreamBlurayFile> CDVDInputStreamBluray::OpenClipStream
   CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - opened dependent view clip {}", path);
 
   return stream;
+}
+
+static unsigned int StreamNumber(int pid, const BLURAY_STREAM_INFO* streams, int count)
+{
+  for (int i = 0; i < count; ++i)
+  {
+    if (streams[i].pid == static_cast<uint16_t>(pid))
+      return i + 1;
+  }
+  return 0;
+}
+
+bool CDVDInputStreamBluray::CanSelectStream() const
+{
+  // A held event can already refer to the next play item inside libbluray.
+  return m_bd && m_navmode && m_titleInfo && m_clip && m_hold != HOLD_HELD &&
+         m_event.event == BD_EVENT_NONE;
+}
+
+bool CDVDInputStreamBluray::SetActiveAudioStream(int pid)
+{
+  if (!CanSelectStream())
+    return false;
+  const auto number = StreamNumber(pid, m_clip->audio_streams, m_clip->audio_stream_count);
+  if (!number)
+    return false;
+  bd_select_stream(m_bd, BLURAY_AUDIO_STREAM, number, 1);
+  return true;
+}
+
+bool CDVDInputStreamBluray::SetActiveSubtitleStream(int pid, bool visible)
+{
+  if (!CanSelectStream())
+    return false;
+  const auto number = StreamNumber(pid, m_clip->pg_streams, m_clip->pg_stream_count);
+  if (!number)
+    return false;
+  bd_select_stream(m_bd, BLURAY_PG_TEXTST_STREAM, number, visible);
+  m_pgStreamNumber = number;
+  return true;
+}
+
+void CDVDInputStreamBluray::SetSubtitleVisible(bool visible)
+{
+  if (CanSelectStream() && m_pgStreamNumber && m_pgStreamNumber <= m_clip->pg_stream_count)
+    bd_select_stream(m_bd, BLURAY_PG_TEXTST_STREAM, m_pgStreamNumber, visible);
 }
 
 CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
