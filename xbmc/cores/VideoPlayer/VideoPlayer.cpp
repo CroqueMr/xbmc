@@ -1048,6 +1048,13 @@ bool CVideoPlayer::WaitForBlurayPlaylist()
     return false;
 
   auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
+  if (bluray.HdmvEndPending() && !m_VideoPlayerVideo->HasData() &&
+      !m_VideoPlayerAudio->HasData() && !m_renderManager.HasPendingVideoPresentation())
+  {
+    bluray.ReleaseHdmvEnd();
+    return true;
+  }
+
   if (!bluray.WaitingForReadablePlaylist())
     return false;
 

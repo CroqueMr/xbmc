@@ -292,6 +292,7 @@ protected:
   bool m_isInMainMenu = false;
   bool m_hdmvEndPending{false};
   bool m_hdmvEndReleased{false};
+  bool m_hdmvProgramEnded{false};
   std::atomic_bool m_menuShows{false};
   bool m_navmode = false;
 #if defined(BD_BDJ_PRESENTATION_TIMING)

@@ -602,6 +602,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
   /* playback control */
 
   case BD_EVENT_SEEK:
+    m_hdmvEndPending = false;
+    m_hdmvEndReleased = false;
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_SEEK");
     //m_player->OnDVDNavResult(nullptr, 1);
     //bd_read_skip_still(m_bd);
@@ -657,8 +659,16 @@ void CDVDInputStreamBluray::ProcessEvent() {
     FreeTitleInfo();
     break;
 
+#if defined(BD_HDMV_END_HOLD)
+  case BD_EVENT_HDMV_PROGRAM_END:
+    m_hdmvEndReleased = false;
+    m_hdmvProgramEnded = true;
+    break;
+#endif
+
   case BD_EVENT_TITLE:
   {
+    m_hdmvProgramEnded = false;
     m_hdmvEndPending = false;
     m_hdmvEndReleased = false;
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_TITLE {}", m_event.param);
@@ -683,6 +693,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
   }
   case BD_EVENT_PLAYLIST:
+    m_hdmvProgramEnded = false;
     m_hdmvEndPending = false;
     m_hdmvEndReleased = false;
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYLIST {}", m_event.param);
@@ -1955,6 +1966,8 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
       return NEXTSTREAM_RETRY;
   }
 
+  if (m_hdmvProgramEnded)
+    return NEXTSTREAM_NONE;
   if (m_hold == HOLD_STILL || WaitingForReadablePlaylist())
     return NEXTSTREAM_RETRY;
 
