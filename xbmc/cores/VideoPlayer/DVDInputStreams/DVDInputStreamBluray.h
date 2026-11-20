@@ -154,12 +154,27 @@ public:
   void SetBdjPlaybackTime(uint64_t time)
   {
     if (IsBdjTitle() && m_titleInfo)
+    {
+#if defined(BD_BDJ_PLAYBACK_CLOCK_EPOCH)
+      if (m_bdjClockEpoch)
+        bd_bdj_set_playback_time_at_epoch(m_bd, m_bdjClockEpoch,
+                                          std::min(time, m_titleInfo->duration));
+#else
       bd_bdj_set_playback_time(m_bd, std::min(time, m_titleInfo->duration));
+#endif
+    }
   }
 #endif
   void ReleaseBdjEvents(uint32_t seq);
   void ReleaseBdjEnd();
   void ResetBdjPresentation();
+  void CaptureBdjClockEpoch()
+  {
+#if defined(BD_BDJ_PLAYBACK_CLOCK_EPOCH)
+    if (IsBdjTitle())
+      m_bdjClockEpoch = bd_bdj_get_clock_epoch(m_bd);
+#endif
+  }
   uint32_t BdjEndSequence() const { return m_bdjEndSequence; }
   bool WaitingForBdjPlaylist() const { return m_bdjWaitingForPlaylist; }
   bool TakeBdjPlaylistJump();
@@ -301,6 +316,7 @@ protected:
   bool IsBdjTitle() const;
   void StampBdjPending();
 
+  uint32_t m_bdjClockEpoch{0};
   uint32_t m_bdjStampedSeq{0};
   uint32_t m_bdjEndSequence{0};
   bool m_bdjWaitingForPlaylist{false};

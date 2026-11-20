@@ -1113,6 +1113,11 @@ bool CVideoPlayer::OpenDemuxStream()
     return false;
   }
 
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+  if (IsBlurayInput())
+    static_cast<CDVDInputStreamBluray&>(*m_pInputStream).CaptureBdjClockEpoch();
+#endif
+
   // A matroska remux of a 3D disc carries the same plane offsets in its dependent view.
   // The Blu-ray input stream's store wins when there is one; otherwise the demuxer's is
   // the one to read
@@ -1757,8 +1762,9 @@ void CVideoPlayer::ProcessBdjPresentation()
   auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
   const double pts = m_VideoPlayerVideo->GetCurrentPts();
 #if defined(BD_BDJ_PLAYBACK_CLOCK)
-  if (pts != DVD_NOPTS_VALUE && m_CurrentVideo.dts != DVD_NOPTS_VALUE &&
-      m_CurrentVideo.dispTime > 0)
+  if (pts != DVD_NOPTS_VALUE && m_CurrentVideo.inited &&
+      m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+      m_CurrentVideo.dts != DVD_NOPTS_VALUE && m_CurrentVideo.dispTime >= 0)
   {
     // The demux position and DTS describe the same packet. Use them to put
     // the rendered PTS on the playlist timeline, even when the reader is ahead.
@@ -5421,6 +5427,11 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   // drop queued pre-seek frames to avoid starving RenderManager's buffer pool so post-seek overlays/subtitles do not get dropped
   if (sync)
     m_renderManager.DiscardBuffer();
+
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+  if (IsBlurayInput())
+    static_cast<CDVDInputStreamBluray&>(*m_pInputStream).CaptureBdjClockEpoch();
+#endif
 
   if (m_playSpeed == DVD_PLAYSPEED_NORMAL || m_playSpeed == DVD_PLAYSPEED_PAUSE ||
       m_processInfo->IsTempoAllowed(static_cast<float>(m_playSpeed) / DVD_PLAYSPEED_NORMAL))
