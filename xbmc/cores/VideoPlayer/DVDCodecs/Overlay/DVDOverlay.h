@@ -135,6 +135,16 @@ public:
    */
   bool IsForcedMargins() const { return m_setForcedMargins; }
 
+  /*
+   * \brief Mark the overlay as a disc menu drawn by the input stream rather than a subtitle.
+   */
+  void SetDiscMenu(bool discMenu) { m_source = discMenu ? DVDOverlaySource::MENU : DVDOverlaySource::SUBTITLE; }
+
+  /*
+   * \brief Return true if the overlay is a disc menu drawn by the input stream.
+   */
+  bool IsDiscMenu() const { return m_source == DVDOverlaySource::MENU; }
+
   double iPTSStartTime;
   double iPTSStopTime;
   bool bForced; // display, no matter what

@@ -310,14 +310,19 @@ protected:
   //! dynamic range of the video they accompany, so this follows the play item being played.
   bool m_hdrGraphics = false;
 
-  enum EHoldState {
+  enum EHoldState
+  {
     HOLD_NONE = 0,
     HOLD_HELD,
     HOLD_DATA,
     HOLD_STILL,
     HOLD_ERROR,
-    HOLD_EXIT
   } m_hold = HOLD_NONE;
+  //! Set by Abort() from the thread closing the player. Kept apart from m_hold, which playback
+  //! events overwrite
+  std::atomic<bool> m_aborted{false};
+  //! Units libbluray has failed to read since it last returned data
+  unsigned int m_readErrors = 0;
   BD_EVENT m_event;
 #ifdef HAVE_LIBBLURAY_BDJ
   struct bd_argb_buffer_s m_argb;
@@ -328,6 +333,12 @@ protected:
     void SetupPlayerSettings();
     void FreeTitleInfo();
     void FreeClipInfo();
+
+    /*!
+     * \brief Whether so many reads in a row have failed that the disc is taken to have gone.
+     * Only a successful read clears it, so no read is attempted once it is true.
+     */
+    bool HasGivenUpReading() const;
 
     /*!
      * \brief Read the clip information of a play item of the playlist being played.

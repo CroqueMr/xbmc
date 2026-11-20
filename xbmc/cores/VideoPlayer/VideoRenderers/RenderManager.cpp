@@ -440,7 +440,8 @@ bool CRenderManager::PrepareHDR10AILookahead(std::unique_lock<CCriticalSection>&
       cutoff = end + tolerance * refresh - lead;
     }
     const double remaining = std::max(0.0,
-        cutoff - playing - (cb1Async ? std::min(0.0, m_displayLatency) : m_displayLatency));
+        cutoff - playing - (cb1Async ? std::min(0.0, m_displayLatency.load())
+                                    : m_displayLatency.load()));
     const double speed = m_dvdClock.GetClockSpeed();
     // Charge starvation only after the admitted presentation cutoff.
     const double delay = std::isfinite(speed) && speed > 0 ?
@@ -928,6 +929,15 @@ void CRenderManager::DeleteRenderer()
     m_aiQueuePreparationStale = false;
   }
 #endif
+}
+
+bool CRenderManager::CompositeVideoCapture(KODI::RENDERING::CAPTURE::CaptureResult& result)
+{
+  std::unique_lock lock(m_statelock);
+  if (m_renderState != STATE_CONFIGURED || !m_pRenderer)
+    return true;
+
+  return m_pRenderer->CompositeVideoCapture(result);
 }
 
 void CRenderManager::ServiceVideoCaptures()

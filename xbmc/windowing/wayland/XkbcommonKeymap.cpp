@@ -347,16 +347,11 @@ std::unique_ptr<CXkbcommonKeymap> CXkbcommonContext::LocalizedKeymapFromString(
     throw std::runtime_error("Failed to compile keymap");
   }
 
+  // We do not ship the X11 locale Compose data, so xkb_compose_table_new_from_locale()
+  // can never succeed and libxkbcommon logs an error for the missing file on every
+  // start. Leave the compose table unset and skip the lookup.
   std::unique_ptr<xkb_compose_table, CXkbcommonKeymap::XkbComposeTableDeleter> xkbComposeTable{
-      xkb_compose_table_new_from_locale(m_context.get(), locale.c_str(),
-                                        XKB_COMPOSE_COMPILE_NO_FLAGS),
-      CXkbcommonKeymap::XkbComposeTableDeleter()};
-
-  if (!xkbComposeTable)
-  {
-    CLog::LogF(LOGWARNING,
-               "Failed to compile localized compose table, composed key support will be disabled");
-  }
+      nullptr, CXkbcommonKeymap::XkbComposeTableDeleter()};
   return std::make_unique<CXkbcommonKeymap>(std::move(xkbKeymap), std::move(xkbComposeTable));
 }
 

@@ -91,6 +91,7 @@ public:
   void FrameMove();
   void FrameWait(std::chrono::milliseconds duration);
   void Render(bool clear, DWORD flags = 0, DWORD alpha = 255, bool gui = true);
+  bool CompositeVideoCapture(KODI::RENDERING::CAPTURE::CaptureResult& result);
 
   RESOLUTION GetResolution();
   static RESOLUTION ChoosePlaybackResolution(double fps, int width, int height, bool stereo,
@@ -169,6 +170,11 @@ public:
 
   void SetDelay(int delay) { m_videoDelay = delay; }
   int GetDelay() { return m_videoDelay; }
+
+  /*!
+   * \brief How far ahead of the clock the picture on screen is, in DVD clock units.
+   */
+  double GetDisplayLatency() const { return m_displayLatency; }
 
   void SetVideoSettings(const CVideoSettings& settings);
 
@@ -255,7 +261,7 @@ protected:
   /// in milliseconds
   double m_latencyTweak = 0.0;
   /// Native display latency in DVD clock units, includes m_latencyTweak.
-  double m_displayLatency = 0.0;
+  std::atomic<double> m_displayLatency = 0.0;
   std::atomic_int m_videoDelay = {};
 
   int m_QueueSize = 2;

@@ -104,6 +104,11 @@ public:
   {
     return false;
   }
+  //! Composite externally rendered video into a finished framebuffer capture.
+  virtual bool CompositeVideoCapture(KODI::RENDERING::CAPTURE::CaptureResult& result)
+  {
+    return true;
+  }
   // Render info, can be called before configure
   virtual CRenderInfo GetRenderInfo() { return CRenderInfo(); }
 #ifdef CB1_HAS_HDR10_AI

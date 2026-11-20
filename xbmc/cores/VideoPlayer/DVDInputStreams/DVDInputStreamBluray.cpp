@@ -56,6 +56,13 @@ using namespace std::chrono_literals;
 constexpr uint32_t BLURAY_3D_CAPABILITIES = 0xffffffffu & ~0x20u;
 
 
+namespace
+{
+/*! libbluray skips an aligned unit (6144 bytes) it cannot read and reports each one. This many in
+    a row, about 6 MB, is a disc that has gone rather than a damaged patch to play past */
+constexpr unsigned int MAX_CONSECUTIVE_READ_ERRORS{1000};
+} // namespace
+
 static int read_blocks(void* handle, void* buf, int lba, int num_blocks)
 {
   CDVDInputStreamBluray* blurayStream = reinterpret_cast<CDVDInputStreamBluray*>(handle);
@@ -93,7 +100,7 @@ CDVDInputStreamBluray::~CDVDInputStreamBluray()
 
 void CDVDInputStreamBluray::Abort()
 {
-  m_hold = HOLD_EXIT;
+  m_aborted = true;
 }
 
 bool CDVDInputStreamBluray::IsEOF()
@@ -561,7 +568,13 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
 
   case BD_EVENT_READ_ERROR:
-    CLog::Log(LOGERROR, "CDVDInputStreamBluray - BD_EVENT_READ_ERROR");
+    ++m_readErrors;
+    CLog::Log(LOGERROR, "CDVDInputStreamBluray - BD_EVENT_READ_ERROR ({} in a row)", m_readErrors);
+    if (m_readErrors == MAX_CONSECUTIVE_READ_ERRORS)
+      CLog::Log(LOGERROR,
+                "CDVDInputStreamBluray - Giving up after {} read errors in a row, the disc may "
+                "have been removed. Playback can't be continued.",
+                m_readErrors);
     break;
 
   case BD_EVENT_ENCRYPTED:
@@ -938,8 +951,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
       if (m_hold == HOLD_HELD)
          return 0;
 
-      if(  m_hold == HOLD_ERROR
-        || m_hold == HOLD_EXIT)
+      if (m_hold == HOLD_ERROR || m_aborted || HasGivenUpReading())
         return -1;
 
 #if defined(BD_BDJ_PRESENTATION_TIMING)
@@ -953,6 +965,10 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         m_hold = HOLD_ERROR;
         return result;
       }
+
+      // Before the holding events, as a read crossing a clip boundary returns data with one
+      if (result > 0)
+        m_readErrors = 0;
 
 #if defined(BD_BDJ_PRESENTATION_TIMING)
       StampBdjPending();
@@ -973,11 +989,27 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
   }
   else
   {
-    result = bd_read(m_bd, buf, buf_size);
-    while (bd_get_event(m_bd, &m_event))
-      ProcessEvent();
+    unsigned int readErrors{0};
+    do
+    {
+      if (m_aborted || HasGivenUpReading())
+        return -1;
+      readErrors = m_readErrors;
+      result = bd_read(m_bd, buf, buf_size);
+      if (result > 0)
+        m_readErrors = 0;
+      while (bd_get_event(m_bd, &m_event))
+        ProcessEvent();
+      // A unit libbluray skips as broken is reported and read as nothing, which the demuxer would
+      // take for the end of the title
+    } while (result == 0 && m_readErrors > readErrors);
   }
   return result;
+}
+
+bool CDVDInputStreamBluray::HasGivenUpReading() const
+{
+  return m_readErrors >= MAX_CONSECUTIVE_READ_ERRORS;
 }
 
 int CDVDInputStreamBluray::ReadBlocks(uint8_t* buf, int lba, int num_blocks)
@@ -1208,6 +1240,8 @@ void CDVDInputStreamBluray::SendMenuOverlays(int64_t pts)
   group->bForced       = true;
   group->iPTSStartTime = static_cast<double>(pts);
   group->iPTSStopTime  = 0;
+  group->SetDiscMenu(true);
+  group->SetOverlayContainerFlushable(false);
 
   // A menu, so that only the next page ends or replaces it and never a subtitle, and not
   // flushable: a seek flushes the container, and libbluray will not draw the page again on
@@ -1366,9 +1400,12 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
     overlay->palette.clear();
     overlay->linesize = ov->w * 4;
     overlay->pixels.resize(static_cast<size_t>(overlay->linesize) * ov->h);
-    for (int y = 0; y < ov->h; ++y)
-      memcpy(overlay->pixels.data() + static_cast<size_t>(y) * overlay->linesize,
-             ov->argb + static_cast<size_t>(y) * ov->stride, overlay->linesize);
+
+    // argb points into libbluray's full width image, so the last line's stride runs past its end
+    for (int row = 0; row < ov->h; ++row)
+      memcpy(overlay->pixels.data() + static_cast<size_t>(row) * overlay->linesize,
+             ov->argb + static_cast<size_t>(row) * ov->stride, overlay->linesize);
+
     overlay->x = ov->x;
     overlay->y = ov->y;
     overlay->height = ov->h;
@@ -1781,7 +1818,7 @@ std::shared_ptr<CDVDInputStreamBlurayFile> CDVDInputStreamBluray::OpenClipStream
 
 CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
 {
-  if(!m_navmode || m_hold == HOLD_EXIT || m_hold == HOLD_ERROR)
+  if (!m_navmode || m_aborted || m_hold == HOLD_ERROR || HasGivenUpReading())
     return NEXTSTREAM_NONE;
 
   /* process any current event */
@@ -1801,6 +1838,10 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
   if (m_bdjWaitingForPlaylist)
     return NEXTSTREAM_RETRY;
 #endif
+  // The last read error can be queued with the events of a clip boundary
+  if (HasGivenUpReading())
+    return NEXTSTREAM_NONE;
+
   if(m_hold == HOLD_STILL)
     return NEXTSTREAM_RETRY;
 
