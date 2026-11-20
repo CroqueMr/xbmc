@@ -742,6 +742,12 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
   }
 
+#if defined(BD_BDJ_WAITING_FOR_PLAYLIST)
+  case BD_EVENT_BDJ_GRAPHICS:
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - current BD-J title has visible graphics");
+    break;
+#endif
+
   case BD_EVENT_IDLE:
     KODI::TIME::Sleep(100ms);
     break;
@@ -984,9 +990,12 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
       if(result > 0)
         m_hold = HOLD_NONE;
 
+      const bool idle = m_event.event == BD_EVENT_IDLE;
       ProcessEvent();
       if (m_hold == HOLD_ERROR || m_aborted || HasGivenUpReading())
         return -1;
+      if (idle && WaitingForReadablePlaylist())
+        return 0;
 #if defined(BD_BDJ_PRESENTATION_TIMING)
       if (m_bdjWaitingForPlaylist || m_hold == HOLD_HELD)
         return result;
@@ -1903,7 +1912,7 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
     return NEXTSTREAM_RETRY;
 #endif
 
-  if(m_hold == HOLD_STILL)
+  if (m_hold == HOLD_STILL || WaitingForReadablePlaylist())
     return NEXTSTREAM_RETRY;
 
   m_hold = HOLD_DATA;
@@ -1974,6 +1983,16 @@ bool CDVDInputStreamBluray::MouseClick(const CPoint &point)
 
   CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::MouseClick - mouse click (user input) failed");
   return false;
+}
+
+bool CDVDInputStreamBluray::WaitingForReadablePlaylist() const
+{
+#if defined(BD_BDJ_WAITING_FOR_PLAYLIST)
+  return m_bd && m_navmode && !m_aborted && m_hold != HOLD_ERROR &&
+         bd_bdj_waiting_for_playlist(m_bd);
+#else
+  return false;
+#endif
 }
 
 bool CDVDInputStreamBluray::OnMenu()

@@ -911,6 +911,8 @@ bool CVideoPlayer::CloseFile(bool reopen)
   if(m_pInputStream)
     m_pInputStream->Abort();
 
+  m_renderManager.SetDiscMenuOnly(false);
+  m_renderManager.SetDiscMenuPage({});
   m_renderManager.UnInit();
 
   CLog::Log(LOGINFO, "VideoPlayer: waiting for threads to exit");
@@ -1039,8 +1041,27 @@ bool CVideoPlayer::OpenInputStream()
   return true;
 }
 
+bool CVideoPlayer::WaitForBlurayPlaylist()
+{
+#if defined(HAVE_LIBBLURAY)
+  if (!IsBlurayInput())
+    return false;
+
+  auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
+  if (!bluray.WaitingForReadablePlaylist())
+    return false;
+
+  m_HasVideo = true;
+  m_renderManager.SetDiscMenuOnly(true);
+  return true;
+#else
+  return false;
+#endif
+}
+
 bool CVideoPlayer::OpenDemuxStream()
 {
+  m_blurayDemuxDeferred = false;
   CloseDemuxer();
 
   CLog::Log(LOGINFO, "Creating Demuxer");
@@ -1049,6 +1070,12 @@ bool CVideoPlayer::OpenDemuxStream()
   while (!m_bStop && attempts-- > 0)
   {
     m_pDemuxer.reset(CDVDFactoryDemuxer::CreateDemuxer(m_pInputStream));
+    if (!m_pDemuxer && WaitForBlurayPlaylist())
+    {
+      m_blurayDemuxDeferred = true;
+      return false;
+    }
+
     if(!m_pDemuxer && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
     {
       continue;
@@ -1066,6 +1093,8 @@ bool CVideoPlayer::OpenDemuxStream()
     CLog::Log(LOGERROR, "{} - Error creating demuxer", __FUNCTION__);
     return false;
   }
+
+  m_renderManager.SetDiscMenuOnly(false);
 
   // A matroska remux of a 3D disc carries the same plane offsets in its dependent view.
   // The Blu-ray input stream's store wins when there is one; otherwise the demuxer's is
@@ -1556,7 +1585,7 @@ void CVideoPlayer::Prepare()
     }
   }
 
-  if (!OpenDemuxStream())
+  if (!WaitForBlurayPlaylist() && !OpenDemuxStream() && !m_blurayDemuxDeferred)
   {
     m_bAbortRequest = true;
     m_error = true;
@@ -1810,8 +1839,14 @@ void CVideoPlayer::Process()
     // should we open a new demuxer?
     if (!m_pDemuxer)
     {
-      if (m_pInputStream->NextStream() == CDVDInputStream::NEXTSTREAM_NONE)
+      const auto next = m_pInputStream->NextStream();
+      if (next == CDVDInputStream::NEXTSTREAM_NONE)
         break;
+      if (next == CDVDInputStream::NEXTSTREAM_RETRY && WaitForBlurayPlaylist())
+      {
+        CThread::Sleep(50ms);
+        continue;
+      }
 
       if (m_pInputStream->IsEOF())
         break;
@@ -1822,8 +1857,10 @@ void CVideoPlayer::Process()
       if (bluray)
         bluray->TakeBdjPlaylistJump();
 #endif
-      if (OpenDemuxStream() == false)
+      if (!OpenDemuxStream())
       {
+        if (m_blurayDemuxDeferred)
+          continue;
         m_bAbortRequest = true;
         break;
       }
@@ -5403,9 +5440,12 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
     }
 #endif
     case BD_EVENT_MENU_OVERLAY:
-      m_overlayContainer.ProcessAndAddOverlayIfValid(
-          *static_cast<std::shared_ptr<CDVDOverlay>*>(pData));
+    {
+      auto& page = *static_cast<std::shared_ptr<CDVDOverlayGroup>*>(pData);
+      m_renderManager.SetDiscMenuPage(page);
+      m_overlayContainer.ProcessAndAddOverlayIfValid(page);
       break;
+    }
     case BD_EVENT_MENU:
       // Interactive menu visible?
       if (*static_cast<uint32_t*>(pData) == false)

@@ -10,6 +10,8 @@
 
 /* to use the same as player */
 #include "../VideoPlayer/DVDClock.h"
+#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h"
+#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "RenderFactory.h"
 #include "RenderFlags.h"
 #include "ServiceBroker.h"
@@ -605,6 +607,13 @@ void CRenderManager::ResetHDR10AIQueue()
 
 void CRenderManager::FrameMove()
 {
+  if (m_discMenuOnly)
+  {
+    m_playerPort->UpdateGuiRender(true);
+    m_playerPort->UpdateVideoRender(false);
+    return;
+  }
+
   bool firstFrame = false;
   UpdateResolution();
 
@@ -1062,9 +1071,70 @@ RESOLUTION CRenderManager::GetResolution()
   return res;
 }
 
+void CRenderManager::SetDiscMenuOnly(bool enabled)
+{
+  if (m_discMenuOnly.exchange(enabled) != enabled)
+    OVERLAY::MarkDirty();
+}
+
+void CRenderManager::SetDiscMenuPage(std::shared_ptr<CDVDOverlayGroup> page)
+{
+  {
+    std::unique_lock lock(m_discMenuLock);
+    m_discMenuPage = std::move(page);
+  }
+  if (m_discMenuOnly)
+    OVERLAY::MarkDirty();
+}
+
 void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 {
-  CSingleExit exitLock(CServiceBroker::GetWinSystem()->GetGfxContext());
+  auto& graphics = CServiceBroker::GetWinSystem()->GetGfxContext();
+  CSingleExit exitLock(graphics);
+
+  constexpr int menuBuffer = MAX_RENDER_BUFFERS;
+  if (m_discMenuOnly)
+  {
+    if (!gui)
+      return;
+
+    std::shared_ptr<CDVDOverlayGroup> page;
+    {
+      std::unique_lock lock(m_discMenuLock);
+      page = m_discMenuPage;
+    }
+    if (page != m_renderedDiscMenuPage)
+    {
+      m_overlays.Release(menuBuffer);
+      if (page)
+      {
+        for (const auto& overlay : page->m_overlays)
+          m_overlays.AddOverlay(overlay, 0, menuBuffer);
+      }
+      m_renderedDiscMenuPage = page;
+    }
+
+    graphics.Clear(0xff000000);
+    CRect view = graphics.GetViewWindow();
+    CRect source = view;
+    if (page && !page->m_overlays.empty() &&
+        page->m_overlays.front()->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+    {
+      const auto& image = static_cast<const CDVDOverlayImage&>(*page->m_overlays.front());
+      if (image.source_width > 0 && image.source_height > 0)
+        source.SetRect(0, 0, image.source_width, image.source_height);
+    }
+    m_overlays.SetVideoRect(source, view, view);
+    m_overlays.PrepareOverlays(menuBuffer);
+    m_overlays.Render(menuBuffer);
+    return;
+  }
+
+  if (gui && m_renderedDiscMenuPage)
+  {
+    m_overlays.Release(menuBuffer);
+    m_renderedDiscMenuPage.reset();
+  }
 
   {
     std::unique_lock lock(m_statelock);
@@ -1212,6 +1282,8 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
 bool CRenderManager::IsGuiLayer()
 {
+  if (m_discMenuOnly)
+    return true;
   {
     std::unique_lock lock(m_statelock);
 

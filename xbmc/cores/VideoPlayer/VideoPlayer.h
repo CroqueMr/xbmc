@@ -418,6 +418,8 @@ public:
 
 protected:
   bool IsBlurayInput() const;
+  bool WaitForBlurayPlaylist();
+  bool m_blurayDemuxDeferred{false};
   friend class CSelectionStreams;
 
   void OnStartup() override;
