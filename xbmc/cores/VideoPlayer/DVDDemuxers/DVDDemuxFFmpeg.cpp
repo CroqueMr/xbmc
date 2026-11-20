@@ -1213,11 +1213,21 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
           // update streams
 #ifdef HAVE_DVBRIDGE
           const bool wasJoined = bool(m_blurayDovi);
+          const bool hadPreparedLayers = m_blurayTiming.valid;
 #endif
           CreateStreams(m_program);
 
 #ifdef HAVE_DVBRIDGE
-          if (!wasJoined && m_blurayDovi)
+          if (hadPreparedLayers)
+          {
+            // This saved BL and EL belonged to the adapter which was just retired.
+            // A stream change starts a new decoder generation with native input.
+            av_packet_unref(&m_pkt.pkt);
+            m_pkt.result = -1;
+            if (m_blurayDovi)
+              m_blurayDovi->Reset(true);
+          }
+          else if (!wasJoined && m_blurayDovi)
           {
             // Start at a complete pair; never expose a saved raw layer as joined video.
             m_blurayDovi->Reset(true);
@@ -3333,10 +3343,13 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
     }
   };
   // Stream-list rebuilds must configure filters from the original container framing.
-  if (m_blurayDovi && m_blurayDovi->OriginalBaseParameters() && m_blurayBase >= 0 &&
-      static_cast<unsigned>(m_blurayBase) < m_pFormatContext->nb_streams)
+  const auto* original = m_blurayDovi ? m_blurayDovi->OriginalBaseParameters() : nullptr;
+  // Restore only hvcC that was converted. For native transport, the current
+  // parameters may contain in-band headers learned after the adapter opened.
+  if (original && original->extradata_size > 0 && original->extradata[0] == 1 &&
+      m_blurayBase >= 0 && static_cast<unsigned>(m_blurayBase) < m_pFormatContext->nb_streams)
     if (avcodec_parameters_copy(m_pFormatContext->streams[m_blurayBase]->codecpar,
-                               m_blurayDovi->OriginalBaseParameters()) < 0)
+                               original) < 0)
     {
       report("restore-failed");
       return;
