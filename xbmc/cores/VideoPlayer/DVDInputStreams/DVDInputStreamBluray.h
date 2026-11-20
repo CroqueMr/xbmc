@@ -263,6 +263,7 @@ protected:
   struct SPlane;
 
   bool CanSelectStream() const;
+  void UpdateSelectedStream(bool audio);
   static bool PlaneShows(const SPlane& plane);
   void OverlayFlush(SPlane& updated, int64_t pts);
   void SendMenuOverlays(int64_t pts);
@@ -277,6 +278,7 @@ protected:
   BLURAY_TITLE_INFO* m_titleInfo = nullptr;
   uint32_t m_playlist = MAX_PLAYLIST_ID + 1;
   BLURAY_CLIP_INFO* m_clip = nullptr;
+  uint32_t m_audioStreamNumber{0};
   uint32_t m_pgStreamNumber{0};
 
   //! The clip information of the play item being played, ie. every stream its m2ts carries (see

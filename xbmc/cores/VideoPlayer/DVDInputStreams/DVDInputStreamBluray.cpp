@@ -497,6 +497,8 @@ void CDVDInputStreamBluray::Close()
   }
 
   m_bd = nullptr;
+  m_audioStreamNumber = 0;
+  m_pgStreamNumber = 0;
   m_pstream.reset();
   m_rootPath.clear();
 
@@ -692,6 +694,15 @@ void CDVDInputStreamBluray::ProcessEvent() {
       m_clip = &m_titleInfo->clips[m_event.param];
       UpdateClipInfo(m_event.param);
       UpdateGraphicsDynamicRange();
+      if (m_audioStreamNumber)
+        UpdateSelectedStream(true);
+      if (m_pgStreamNumber)
+        UpdateSelectedStream(false);
+    }
+    else
+    {
+      m_clip = nullptr;
+      FreeClipInfo();
     }
     break;
 
@@ -702,11 +713,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
     /* stream selection */
 
   case BD_EVENT_AUDIO_STREAM:
-    pid = -1;
-    if (m_titleInfo && m_clip && static_cast<uint32_t>(m_clip->audio_stream_count) > (m_event.param - 1))
-      pid = m_clip->audio_streams[m_event.param - 1].pid;
-    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_AUDIO_STREAM {} {}", m_event.param, pid);
-    m_player->OnDiscNavResult(static_cast<void*>(&pid), BD_EVENT_AUDIO_STREAM);
+    m_audioStreamNumber = m_event.param;
+    UpdateSelectedStream(true);
     break;
 
   case BD_EVENT_PG_TEXTST:
@@ -716,13 +724,8 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
 
   case BD_EVENT_PG_TEXTST_STREAM:
-    pid = -1;
-    if (m_titleInfo && m_clip && static_cast<uint32_t>(m_clip->pg_stream_count) > (m_event.param - 1))
-      pid = m_clip->pg_streams[m_event.param - 1].pid;
-    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PG_TEXTST_STREAM {}, {}", m_event.param,
-              pid);
     m_pgStreamNumber = m_event.param;
-    m_player->OnDiscNavResult(static_cast<void*>(&pid), BD_EVENT_PG_TEXTST_STREAM);
+    UpdateSelectedStream(false);
     break;
 
   case BD_EVENT_MENU:
@@ -1818,6 +1821,18 @@ std::shared_ptr<CDVDInputStreamBlurayFile> CDVDInputStreamBluray::OpenClipStream
   return stream;
 }
 
+void CDVDInputStreamBluray::UpdateSelectedStream(bool audio)
+{
+  if (!m_clip)
+    return;
+
+  const auto number = audio ? m_audioStreamNumber : m_pgStreamNumber;
+  const auto count = audio ? m_clip->audio_stream_count : m_clip->pg_stream_count;
+  const auto* streams = audio ? m_clip->audio_streams : m_clip->pg_streams;
+  int pid = number && number <= count ? streams[number - 1].pid : -1;
+  m_player->OnDiscNavResult(&pid, audio ? BD_EVENT_AUDIO_STREAM : BD_EVENT_PG_TEXTST_STREAM);
+}
+
 static unsigned int StreamNumber(int pid, const BLURAY_STREAM_INFO* streams, int count)
 {
   for (int i = 0; i < count; ++i)
@@ -1843,6 +1858,7 @@ bool CDVDInputStreamBluray::SetActiveAudioStream(int pid)
   if (!number)
     return false;
   bd_select_stream(m_bd, BLURAY_AUDIO_STREAM, number, 1);
+  m_audioStreamNumber = number;
   return true;
 }
 
