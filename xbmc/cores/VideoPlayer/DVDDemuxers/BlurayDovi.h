@@ -273,7 +273,8 @@ public:
     const bool missing = rpu == m_rpu.end() || rpu->second.bytes.empty();
     const bool bothSeen = rpu != m_rpu.end() && rpu->second.layers == 3;
     // The BL is still a decoder reference when its exact RPU is proven missing.
-    const bool seekPreroll = m_resync && m_transportClock && m_lastDts[1] != AV_NOPTS_VALUE &&
+    const bool seekPreroll = m_resync && m_transportClock && m_restartPeer == -1 &&
+        m_lastDts[1] != AV_NOPTS_VALUE &&
         av_compare_ts(basePts, m_clocks[0], m_lastDts[1], m_clocks[1]) < 0;
     if (missing && !end && !seekPreroll && !bothSeen)
       return AVERROR(EAGAIN);

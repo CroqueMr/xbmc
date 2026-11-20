@@ -3342,18 +3342,43 @@ void CDVDDemuxFFmpeg::InitBlurayDovi(unsigned int program)
           dv ? dv->rpu_present_flag : 0, stream->codecpar->extradata_size);
     }
   };
-  // Stream-list rebuilds must configure filters from the original container framing.
+  // Stream-list rebuilds restore the container framing and remove group metadata
+  // injected by this adapter. Keep any native transport headers learned in band.
   const auto* original = m_blurayDovi ? m_blurayDovi->OriginalBaseParameters() : nullptr;
-  // Restore only hvcC that was converted. For native transport, the current
-  // parameters may contain in-band headers learned after the adapter opened.
-  if (original && original->extradata_size > 0 && original->extradata[0] == 1 &&
-      m_blurayBase >= 0 && static_cast<unsigned>(m_blurayBase) < m_pFormatContext->nb_streams)
-    if (avcodec_parameters_copy(m_pFormatContext->streams[m_blurayBase]->codecpar,
-                               original) < 0)
+  if (original && m_blurayBase >= 0 &&
+      static_cast<unsigned>(m_blurayBase) < m_pFormatContext->nb_streams)
+  {
+    auto* parameters = m_pFormatContext->streams[m_blurayBase]->codecpar;
+    if (original->extradata_size > 0 && original->extradata[0] == 1)
     {
-      report("restore-failed");
-      return;
+      if (avcodec_parameters_copy(parameters, original) < 0)
+      {
+        report("restore-failed");
+        return;
+      }
     }
+    else
+    {
+      for (const auto type : {AV_PKT_DATA_DOVI_CONF, AV_PKT_DATA_HEVC_CONF})
+      {
+        av_packet_side_data_remove(parameters->coded_side_data, &parameters->nb_coded_side_data, type);
+        const auto* input = av_packet_side_data_get(original->coded_side_data,
+                                                    original->nb_coded_side_data, type);
+        if (input)
+        {
+          auto* output = av_packet_side_data_new(&parameters->coded_side_data,
+                                                 &parameters->nb_coded_side_data, type,
+                                                 input->size, 0);
+          if (!output)
+          {
+            report("restore-failed");
+            return;
+          }
+          std::memcpy(output->data, input->data, input->size);
+        }
+      }
+    }
+  }
   m_blurayDovi.reset();
   m_blurayTiming = {};
   m_blurayBase = m_blurayEnhancement = -1;
