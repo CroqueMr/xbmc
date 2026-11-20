@@ -54,6 +54,14 @@ public:
   void Reset(); // reinitialize members, videoBuffer will be released if set!
   bool IsSameParams(const VideoPicture& pic) const;
 
+  bool IsLimitedHLG8() const
+  {
+    return hdrType == StreamHdrType::HDR_TYPE_HLG && !doviSourceInfo.profile &&
+           colorBits == 8 && !color_range && color_transfer == AVCOL_TRC_ARIB_STD_B67 &&
+           !colorPrimariesGuessed && color_primaries == AVCOL_PRI_BT2020 &&
+           color_space == AVCOL_SPC_BT2020_NCL;
+  }
+
   CVideoBuffer *videoBuffer = nullptr;
 
   double pts; // timestamp in seconds, used in the CVideoPlayer class to keep track of pts

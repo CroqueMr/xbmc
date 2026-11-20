@@ -246,10 +246,20 @@ DVBRIDGE::HDR10SourceMode SoftwareHDR10AIMode(StreamHdrType type)
   return DVBRIDGE::hdr10PlaybackMode.load();
 }
 
+bool SoftwareHLG8(const VideoPicture& picture)
+{
+  if (picture.videoBuffer->GetFormat() != AV_PIX_FMT_YUV420P || !picture.IsLimitedHLG8())
+    return false;
+  unsigned int major, minor;
+  CServiceBroker::GetRenderSystem()->GetRenderVersion(major, minor);
+  return major >= 3;
+}
+
 unsigned SoftwareHDR10AIBufferCount(const VideoPicture& picture, float fps, unsigned orientation)
 {
   const auto format = picture.videoBuffer->GetFormat();
-  const bool planar = format == AV_PIX_FMT_YUV420P10LE || format == AV_PIX_FMT_YUV444P10LE;
+  const bool planar = format == AV_PIX_FMT_YUV420P10LE || format == AV_PIX_FMT_YUV444P10LE ||
+      SoftwareHLG8(picture);
   const bool supported = planar && orientation == 0 && !picture.doviSourceInfo.profile &&
       picture.stereoMode.empty() && picture.iWidth <= 3840 && picture.iHeight <= 2160;
   const auto mode = SoftwareHDR10AIMode(picture.hdrType);
@@ -276,6 +286,9 @@ bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps,
             inferred ? " (inferred)" : "", picture.colorBits,
             picture.color_range == 1 ? "full" : "limited");
   m_format = picture.videoBuffer->GetFormat();
+#ifdef CB1_HAS_HDR10_AI
+  m_planarHLG8 = SoftwareHLG8(picture);
+#endif
 
   // CPU-upload renderer: HWACCEL pix_fmts (e.g. AV_PIX_FMT_DRM_PRIME) have no host planes.
   if (GetShaderFormat() == SHADER_NONE)
@@ -447,7 +460,8 @@ bool CLinuxRendererGLES::ConfigChanged(const VideoPicture &picture)
 
 #ifdef CB1_HAS_HDR10_AI
   // Kodi can rebuild the queue when Quick Switch first enables analysis.
-  return SoftwareHDR10AIBufferCount(picture, m_fps, m_renderOrientation) > m_softwareAIBuffers;
+  return SoftwareHLG8(picture) != m_planarHLG8 ||
+      SoftwareHDR10AIBufferCount(picture, m_fps, m_renderOrientation) > m_softwareAIBuffers;
 #else
   return false;
 #endif
@@ -1547,6 +1561,12 @@ bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& lay
     return false;
   switch (m_format)
   {
+#ifdef CB1_HAS_HDR10_AI
+    case AV_PIX_FMT_YUV420P:
+      if (!hdr10 || !m_planarHLG8 || !source.IsLimitedHLG8()) return false;
+      layer.layout=DVBRIDGE_YUV420P8;
+      break;
+#endif
     case AV_PIX_FMT_YUV420P10LE: layer.layout=DVBRIDGE_YUV420P10; break;
     case AV_PIX_FMT_YUV444P10LE: layer.layout=DVBRIDGE_YUV444P10; break;
     default: return false;
@@ -1579,7 +1599,7 @@ bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& lay
   for (int p=0;p<3;++p)
   {
     const auto& plane=buffer.fields[FIELD_FULL][p];
-    const bool subsampled=p && m_format==AV_PIX_FMT_YUV420P10LE;
+    const bool subsampled = p && m_format != AV_PIX_FMT_YUV444P10LE;
     const unsigned width=subsampled ? (m_sourceWidth+1)/2 : m_sourceWidth;
     const unsigned height=subsampled ? (m_sourceHeight+1)/2 : m_sourceHeight;
     if (!plane.id || plane.texwidth!=width || plane.texheight!=height) return false;
@@ -2486,9 +2506,12 @@ bool CLinuxRendererGLES::UploadPlanarYUVTexture(int source)
 
   glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-  if (im->bpp == 2)
+  bool useRedTextures = im->bpp == 2;
+#ifdef CB1_HAS_HDR10_AI
+  useRedTextures |= m_planarHLG8;
+#endif
+  if (useRedTextures)
   {
-    // >8-bit: three separate GL_R16_EXT planes
     LoadPlane(buf.fields[FIELD_FULL][0], GL_RED, im->width, im->height, im->stride[0], im->bpp,
               im->plane[0]);
 
@@ -2634,6 +2657,18 @@ bool CLinuxRendererGLES::CreatePlanarYUVTexture(int index)
         return false;
 #endif
       }
+#ifdef CB1_HAS_HDR10_AI
+      else if (m_planarHLG8)
+      {
+        glTexImage2D(m_textureTarget, 0, GL_R8, plane.texwidth, plane.texheight, 0, GL_RED,
+                     GL_UNSIGNED_BYTE, nullptr);
+        // Kodi's legacy shaders read U from green and V from alpha. Keep
+        // red available for the engine's single-channel plane imports.
+        if (p != 0)
+          glTexParameteri(m_textureTarget, p == 1 ? GL_TEXTURE_SWIZZLE_G : GL_TEXTURE_SWIZZLE_A,
+                          GL_RED);
+      }
+#endif
       else
       {
         GLint format;
