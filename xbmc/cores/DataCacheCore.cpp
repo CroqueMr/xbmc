@@ -111,6 +111,22 @@ bool CDataCacheCore::SetVideoProcessingInfo(uint64_t generation, const VideoProc
   return true;
 }
 
+void CDataCacheCore::SetVideoUpscaler(int method, uint64_t generation)
+{
+  std::unique_lock lock(m_videoPlayerSection);
+  if (generation == m_videoProcessingGeneration)
+  {
+    m_videoUpscalerGeneration = generation;
+    m_videoUpscaler = method;
+  }
+}
+
+int CDataCacheCore::GetVideoUpscaler()
+{
+  std::unique_lock lock(m_videoPlayerSection);
+  return m_videoUpscalerGeneration == m_videoProcessingGeneration ? m_videoUpscaler : -1;
+}
+
 VideoProcessingInfo CDataCacheCore::GetVideoProcessingInfo()
 {
   std::unique_lock lock(m_videoPlayerSection);

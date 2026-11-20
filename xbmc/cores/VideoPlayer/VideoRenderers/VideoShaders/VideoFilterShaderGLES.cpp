@@ -252,6 +252,28 @@ void ConvolutionFilterShader::Free()
   BaseVideoFilterShader::Free();
 }
 
+FSR1FilterShader::FSR1FilterShader(bool rcas)
+{
+  PixelShader()->LoadSource(rcas ? "gles_fsr1_rcas.frag" : "gles_fsr1_easu.frag", OutputDefines());
+}
+
+void FSR1FilterShader::OnCompiledAndLinked()
+{
+  BaseVideoFilterShader::OnCompiledAndLinked();
+  m_hSourceTex = glGetUniformLocation(ProgramHandle(), "img");
+  m_hStepXY = glGetUniformLocation(ProgramHandle(), "stepxy");
+  m_hInputSize = glGetUniformLocation(ProgramHandle(), "input_size");
+}
+
+bool FSR1FilterShader::OnEnabled()
+{
+  BaseVideoFilterShader::OnEnabled();
+  glUniform1i(m_hSourceTex, m_sourceTexUnit);
+  glUniform2f(m_hStepXY, m_stepX, m_stepY);
+  glUniform2f(m_hInputSize, m_inputWidth, m_inputHeight);
+  return true;
+}
+
 void DefaultFilterShader::OnCompiledAndLinked()
 {
   BaseVideoFilterShader::OnCompiledAndLinked();

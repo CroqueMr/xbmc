@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "DVBridgeGLES.h"
+#include "UpscalerSettings.h"
+#include "ShaderUpscalerPresets.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlayerLedOutput.h"
 #include "VideoShaders/VideoFilterShaderGLES.h"
 #include "utils/DVBridgeDiagnosticLog.h"
@@ -19,10 +21,13 @@ extern "C"
 #include <libavutil/dovi_meta.h>
 #include <libavutil/avutil.h>
 #include <libavutil/hwcontext.h>
+#include <libplacebo/dispatch.h>
+#include <libplacebo/renderer.h>
 #include "dvbridge_placebo.h"
 #include "dvbridge_cache.h"
 #include "cb1_hdr10plus_dovi.h"
 #include "cb1_lldv_cpu.h"
+#include "cb1_hdr10_expert.h"
 }
 
 #include <EGL/egl.h>
@@ -112,7 +117,7 @@ bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::La
         frame->frame.color.hdr.scene_avg=10000*av_q2d(statistics.average_maxrgb);
       }
     }
-    if (hdrInputUsed)
+    if (hdrInputUsed && !layer.hlg)
     {
       // Attest the same nominal input selection the SDR tone mapper consumes.
       const auto& hdr=frame->frame.color.hdr;
@@ -189,20 +194,51 @@ std::string SDRPreparationAudit(const pl_frame& source,const pl_frame* enhanceme
 }
 catch (...) { return {}; } // Observation cannot change preparation or fence/release results.
 
+namespace
+{
+ESCALINGMETHOD OutputScalingMethod(const CDVBridgeGLES::Layer& layer,
+                                   const dvbridge_geometry& geometry,
+                                   dvbridge_mode mode)
+{
+  using namespace KODI::VIDEO::UPSCALER;
+  if (!Enlarges(geometry.crop[2] - geometry.crop[0], geometry.crop[3] - geometry.crop[1],
+                geometry.placement[2] - geometry.placement[0],
+                geometry.placement[3] - geometry.placement[1]))
+    return layer.scalingMethod;
+  const int method = Get(geometry.source_width, geometry.source_height, layer.scalingMethod);
+  if (mode != DVBRIDGE_MODE_MASTER_REFERENCE &&
+      (method == VS_SCALINGMETHOD_FSR1_RCAS || UsesShaderHooks(method)))
+    return layer.scalingMethod;
+  if (method == VS_SCALINGMETHOD_AUTO)
+    return layer.autoScalingMethod;
+  return static_cast<ESCALINGMETHOD>(method);
+}
+} // namespace
+
 /* Native spatial interpolation only. Colour processing and transport stay in CB1. */
 class DVNativeScaler
 {
 public:
-  explicit DVNativeScaler(pl_gpu gpu) : m_gpu(gpu) {}
+  explicit DVNativeScaler(pl_gpu gpu, pl_log log) : m_gpu(gpu), m_log(log) {}
   ~DVNativeScaler()
   {
+    KODI::VIDEO::UPSCALER::DestroyHooks(m_hooks);
+    if (m_hookRenderer)
+      pl_renderer_destroy(&m_hookRenderer);
+    pl_tex_destroy(m_gpu, &m_easu);
     pl_tex_destroy(m_gpu, &m_texture);
     glDeleteSamplers(1, &m_sampler);
     glDeleteBuffers(1, &m_vertices);
     glDeleteVertexArrays(1, &m_vao);
   }
 
-  void SetMethod(ESCALINGMETHOD method, bool exact = true) { m_method = method; m_exact = exact; }
+  void SetMethod(ESCALINGMETHOD method, bool exact = true)
+  {
+    m_method = method;
+    m_exact = exact;
+    m_upscaler = -1;
+  }
+  int Upscaler() const { return m_upscaler; }
 
   static bool Fit(void* priv, const pl_frame* image, const pl_frame* target, pl_frame* fitted)
   {
@@ -263,6 +299,110 @@ private:
     }
   };
 
+  bool RenderMasterShader(const pl_frame& image, const pl_frame& fitted)
+  {
+    using namespace KODI::VIDEO::UPSCALER;
+    if (!m_hookRenderer)
+      m_hookRenderer = pl_renderer_create(m_log, m_gpu);
+    if (!m_hookRenderer)
+      return false;
+    if (m_hookMethod != m_method)
+    {
+      DestroyHooks(m_hooks);
+      if (!LoadHooks(m_gpu, m_method, m_hooks, true))
+      {
+        DestroyHooks(m_hooks);
+        return false;
+      }
+      m_hookMethod = m_method;
+      pl_renderer_reset_errors(m_hookRenderer, nullptr);
+    }
+
+    auto input = image;
+    auto output = fitted;
+    if (m_method == VS_SCALINGMETHOD_FSRCNNX)
+    {
+      // Master Reference stores reshaped Y'/Cb/Cr in an RGB texture. Expose
+      // Y' to the original luma hook. Preserve the two opponent channels.
+      input.num_planes = 2;
+      input.repr.sys = PL_COLOR_SYSTEM_BT_2020_NC;
+      input.repr.levels = PL_COLOR_LEVELS_FULL;
+      input.repr.bits.sample_depth = input.repr.bits.color_depth = 16;
+      input.planes[1] = input.planes[0];
+      for (auto& plane : std::span{input.planes, 2})
+        plane.components = 3;
+      input.planes[0].component_mapping[1] = PL_CHANNEL_NONE;
+      input.planes[0].component_mapping[2] = PL_CHANNEL_NONE;
+      input.planes[1].component_mapping[0] = PL_CHANNEL_NONE;
+      output.repr = input.repr;
+    }
+
+    auto params = pl_render_default_params;
+    params.hooks = m_hooks.data();
+    params.num_hooks = static_cast<int>(m_hooks.size());
+    params.upscaler = &pl_filter_bilinear;
+    params.downscaler = &pl_filter_hermite;
+    // The reconstructed and packed surfaces keep the exact Master format.
+    // Neural feature maps use the shader's normal floating-point precision.
+    params.min_fbo_precision = 16;
+    params.dither_params = nullptr;
+    params.peak_detect_params = nullptr;
+    params.sigmoid_params = nullptr;
+    params.disable_linear_scaling = true;
+    params.skip_caching_single_frame = true;
+    params.border = PL_CLEAR_SKIP;
+    params.cb1_nearest_identity = true;
+    params.cb1_dovi_transport = m_method != VS_SCALINGMETHOD_FSRCNNX;
+    // The reconstructed carrier is already normalized. Only the original image
+    // reaches packing with its original color tags.
+    input.color = output.color = pl_color_space_bt709;
+    const bool drawn = pl_render_image(m_hookRenderer, &input, &output, &params);
+    const auto errors = pl_renderer_get_errors(m_hookRenderer);
+    if (!drawn || errors.errors || errors.num_disabled_hooks)
+    {
+      CLog::Log(LOGERROR, "Master Reference upscaler {} failed (drawn={}, errors={}, hooks={})",
+                m_method, drawn, static_cast<unsigned>(errors.errors), errors.num_disabled_hooks);
+      return false;
+    }
+    return true;
+  }
+
+  bool Draw(Shaders::GLES::BaseVideoFilterShader& shader, GLuint source, GLuint target,
+            int width, int height, int inputWidth, int inputHeight, GLint filter,
+            const GLfloat (&vertices)[20])
+  {
+    glBindFramebuffer(GL_FRAMEBUFFER, target);
+    glViewport(0, 0, width, height);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, source);
+    shader.GetTextureFilter(filter);
+    glSamplerParameteri(m_sampler, GL_TEXTURE_MIN_FILTER, filter);
+    glSamplerParameteri(m_sampler, GL_TEXTURE_MAG_FILTER, filter);
+    glSamplerParameteri(m_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glSamplerParameteri(m_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindSampler(0, m_sampler);
+    constexpr GLfloat identity[16] = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    shader.SetWidth(inputWidth);
+    shader.SetHeight(inputHeight);
+    shader.SetSourceTexture(0);
+    shader.SetAlpha(1);
+    shader.SetMatrices(identity, identity);
+    if (!shader.Enable())
+      return false;
+    glBindVertexArray(m_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_vertices);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
+    const auto position = shader.GetVertexLoc(), coord = shader.GetcoordLoc();
+    glVertexAttribPointer(position, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), nullptr);
+    glVertexAttribPointer(coord, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat),
+        reinterpret_cast<const void*>(3 * sizeof(GLfloat)));
+    glEnableVertexAttribArray(position);
+    glEnableVertexAttribArray(coord);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    shader.Disable();
+    return glGetError() == GL_NO_ERROR;
+  }
+
   bool Fit(const pl_frame& image, const pl_frame& target, pl_frame& fitted)
   {
     if (image.num_planes != 1 || target.num_planes != 1 || image.rotation ||
@@ -270,49 +410,61 @@ private:
         m_method == VS_SCALINGMETHOD_AUTO || glGetError() != GL_NO_ERROR)
       return false;
     State state;
-    if (!m_shader || m_compiledMethod != m_method)
-    {
-      std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> shader;
-      if (m_method == VS_SCALINGMETHOD_NEAREST || m_method == VS_SCALINGMETHOD_LINEAR)
-        shader = std::make_unique<Shaders::GLES::DefaultFilterShader>();
-      else
-        shader = std::make_unique<Shaders::GLES::ConvolutionFilterShader>(m_method, false);
-      if (!shader->CompileAndLink()) return false;
-      m_shader = std::move(shader);
-      m_compiledMethod = m_method;
-    }
     const int width = target.planes[0].texture->params.w;
     const int height = target.planes[0].texture->params.h;
-    const auto format = pl_find_fmt(m_gpu, PL_FMT_FLOAT, 4, m_exact ? 32 : 16, m_exact ? 32 : 16,
+    const int depth = m_exact ? 32 : 16;
+    const auto format = pl_find_fmt(m_gpu, PL_FMT_FLOAT, 4, depth, depth,
         static_cast<pl_fmt_caps>(PL_FMT_CAP_RENDERABLE | PL_FMT_CAP_SAMPLEABLE));
     pl_tex_params allocation{};
     allocation.w = width; allocation.h = height; allocation.format = format;
     allocation.sampleable = true; allocation.renderable = true;
     if (!format || !pl_tex_recreate(m_gpu, &m_texture, &allocation)) return false;
+    fitted = image;
+    fitted.planes[0].texture = m_texture;
+    fitted.planes[0].flipped = false;
+    fitted.crop = target.crop;
+    const bool enlarging = KODI::VIDEO::UPSCALER::Enlarges(
+        image.crop.x1 - image.crop.x0, image.crop.y1 - image.crop.y0,
+        target.crop.x1 - target.crop.x0, target.crop.y1 - target.crop.y0);
+    if (enlarging && KODI::VIDEO::UPSCALER::UsesShaderHooks(m_method))
+    {
+      if (!RenderMasterShader(image, fitted))
+        return false;
+      m_upscaler = m_method;
+      return true;
+    }
+
+    const bool rcas = enlarging && m_method == VS_SCALINGMETHOD_FSR1_RCAS;
+    const auto method = m_method == VS_SCALINGMETHOD_FSR1_RCAS ? VS_SCALINGMETHOD_FSR1 : m_method;
+    if (!m_shader || m_compiledMethod != method)
+    {
+      std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> shader;
+      if (method == VS_SCALINGMETHOD_NEAREST || method == VS_SCALINGMETHOD_LINEAR)
+        shader = std::make_unique<Shaders::GLES::DefaultFilterShader>();
+      else if (method == VS_SCALINGMETHOD_FSR1)
+        shader = std::make_unique<Shaders::GLES::FSR1FilterShader>();
+      else
+        shader = std::make_unique<Shaders::GLES::ConvolutionFilterShader>(method, false);
+      if (!shader->CompileAndLink())
+        return false;
+      m_shader = std::move(shader);
+      m_compiledMethod = method;
+    }
     GLenum inputTarget{};
     const auto input = pl_opengl_unwrap(m_gpu, image.planes[0].texture, &inputTarget, nullptr, nullptr);
     GLuint fbo{};
-    if (!input || inputTarget != GL_TEXTURE_2D ||
-        !pl_opengl_unwrap(m_gpu, m_texture, nullptr, nullptr, &fbo)) return false;
+    pl_opengl_unwrap(m_gpu, m_texture, nullptr, nullptr, &fbo);
+    if (!input || inputTarget != GL_TEXTURE_2D || !fbo)
+      return false;
     if (!m_vao) glGenVertexArrays(1, &m_vao);
     if (!m_vertices) glGenBuffers(1, &m_vertices);
     if (!m_sampler) glGenSamplers(1, &m_sampler);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-    glViewport(0, 0, width, height);
     if (target.crop.x0 || target.crop.y0 || target.crop.x1 != width || target.crop.y1 != height)
     {
       constexpr GLfloat black[4] = {0, 0, 0, 1};
       glClearBufferfv(GL_COLOR, 0, black);
     }
-    glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, input);
-    GLint filter = m_method == VS_SCALINGMETHOD_NEAREST ? GL_NEAREST : GL_LINEAR;
-    m_shader->GetTextureFilter(filter);
-    glSamplerParameteri(m_sampler, GL_TEXTURE_MIN_FILTER, filter);
-    glSamplerParameteri(m_sampler, GL_TEXTURE_MAG_FILTER, filter);
-    glSamplerParameteri(m_sampler, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glSamplerParameteri(m_sampler, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glBindSampler(0, m_sampler);
     const float sw = image.planes[0].texture->params.w;
     const float sh = image.planes[0].texture->params.h;
     float y0 = image.crop.y0 / sh, y1 = image.crop.y1 / sh;
@@ -321,37 +473,54 @@ private:
     const float x1 = 2 * target.crop.x1 / width - 1;
     const float top = 2 * target.crop.y0 / height - 1;
     const float bottom = 2 * target.crop.y1 / height - 1;
-    const GLfloat vertices[] = {
-        x0, top, 0, image.crop.x0 / sw, y0,
-        x1, top, 0, image.crop.x1 / sw, y0,
-        x0, bottom, 0, image.crop.x0 / sw, y1,
-        x1, bottom, 0, image.crop.x1 / sw, y1};
-    constexpr GLfloat identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    m_shader->SetWidth(sw); m_shader->SetHeight(sh);
-    m_shader->SetSourceTexture(0); m_shader->SetAlpha(1);
-    m_shader->SetMatrices(identity, identity);
-    if (!m_shader->Enable()) return false;
-    glBindVertexArray(m_vao);
-    glBindBuffer(GL_ARRAY_BUFFER, m_vertices);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
-    const auto position = m_shader->GetVertexLoc(), coord = m_shader->GetcoordLoc();
-    glVertexAttribPointer(position, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), nullptr);
-    glVertexAttribPointer(coord, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat),
-        reinterpret_cast<const void*>(3 * sizeof(GLfloat)));
-    glEnableVertexAttribArray(position); glEnableVertexAttribArray(coord);
-    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-    m_shader->Disable();
-    if (glGetError() != GL_NO_ERROR) return false;
-    fitted = image;
-    fitted.planes[0].texture = m_texture;
-    fitted.planes[0].flipped = false;
-    fitted.crop = target.crop;
+    const float u0 = image.crop.x0 / sw, u1 = image.crop.x1 / sw;
+    if (method == VS_SCALINGMETHOD_FSR1)
+      static_cast<Shaders::GLES::FSR1FilterShader*>(m_shader.get())->SetInputSize(sw, sh);
+
+    if (rcas)
+    {
+      if (!m_rcas)
+      {
+        auto shader = std::make_unique<Shaders::GLES::FSR1FilterShader>(true);
+        if (!shader->CompileAndLink())
+          return false;
+        m_rcas = std::move(shader);
+      }
+      allocation.w = std::lround(target.crop.x1 - target.crop.x0);
+      allocation.h = std::lround(target.crop.y1 - target.crop.y0);
+      if (!pl_tex_recreate(m_gpu, &m_easu, &allocation))
+        return false;
+      GLuint scratchFbo{};
+      const auto scratch = pl_opengl_unwrap(m_gpu, m_easu, nullptr, nullptr, &scratchFbo);
+      const GLfloat easu[] = {-1,-1,0,u0,y0, 1,-1,0,u1,y0, -1,1,0,u0,y1, 1,1,0,u1,y1};
+      const GLfloat sharp[] = {x0,top,0,0,0, x1,top,0,1,0, x0,bottom,0,0,1, x1,bottom,0,1,1};
+      if (!scratch || !scratchFbo ||
+          !Draw(*m_shader, input, scratchFbo, allocation.w, allocation.h, sw, sh, GL_NEAREST, easu) ||
+          !Draw(*m_rcas, scratch, fbo, width, height, allocation.w, allocation.h, GL_NEAREST, sharp))
+        return false;
+    }
+    else
+    {
+      const GLfloat vertices[] = {
+          x0,top,0,u0,y0, x1,top,0,u1,y0, x0,bottom,0,u0,y1, x1,bottom,0,u1,y1};
+      const GLint filter = method == VS_SCALINGMETHOD_NEAREST ? GL_NEAREST : GL_LINEAR;
+      if (!Draw(*m_shader, input, fbo, width, height, sw, sh, filter, vertices))
+        return false;
+    }
+    if (enlarging)
+      m_upscaler = m_method;
     return true;
   }
 
+  int m_upscaler{-1};
   bool m_exact{true};
   pl_gpu m_gpu{};
-  pl_tex m_texture{};
+  pl_log m_log{};
+  pl_tex m_texture{}, m_easu{};
+  pl_renderer m_hookRenderer{};
+  std::vector<const pl_hook*> m_hooks;
+  ESCALINGMETHOD m_hookMethod{VS_SCALINGMETHOD_MAX};
+  std::unique_ptr<Shaders::GLES::FSR1FilterShader> m_rcas;
   GLuint m_vao{}, m_vertices{}, m_sampler{};
   ESCALINGMETHOD m_method{VS_SCALINGMETHOD_LINEAR}, m_compiledMethod{VS_SCALINGMETHOD_MAX};
   std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> m_shader;
@@ -382,7 +551,6 @@ struct CDVBridgeGLES::Context::State
   {
     Layer layer;
     DVBRIDGE::SourceBinding head;
-    double headPts;
     DVBRIDGE::OutputPreferences preferences;
   };
   std::optional<NextHDR10AI> aiNext;
@@ -459,7 +627,7 @@ dvbridge_renderer* CDVBridgeGLES::Context::Attach()
   auto* renderer = dvbridge_renderer_create_with_owner(m_state->owner);
   if (renderer)
   {
-    if (!m_state->spatial) m_state->spatial = std::make_unique<DVNativeScaler>(m_state->gl->gpu);
+    if (!m_state->spatial) m_state->spatial = std::make_unique<DVNativeScaler>(m_state->gl->gpu, m_state->log);
     dvbridge_renderer_set_spatial_fit(renderer, DVNativeScaler::Fit, m_state->spatial.get());
     m_state->attached = true;
   }
@@ -547,7 +715,7 @@ bool CDVBridgeGLES::Context::AsyncPreparation(uint64_t stream)
   if (stream && stream != m_state->preparationStream)
   {
     m_state->preparationStream = stream;
-    m_state->asyncPreparation = DVBRIDGE::AsyncPreparationEnabled();
+    m_state->asyncPreparation = true;
   }
   return stream && m_state->asyncPreparation;
 }
@@ -564,6 +732,11 @@ void CDVBridgeGLES::Context::SetSpatialMethod(ESCALINGMETHOD method, bool exact)
 {
   if (m_state->spatial) m_state->spatial->SetMethod(method, exact);
 }
+int CDVBridgeGLES::Context::Upscaler() const
+{
+  return m_state->spatial ? m_state->spatial->Upscaler() : -1;
+}
+
 pl_opengl CDVBridgeGLES::Context::GL() const { return m_state->gl; }
 pl_log CDVBridgeGLES::Context::Log() const { return m_state->log; }
 void CDVBridgeGLES::Context::Retain(std::shared_ptr<void> base, std::shared_ptr<void> enhancement)
@@ -667,7 +840,7 @@ cb1_ai_status CDVBridgeGLES::Context::BeginHDR10AI(const char* bundle,
       HDR10AI().RecordStatus("analysis-context",CB1_AI_INCOMPATIBLE);
 }
 
-cb1_ai_status CDVBridgeGLES::Context::AnalyseHDR10AI(const Layer& base, double headPts)
+cb1_ai_status CDVBridgeGLES::Context::AnalyseHDR10AI(const Layer& base)
 {
   if (!m_state->gl || Quarantined())
     return HDR10AI().RecordStatus("analysis-context",CB1_AI_INVALID);
@@ -679,7 +852,7 @@ cb1_ai_status CDVBridgeGLES::Context::AnalyseHDR10AI(const Layer& base, double h
   if (!dvbridge_gl_frame_import(&imported,m_state->gl->gpu,base.layout,base.width,base.height,base.planes))
     return HDR10AI().RecordStatus("analysis-import",CB1_AI_INCOMPATIBLE);
   HDR10Color(imported.frame,base);
-  const auto status = HDR10AI().Submit(&imported.frame,base.binding,base.pts,headPts,base.lease);
+  const auto status = HDR10AI().Submit(&imported.frame,base.binding,base.pts,base.lease);
   const bool fenced = FenceHDR10AIUse();
   dvbridge_gl_frame_release(&imported);
   return fenced ? status : HDR10AI().RecordStatus("analysis-fence",CB1_AI_INVALID);
@@ -691,9 +864,9 @@ cb1_ai_status CDVBridgeGLES::BeginHDR10AI(const char* bundle,
 {
   return m_context ? m_context->BeginHDR10AI(bundle,preferences,binding,pts,now) : CB1_AI_INCOMPATIBLE;
 }
-cb1_ai_status CDVBridgeGLES::AnalyseHDR10AI(const Layer& base, double headPts)
+cb1_ai_status CDVBridgeGLES::AnalyseHDR10AI(const Layer& base)
 {
-  return m_context ? m_context->AnalyseHDR10AI(base,headPts) : CB1_AI_INCOMPATIBLE;
+  return m_context ? m_context->AnalyseHDR10AI(base) : CB1_AI_INCOMPATIBLE;
 }
 
 cb1_ai_status CDVBridgeGLES::CollectHDR10AI()
@@ -748,7 +921,7 @@ void CDVBridgeGLES::Context::AdvanceNextHDR10AI(DVBRIDGE::SourceBinding accepted
       !source.Current(accepted,preferences) ||
       next->layer.binding.picture <= source.LastSubmitted())
     return;
-  const auto status = AnalyseHDR10AI(next->layer,next->headPts);
+  const auto status = AnalyseHDR10AI(next->layer);
   // The accepted current output cannot be undone by a future sample failure.
   // Preserve fatal analysis handling at the next queue preparation, without
   // charging a speculative job against the cumulative required-wait budget.
@@ -825,7 +998,7 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
         break;
       }
       if (layer.binding.picture <= source.LastSubmitted()) continue;
-      if (AnalyseHDR10AI(layer,head.pts) != CB1_AI_READY) break;
+      if (AnalyseHDR10AI(layer) != CB1_AI_READY) break;
     }
     if (!covered && end && source.Collect() == CB1_AI_READY &&
         source.LastSubmitted() >= queue.back().binding.picture)
@@ -834,13 +1007,13 @@ HDR10AISource::Decision CDVBridgeGLES::Context::PrepareHDR10AIQueue(
         std::chrono::steady_clock::now() - started).count();
     const bool required = drain && now + elapsed >= presentationDeadline;
     const auto decision=source.Prediction(head.binding,preferences,now+elapsed,result,required);
-    // Capture anticipation without placing it ahead of the current draw.
+    // The first sample at or beyond the sealed horizon belongs to the next
+    // prediction. Its GPU work follows the current draw, including at 23.976 Hz.
     if (decision == Decision::Prepare && !paused && m_state->attached && anticipation &&
-        anticipation->pts <= head.pts + 1.0 + 1e-9 &&
         anticipation->binding.picture > source.LastSubmitted() &&
         source.Collect() == CB1_AI_READY)
     {
-      m_state->aiNext = State::NextHDR10AI{*anticipation,head.binding,head.pts,preferences};
+      m_state->aiNext = State::NextHDR10AI{*anticipation,head.binding,preferences};
     }
     // Collect may dispatch follow-up reductions after the initial import fence.
     if (!FenceHDR10AIUse())
@@ -902,6 +1075,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   if (m_dvPolicyActive && dvbridge_render_dv_policy_poll(m_renderer) == DVBRIDGE_DV_FAILED)
     return FrameStatus::Failed;
   const bool asyncSetting = m_context->AsyncPreparation(base.binding.stream);
+  const auto scalingMethod = OutputScalingMethod(base, geometry, policy.mode);
   const bool sameGeometry = m_geometryKnown &&
       geometry.source_width == m_sourceGeometry.source_width &&
       geometry.source_height == m_sourceGeometry.source_height &&
@@ -911,7 +1085,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
       geometry.target_height == m_sourceGeometry.target_height &&
       std::equal(std::begin(geometry.crop), std::end(geometry.crop), std::begin(m_sourceGeometry.crop)) &&
       std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
-      base.scalingMethod == m_spatialMethod;
+      scalingMethod == m_spatialMethod;
   if (m_aiFrame && m_aiOutputAccepted && !m_pending && m_hasCommitted && base.binding == m_committedBinding &&
       m_pendingBinding == m_committedBinding &&
       prediction.id.revision == m_committedRevision && policy.mode == m_committedMode &&
@@ -961,7 +1135,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   if (!dvbridge_gl_frame_import(&imported,m_gl->gpu,base.layout,base.width,base.height,base.planes))
     return FrameStatus::Unsupported;
   HDR10Color(imported.frame,base);
-  m_spatialMethod = base.scalingMethod;
+  m_spatialMethod = scalingMethod;
   m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
   m_context->Retain(base.lease);
   policy.revision = prediction.id.revision;
@@ -1433,16 +1607,16 @@ struct CDVBridgeGLES::PlayerLedCpu
   bool Write(const Slot& slot)
   {
     if (!slot.carrier->Sync(DMA_BUF_SYNC_START)) return false;
-    const auto gamut = slot.policy.tv.gamut;
-    const bool identity = gamut == DVBRIDGE_GAMUT_BT2020;
-    const auto primaries = gamut == DVBRIDGE_GAMUT_BT709 ? PL_COLOR_PRIM_BT_709 : PL_COLOR_PRIM_DISPLAY_P3;
+    const auto primaries = cb1_display_primaries(&slot.policy);
+    const bool identity = !slot.policy.lldv_edid_version && slot.policy.tv.gamut == DVBRIDGE_GAMUT_BT2020;
     const auto matrix = identity ? pl_matrix3x3_identity : pl_get_color_mapping_matrix(
-        pl_raw_primaries_get(primaries), pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020),
+        &primaries, pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020),
         PL_INTENT_RELATIVE_COLORIMETRIC);
     const cb1_lldv_cpu_frame input{reinterpret_cast<const float*>(slot.host->data),
         slot.carrier->data, slot.carrier->stride, identity ? nullptr : &matrix.m[0][0],
         slot.policy.tv.peak_nits,
-        slot.frame->transport.format == DVBRIDGE::LldvFormat::Y422_10 ? 10u : 12u, true, true,
+        // The host rows already follow scanout order.
+        slot.frame->transport.format == DVBRIDGE::LldvFormat::Y422_10 ? 10u : 12u, true, false,
         slot.activeRows[0], slot.activeRows[1]};
     const bool packed = cb1_lldv_cpu_submit(worker, &input) && cb1_lldv_cpu_ready(worker, true);
     return slot.carrier->Sync(DMA_BUF_SYNC_END) && packed;
@@ -1602,7 +1776,8 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int frame
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
       ((sdr && hdr10 && red >= 8 && green >= 8 && blue >= 8 && red <= 16 && green <= 16 && blue <= 16) ||
        (!sdr && hdr10 && red >= 10 && green >= 10 && blue >= 10) ||
-       (!sdr && !hdr10 && red == 8 && green == 8 && blue == 8)) &&
+       (!sdr && !hdr10 && red == green && green == blue &&
+        (red == 8 || (m_playerLed && red == 10)))) &&
       samples <= 1 && encoding == GL_LINEAR)
     candidate = pl_opengl_wrap(m_gl->gpu, &output);
   glBindFramebuffer(GL_DRAW_FRAMEBUFFER, draw);
@@ -1641,10 +1816,22 @@ bool CDVBridgeGLES::SetHDR10Session(const dvbridge_hdr10_session& session, uint6
   return true;
 }
 
+bool CDVBridgeGLES::SetSDROutputRange(bool limited)
+{
+  if (m_hdr10Limited == limited) return true;
+  if (m_pending || m_prepared) return false;
+  m_geometryRevision = DVBRIDGE::NextRevisionAfter(
+      std::max({m_geometryRevision, m_committedRevision, m_pendingIdentity.revision}));
+  if (!m_geometryRevision) return false;
+  m_hdr10Limited = limited;
+  return true;
+}
+
 void CDVBridgeGLES::Reset()
 {
   Summary("reset");
   Cancel();
+  cb1_hdr10plus_analysis_clear_scene(m_hdr10plusAnalysis);
   m_rawELCache.clear();
   m_firstFrame = true;
   DVBRIDGE::StreamTelemetry::ClearOutput();
@@ -1832,6 +2019,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   { Failure("renderer-unavailable"); m_asyncEligible = false; return FrameStatus::Failed; }
   const bool asyncSetting = m_playerLed || m_context->AsyncPreparation(base.binding.stream);
   auto policy = selected ? *selected : preferences.Policy();
+  const auto scalingMethod = OutputScalingMethod(base, geometry, policy.mode);
   if (policy.mode == DVBRIDGE_MODE_HDR10PLUS && !m_hdr10plusSubmits)
     DVBRIDGE::DiagnosticReserveProgress();
   if (policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && !allowPacked)
@@ -1846,7 +2034,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     return FrameStatus::Unsupported;
   // Capture the proven observation key before geometry or refresh rekeys work.
   dvbridge_renderer_set_l2_trims_disabled(m_renderer, preferences.L2TrimsDisabled(policy.mode));
-  const auto cmv40 = preferences.CMv40Options(policy.mode);
+  auto cmv40 = preferences.CMv40Options(policy.mode);
+  if (policy.mode == DVBRIDGE_MODE_PLAYER_LED) cmv40.tv_peak = policy.tv.peak_nits;
   dvbridge_renderer_set_cmv40(m_renderer, &cmv40);
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
       policy.mode);
@@ -1859,19 +2048,26 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       geometry.target_height == m_sourceGeometry.target_height &&
       std::equal(std::begin(geometry.crop), std::end(geometry.crop), std::begin(m_sourceGeometry.crop)) &&
       std::equal(std::begin(geometry.placement), std::end(geometry.placement), std::begin(m_sourceGeometry.placement)) &&
-      base.scalingMethod == m_spatialMethod;
-  if (m_geometryKnown && !sameGeometry)
-    m_geometryRevision = DVBRIDGE::NextRevisionAfter(std::max(preferences.revision,base.binding.revision));
+      scalingMethod == m_spatialMethod;
+  if ((m_geometryKnown && !sameGeometry) ||
+      (policy.mode == DVBRIDGE_MODE_SDR && policy.sdr.gamut != m_sdrGamut) ||
+      policy.lldv_edid_generation != m_lldvEdidGeneration)
+    m_geometryRevision = DVBRIDGE::NextRevisionAfter(std::max({preferences.revision,base.binding.revision,m_geometryRevision}));
+  if (policy.mode == DVBRIDGE_MODE_SDR) m_sdrGamut = policy.sdr.gamut;
+  m_lldvEdidGeneration = policy.lldv_edid_generation;
   m_sourceGeometry = geometry;
   m_geometryKnown = true;
   uint64_t revision = std::max({preferences.revision,base.binding.revision,m_geometryRevision});
-  bool masterOverlayRefresh = false;
+  bool asyncOverlayRefresh = false;
   if (!m_pending && m_hasCommitted && base.binding == m_committedBinding &&
       revision == m_committedRevision && (!allowPacked || !m_committedPacked ||
           m_nativeOverlayRevision != m_committedOverlayRevision))
   {
-    masterOverlayRefresh = policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE &&
-        sameGeometry && allowPacked && m_committedPacked;
+    // The SDR GUI is blended into the resolved film target. Rebuilding that
+    // target for the same picture needs a new identity, but keeps the scanout.
+    asyncOverlayRefresh = sameGeometry && allowPacked &&
+        ((policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && m_committedPacked) ||
+         (policy.mode == DVBRIDGE_MODE_SDR && !m_committedPacked));
     // Explicit refresh of an equal-PTS source is a new processing transaction.
     revision = m_geometryRevision = DVBRIDGE::NextRevisionAfter(revision);
     if (!revision) return FrameStatus::Failed;
@@ -1906,7 +2102,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       (m_directUsable || policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE) &&
       m_committedMode == policy.mode && base.binding.stream == m_committedBinding.stream &&
       base.binding.revision == m_committedBinding.revision &&
-      (revision == m_committedRevision || masterOverlayRefresh);
+      (revision == m_committedRevision || asyncOverlayRefresh);
   if (m_dvPolicyActive)
   {
     const auto status = eligible && allowPacked ?
@@ -1939,12 +2135,13 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_live = true;
 #ifdef CB1_HAS_HDR10_AI
   m_aiFrame = m_aiOutputAccepted = false;
+  m_sourceHLG = base.hlg;
 #endif
   m_guiComposed = false;
   m_pendingOverlayRevision = m_nativeOverlayRevision;
   m_pendingOverlayVisible = m_overlayVisible;
   m_requested = preferences;
-  m_spatialMethod = base.scalingMethod;
+  m_spatialMethod = scalingMethod;
   m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE ||
       policy.mode == DVBRIDGE_MODE_PLAYER_LED);
   policy.revision = revision;
@@ -1964,8 +2161,10 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_pendingSDRHDRInputUsed = 0;
   m_pendingSDRHDRInputValues = {};
   m_pendingIdentity = {base.binding.stream,base.binding.picture,revision};
+  const auto requested = !base.sourceInfo.profile && policy.mode == DVBRIDGE_MODE_SDR ?
+      preferences.HDR10Policy() : preferences.Policy();
   DVBRIDGE::StreamTelemetry::NativeRequest({base.binding.stream,base.binding.picture,revision},
-      DVBRIDGE::PolicyCode(preferences.Policy()),DVBRIDGE::PolicyCode(policy),
+      DVBRIDGE::PolicyCode(requested),DVBRIDGE::PolicyCode(policy),
       admissionIdentity.Valid() ? admissionIdentity :
           DVBRIDGE::SourceBinding{base.binding.stream,base.binding.picture,preferences.revision});
   if (m_auditStream!=base.binding.stream || m_auditSource!=base.binding.revision ||
@@ -1987,7 +2186,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     m_auditRequestedSerial=m_auditSerial;
     DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge policy requested: source={}/{}/{} policy={} requested={} effective={} eligible={} fallback={} l2_trims_disabled={} method={} tv_peak={} tv_panel={} tv_gamut={} tv_profile_valid={} encoded_active_area={}",
         base.binding.stream,base.binding.picture,base.binding.revision,revision,
-        int(preferences.Policy().mode),int(policy.mode),!m_fallback,m_fallback,preferences.L2TrimsDisabled(policy.mode),
+        int(requested.mode),int(policy.mode),!m_fallback,m_fallback,preferences.L2TrimsDisabled(policy.mode),
         preferences.method,preferences.peak,preferences.panel,preferences.gamut,preferences.ProfileValid(),geometry.ignore_l5);
     const auto admission=DVBRIDGE::StreamTelemetry::Read().transaction;
     DVBRIDGE::DiagnosticLog(LOGINFO,"DVBridge output admission: generation={} source_known={} gpu_known={} native_dv={} hdr10={} requested={} effective={} reason={}",
@@ -2043,12 +2242,18 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   else if (policy.mode == DVBRIDGE_MODE_ENHANCED_DV)
   {
     auto status = DVBRIDGE_DV_UNSUPPORTED;
-    if (allowPacked && m_directUsable && m_scanout && !geometry.x && !geometry.y &&
-        geometry.width == geometry.target_width && geometry.height == geometry.target_height)
+    const bool fullRaster = !geometry.x && !geometry.y &&
+        geometry.width == geometry.target_width && geometry.height == geometry.target_height;
+    const bool emptyOverlay = m_nativeOverlayEnabled && m_nativeOverlay.rect[0] == m_nativeOverlay.rect[2];
+    // A placed picture can keep its native reconstruction with GUI. The core
+    // composites the overlay in the final draw instead of prepacking the image.
+    const bool placedRows = (!m_overlayVisible || m_nativeOverlayEnabled) &&
+        dvbridge_adaptive_placed_rows(geometry) >= 0;
+    if (allowPacked && m_directUsable && m_scanout && (fullRaster || placedRows))
     {
       status = dvbridge_render_dv_policy_prepare_packed(m_renderer,&policy,&m_pendingIdentity,
           &bl.frame,metadata.Data(),metadata.Size(),base.pts,elPts,geometry,m_scanout,true,
-          m_nativeOverlayEnabled ? &m_nativeOverlay : nullptr);
+          m_nativeOverlayEnabled && !(placedRows && emptyOverlay && !m_overlayVisible) ? &m_nativeOverlay : nullptr);
       m_direct = status == DVBRIDGE_DV_READY || status == DVBRIDGE_DV_PENDING;
       if (m_direct && m_nativeOverlayEnabled) m_nativeOverlayPrimed = true;
       if (status == DVBRIDGE_DV_UNSUPPORTED)
@@ -2213,7 +2418,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::BeginHDR10Plus()
   {
     const pl_rect2d area{static_cast<int>(margins[0]), static_cast<int>(margins[2]),
         rgb->params.w - static_cast<int>(margins[1]), rgb->params.h - static_cast<int>(margins[3])};
-    const auto status = cb1_hdr10plus_analysis_submit(m_hdr10plusAnalysis, rgb, area, m_pendingIdentity);
+    const auto status = cb1_hdr10plus_analysis_submit(m_hdr10plusAnalysis, rgb, area,
+        m_pendingIdentity, m_hdr10plusVersion);
     if (status == CB1_HDR10PLUS_ANALYSIS_PENDING)
     {
       if (DVBRIDGE::DiagnosticsEnabled()) ++m_hdr10plusSubmits;
@@ -2244,6 +2450,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PollHDR10Plus()
     fingerprint.Compute(reinterpret_cast<const char*>(statistics.maxscl),sizeof(statistics.maxscl));
     m_hdr10plusAnalyzed.Observe({m_pendingIdentity.stream,m_pendingIdentity.picture,m_pendingIdentity.revision},fingerprint);
     m_hdr10plusLight={statistics.average_maxrgb,statistics.maxscl[0],statistics.maxscl[1],statistics.maxscl[2]};
+  }
+  if (status == CB1_HDR10PLUS_ANALYSIS_READY)
+  {
+    const auto* dovi = reinterpret_cast<const AVDOVIMetadata*>(m_pendingMetadata.Data());
+    cb1_hdr10plus_analysis_stage_scene(m_hdr10plusAnalysis, &statistics,
+        m_committedMode != DVBRIDGE_MODE_HDR10PLUS || av_dovi_get_color(dovi)->scene_refresh_flag);
   }
   AVDynamicHDRPlus metadata{};
   if (status != CB1_HDR10PLUS_ANALYSIS_READY || !cb1_dv_hdr10plus_metadata_for_version(&metadata,
@@ -2359,9 +2571,14 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
       default: return failed("unsupported-format",int(pixels.format));
     }
     const double gamma=m_requested.sdrPreset==0 ? 2.4 : m_requested.sdrPreset==1 ? 2.2 : m_requested.sdrGamma;
+    const auto* output=HDR10Output();
+    const bool wide=output && output->container.primaries==PL_COLOR_PRIM_BT_2020;
+    const auto matrix=wide ? pl_get_color_mapping_matrix(pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020),
+        pl_raw_primaries_get(PL_COLOR_PRIM_BT_709),PL_INTENT_RELATIVE_COLORIMETRIC) : pl_matrix3x3_identity;
     auto rgb=std::make_unique<uint8_t[]>(size_t(pixels.width)*pixels.height*8);
     if (!DVBRIDGE::DecodeSDRScreenshot(pixels.pixels.get(),pixels.width,pixels.height,
-        format,m_outputBits,m_hdr10Limited,gamma,reinterpret_cast<uint16_t*>(rgb.get()))) return failed("decode",int(pixels.format));
+        format,m_outputBits,m_hdr10Limited,gamma,reinterpret_cast<uint16_t*>(rgb.get()),
+        wide ? matrix.m : nullptr)) return failed("decode",int(pixels.format));
     pixels.pixels=std::move(rgb);
     pixels.stride=-int(pixels.width*8);
     pixels.format=AV_PIX_FMT_RGBA64LE;
@@ -2835,6 +3052,17 @@ bool CDVBridgeGLES::PackPlayerLed(DVBRIDGE::LldvTransport transport)
        transport.format != DVBRIDGE::LldvFormat::Y422_12))
     return Failure("player-led-pack-target");
 
+  if (transport.rgb10Scanout)
+  {
+    m_packed = m_outputBits == 10 && dvbridge_resolve_player_led_rgb10(
+        m_renderer, &m_playerLedPolicy, m_playerLedPicture, m_scanout, true) &&
+        m_context->FenceLastUse();
+    if (!m_packed) return Failure("player-led-rgb10");
+    m_playerLedTransport = transport;
+    m_submission = {m_pendingIdentity,m_scanout,0,++m_submissionSequence,m_asyncEligible};
+    return true;
+  }
+
   const auto gpu = m_gl->gpu;
   const int w = m_scanout->params.w, h = m_scanout->params.h;
   if (!m_playerLedCarrier || m_playerLedCarrier->params.w != w || m_playerLedCarrier->params.h != h)
@@ -2925,6 +3153,8 @@ bool CDVBridgeGLES::ConfirmPlayerLed(const PlayerLedFrame& frame,
   m_committedOverlayRevision = frame.overlayRevision;
   m_committedPacked = frame.withoutGui;
   output->l2TrimsDisabled = frame.l2Disabled;
+  CServiceBroker::GetDataCacheCore().SetVideoUpscaler(frame.submission.upscaler,
+                                                      frame.source.informationGeneration);
   DVBRIDGE::StreamTelemetry::NativePresented(frame.source, frame.metadata, *output, frame.decoded);
   return true;
 }
@@ -3057,7 +3287,9 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   const auto* hdrOutput = HDR10Output();
   // Capture the executed mapping before commit releases its pending plan.
   const double displayBlack = hdrOutput ? hdrOutput->policy.expert_black_nits : 0;
-  const int displayGamut = hdrOutput ? static_cast<int>(hdrOutput->policy.tv.gamut) : 0;
+  const int displayGamut = !hdrOutput ? 0 : m_effectiveMode == DVBRIDGE_MODE_SDR ?
+      (hdrOutput->container.primaries == PL_COLOR_PRIM_BT_2020 ?
+          DVBRIDGE_GAMUT_BT2020 : DVBRIDGE_GAMUT_BT709) : hdrOutput->policy.tv.gamut;
   const float peak = m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS ? 992.0f :
       hdrOutput ? hdrOutput->nominal_target.hdr.max_luma :
       m_advanced && m_effectiveMode == DVBRIDGE_MODE_ENHANCED_DV ? static_cast<float>(m_requested.peak) :
@@ -3104,6 +3336,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
 #endif
   m_committedBinding = m_pendingBinding;
   m_committedMode = m_effectiveMode;
+  CServiceBroker::GetDataCacheCore().SetVideoUpscaler(submission.upscaler,
+                                                      submission.informationGeneration);
   m_committedRevision = m_pendingIdentity.revision;
   m_committedOverlayRevision = m_pendingOverlayRevision;
   m_committedPacked = !m_guiComposed;
@@ -3153,6 +3387,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
     output.flags |= CDVPlaybackInfo::SDR;
 #ifdef CB1_HAS_HDR10_AI
     output.sdrHDRSource=m_pendingSourceInfo.profile==0;
+    output.sdrHLGSource=output.sdrHDRSource && m_sourceHLG;
 #endif
     output.level6=false; output.iptTransport=false;
   }
@@ -3189,7 +3424,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   output.displayBlack = expert?displayBlack:0;
   if (m_effectiveMode==DVBRIDGE_MODE_SDR && hdrOutput)
   {
-    output.gamut=DVBRIDGE_GAMUT_BT709; output.manualPeak=peak;
+    output.gamut=displayGamut; output.manualPeak=peak;
     output.displayBlack=hdrOutput->nominal_target.hdr.min_luma;
     output.sdrGamma=m_requested.sdrPreset==0 ? 2.4 : m_requested.sdrPreset==1 ? 2.2 : m_requested.sdrGamma;
   }
@@ -3199,6 +3434,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   {
     if (submission.hdr10plusAccepted)
     {
+      cb1_hdr10plus_analysis_commit_scene(m_hdr10plusAnalysis);
       if (DVBRIDGE::DiagnosticsEnabled() && submission.hdr10plus)
       {
         Crc32 fingerprint;

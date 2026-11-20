@@ -6,6 +6,7 @@
 #include <bitset>
 #include <array>
 #include <cstdint>
+#include "utils/DVBridgeLldv.h"
 
 namespace DVBRIDGE
 {
@@ -25,6 +26,10 @@ struct OutputCapabilities
   bool isHDR10Plus{}; // Selected decoded picture, not receiver HDR10+ transport.
   std::array<ModeAdmission, 9> hdr10Processing{};
   bool hdr10plus{}, playerLed{};
+  LldvDisplay lldvDisplay;
+  uint64_t lldvEdidGeneration{};
+  bool lldvRgb10Scanout{};
+  int lldvUnavailableLabel{41280};
   uint64_t hdr10MaxBpc{}; // Zero means the HDMI ceiling is unknown.
 
   bool HDR10DepthLimited() const { return hdr10MaxBpc != 0 && hdr10MaxBpc < 10; }
@@ -92,7 +97,7 @@ struct CDVPlaybackInfo
     switch (output.effective)
     {
       case 2: return "HDR10 Rendering";
-      case 3: return "HDR10 Rendering Reference";
+      case 3: return "LLDV Reference – HDR10 Output";
       case 4: return "Dolby Vision Adaptive HDR Mapping";
       case 5: return "Dolby Vision Master Reference";
       case 6: return "Dolby Vision Adaptive HDR Mapping";
@@ -103,21 +108,19 @@ struct CDVPlaybackInfo
   }
   static const char* RequestedPolicy(int mode, bool hdr10AI = false, bool hdr10PlusDV = false)
   {
-    if (hdr10PlusDV && mode == 1) return "Dolby Vision Rendering";
-    if (hdr10AI && mode == 1) return "Dolby Vision Rendering";
-    if (hdr10AI && mode == 4) return "Dolby Vision Adaptive HDR Mapping (AI)";
+    if ((hdr10PlusDV || hdr10AI) && mode == 1) return "Dolby Vision Rendering";
     switch(mode)
     {
       case 0:return "Dolby Vision Disabled (native Kodi)";
       case 1:return "Dolby Vision Reference";
       case 2:return "HDR10 Rendering";
-      case 3:return "HDR10 Rendering Reference";
+      case 3:return "LLDV Reference – HDR10 Output";
       case 4:return "Dolby Vision Adaptive HDR Mapping";
       case 5:return "Dolby Vision Master Reference";
       case 6:return "Dolby Vision Adaptive HDR Mapping";
       case 7:return "HDR10+ Rendering";
       case 8:return "SDR Rendering";
-      case PlayerLedMode:return "Dolby Vision Player-Led";
+      case PlayerLedMode:return "Dolby Vision LLDV Reference";
       default:return "";
     }
   }

@@ -373,7 +373,14 @@ void CVideoPlayerAudio::Process()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_EOF))
     {
-      CLog::Log(LOGDEBUG, "CVideoPlayerAudio - CDVDMsg::GENERAL_EOF");
+      m_audioSink.Drain();
+      // ActiveAE drains its stream before the device finishes playing the submitted samples.
+      const auto tail = std::chrono::ceil<std::chrono::milliseconds>(
+          std::chrono::duration<double>(m_audioSink.GetDelay() / DVD_TIME_BASE));
+      CThread::Sleep(tail);
+      if (!m_bStop)
+        m_audioSink.Pause();
+      CLog::Log(LOGDEBUG, "VideoPlayerAudio: drained PCM for playlist handoff");
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {

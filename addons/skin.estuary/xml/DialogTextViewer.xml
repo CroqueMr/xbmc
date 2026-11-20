@@ -2,8 +2,10 @@
 <window>
 	<defaultcontrol always="true">1000</defaultcontrol>
 	<include>Animation_DialogPopupOpenClose</include>
+	<onload condition="!String.IsEmpty(Window.Property(CB1.LldvDetailLabels))">SetFocus(9901)</onload>
 	<controls>
 		<control type="group">
+			<visible>String.IsEmpty(Window.Property(CB1.LldvDetailLabels))</visible>
 			<left>13%</left>
 			<centertop>50%</centertop>
 			<height>770</height>
@@ -30,12 +32,14 @@
 			</control>
 		</control>
 		<control type="button" id="1000">
+			<visible>String.IsEmpty(Window.Property(CB1.LldvDetailLabels))</visible>
 			<include>HiddenObject</include>
 			<onclick>Action(Close)</onclick>
 			<onup>PageUp(3000)</onup>
 			<ondown>PageDown(3000)</ondown>
 		</control>
 		<control type="button">
+			<visible>String.IsEmpty(Window.Property(CB1.LldvDetailLabels))</visible>
 			<centerleft>50%</centerleft>
 			<top>113</top>
 			<width>48</width>
@@ -46,6 +50,7 @@
 			<onclick>Up</onclick>
 		</control>
 		<control type="button">
+			<visible>String.IsEmpty(Window.Property(CB1.LldvDetailLabels))</visible>
 			<centerleft>50%</centerleft>
 			<top>940</top>
 			<width>48</width>
@@ -66,7 +71,46 @@
 			<aligny>center</aligny>
 			<label>$LOCALIZE[31035] [COLOR=button_focus]$INFO[Container(5).CurrentPage]/$INFO[Container(5).NumPages][/COLOR]</label>
 			<wrapmultiline>true</wrapmultiline>
-			<visible>Integer.IsGreater(Container(5).NumPages,1)</visible>
+			<visible>String.IsEmpty(Window.Property(CB1.LldvDetailLabels)) + Integer.IsGreater(Container(5).NumPages,1)</visible>
+		</control>
+		<control type="group">
+			<visible>!String.IsEmpty(Window.Property(CB1.LldvDetailLabels))</visible>
+			<centerleft>50%</centerleft>
+			<centertop>50%</centertop>
+			<width>780</width>
+			<height>492</height>
+			<include content="DialogBackgroundCommons">
+				<param name="width" value="780" />
+				<param name="height" value="492" />
+				<param name="header_label" value="$LOCALIZE[41320]" />
+			</include>
+			<control type="textbox">
+				<top>94</top>
+				<left>30</left>
+				<width>320</width>
+				<height>300</height>
+				<font>font13</font>
+				<label>$INFO[Window.Property(CB1.LldvDetailLabels)]</label>
+			</control>
+			<control type="textbox">
+				<top>94</top>
+				<left>375</left>
+				<width>375</width>
+				<height>300</height>
+				<align>right</align>
+				<font>font13</font>
+				<label>$INFO[Window.Property(CB1.LldvDetailValues)]</label>
+			</control>
+			<control type="group">
+				<left>520</left>
+				<top>389</top>
+				<include content="DefaultDialogButton">
+					<param name="id" value="9901" />
+					<param name="width" value="250" />
+					<param name="label" value="$LOCALIZE[15067]" />
+					<param name="onclick" value="Action(Close)" />
+				</include>
+			</control>
 		</control>
 	</controls>
 </window>

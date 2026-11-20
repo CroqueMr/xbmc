@@ -36,6 +36,9 @@
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIWindowManager.h"
 #include "guilib/WindowIDs.h"
+#if defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+#include "HwDecRender/RendererVAAPIGLES.h"
+#endif
 #endif
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
@@ -159,6 +162,10 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
 
   {
     std::unique_lock lock(m_statelock);
+#ifdef CB1_HAS_HDR10_AI
+    m_aiSameInputReconfigure = m_renderState == STATE_CONFIGURED &&
+        m_picture.IsSameParams(picture) && m_orientation == orientation && m_NumberBuffers == buffers;
+#endif
     m_picture.SetParams(picture);
     m_nativeDVRate = false;
 #ifdef HAVE_DVBRIDGE
@@ -179,17 +186,12 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
     m_presentevent.notifyAll();
   }
 
-  if (!m_stateEvent.Wait(1000ms))
-  {
-    CLog::Log(LOGWARNING, "CRenderManager::Configure - timeout waiting for configure");
-    std::unique_lock lock(m_statelock);
-    return false;
-  }
-
+  const bool finished = m_stateEvent.Wait(1000ms);
   std::unique_lock lock(m_statelock);
   if (m_renderState != STATE_CONFIGURED)
   {
-    CLog::Log(LOGWARNING, "CRenderManager::Configure - failed to configure");
+    CLog::Log(LOGWARNING, "CRenderManager::Configure - {}",
+              finished ? "failed to configure" : "timeout waiting for configure");
     return false;
   }
 
@@ -203,20 +205,50 @@ bool CRenderManager::Configure()
   std::unique_lock lock2(m_presentlock);
   std::unique_lock lock3(m_datalock);
 
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+  auto* vaapi = dynamic_cast<CRendererVAAPIGLES*>(m_pRenderer);
+  using DVHandoff = CRendererVAAPIGLES::DVHandoff;
+  const auto retained = vaapi ? vaapi->RetainDVOutput(*m_pConfigPicture, m_fps, m_orientation)
+                              : DVHandoff::None;
+#endif
   if (m_pRenderer)
   {
+#ifdef CB1_HAS_HDR10_AI
+    if (m_aiSameInputReconfigure)
+      m_pRenderer->PreserveHDR10AIOutputOnReconfigure(*m_pConfigPicture);
+#endif
     DeleteRenderer();
   }
 
-  if (!m_pRenderer)
+  CreateRenderer();
+  if (m_pRenderer)
+    m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
+  bool result;
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+  if (retained == DVHandoff::Native || retained == DVHandoff::HDR10)
   {
-    CreateRenderer();
-    if (!m_pRenderer)
-      return false;
+    auto* successor = dynamic_cast<CRendererVAAPIGLES*>(m_pRenderer);
+    result = successor && successor->ConfigureWithHandoff(*m_pConfigPicture, m_fps, m_orientation,
+                                                          retained);
   }
+  else
+#endif
+    result = m_pRenderer && m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
 
-  m_pRenderer->SetVideoSettings(m_playerPort->GetVideoSettings());
-  bool result = m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+  if (retained == DVHandoff::HDR10 && !result)
+  {
+    auto* window = CServiceBroker::GetWinSystem();
+    window->SetGuiCompositing(0);
+    window->SetHDR(nullptr);
+    window->SetColorimetry(nullptr);
+    window->SetVideoOutput(nullptr);
+  }
+  else if (retained != DVHandoff::None && !result)
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+            CServiceBroker::GetWinSystem()))
+      window->StopDVBridgePlayback();
+#endif
   if (result)
   {
     CRenderInfo info = m_pRenderer->GetRenderInfo();
@@ -432,6 +464,7 @@ bool CRenderManager::ExecuteHDR10AIQueuePreparation(
     {
       m_aiStartPts = DVD_NOPTS_VALUE;
       m_aiGuiReady = false;
+      m_lateframes = 0;
     }
     if (outcome.ready) m_aiQueuePreparationStale = false;
     m_aiQueueReady = outcome.ready;
@@ -1505,10 +1538,10 @@ int CRenderManager::WaitForBuffer(volatile std::atomic_bool& bStop,
 void CRenderManager::PrepareNextRender()
 {
 #ifdef CB1_HAS_HDR10_AI
-  if (!m_aiQueueReady && m_aiStartPts == DVD_NOPTS_VALUE) return;
-  const bool priming = m_pRenderer && m_pRenderer->HDR10AILookahead() &&
-      (!m_showVideo || (m_aiFullscreenRequested && !m_aiGuiReady));
-  if (priming && m_aiGuiReady) return;
+  if (!m_aiQueueReady && !m_aiGuiReady) return;
+  const bool aiLookahead = m_pRenderer && m_pRenderer->HDR10AILookahead();
+  const bool priming = aiLookahead && !m_aiGuiReady;
+  if (!m_showVideo && m_aiGuiReady && aiLookahead) return;
 #endif
   if (m_queued.empty())
   {
@@ -1525,11 +1558,7 @@ void CRenderManager::PrepareNextRender()
       )
     return;
 
-  const double frameOnScreen =
-#ifdef CB1_HAS_HDR10_AI
-      priming ? m_Queue[m_queued.front()].pts :
-#endif
-      m_dvdClock.GetClock();
+  const double frameOnScreen = m_dvdClock.GetClock();
   const double frametime =
       1.0 / static_cast<double>(CServiceBroker::GetWinSystem()->GetGfxContext().GetFPS()) *
       DVD_TIME_BASE;
@@ -1544,6 +1573,7 @@ void CRenderManager::PrepareNextRender()
       m_dvdClock.IsPaused() && !(m_pRenderer && m_pRenderer->VideoBypassesFramebuffer());
 
   bool cb1Async = false;
+  bool adaptive = false;
   std::optional<double> completionAge;
 #ifdef HAVE_DVBRIDGE
   if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
@@ -1554,6 +1584,7 @@ void CRenderManager::PrepareNextRender()
     if (cb1Async)
       if (const auto presented = window->CB1PresentedPicture())
         m_clockSync.m_cb1Latency.Completed(presented->first, presented->second);
+    adaptive = window->CB1AdaptiveScanout() && !isPaused && m_dvdClock.GetClockSpeed() == 1.0;
   }
   m_clockSync.m_cb1LatencyActive = cb1Async;
 #endif
@@ -1611,6 +1642,12 @@ void CRenderManager::PrepareNextRender()
     m_dvdClock.SetVsyncAdjust(0);
   }
 
+#ifdef CB1_HAS_HDR10_AI
+  // The clock and output latency may still belong to the old picture.
+  // The first selection must use the head whose lookahead is ready.
+  if (priming) renderPts = m_Queue[m_queued.front()].pts;
+#endif
+
   CLog::LogFC(LOGDEBUG, LOGAVTIMING,
               "frameOnScreen: {:f} renderPts: {:f} nextFramePts: {:f} -> diff: {:f}  render: {} "
               "forceNext: {}",
@@ -1633,6 +1670,8 @@ void CRenderManager::PrepareNextRender()
     ++iter;
     // Catch up against the same deadline used to admit this presentation.
     const double latePts = renderPts;
+    // A Kodi render tick can run partway through the current scanout.
+    const double scanoutPts = frameOnScreen - std::max(0.0, completionAge.value_or(0.0));
     while (iter != m_queued.end())
     {
       // the slot for rendering in time is [pts .. (pts +  x * frametime)]
@@ -1643,7 +1682,14 @@ void CRenderManager::PrepareNextRender()
       // refresh phase the pictures sit half a refresh from this boundary, so no
       // hysteresis is needed and a picture of lag is removed at once.
       double x = physicalPhase && completionAge ? 0 : (m_lateframes <= 6 ? 0.98 : 0);
-      if (latePts < m_Queue[*iter].pts + x * frametime)
+      const auto& next = m_Queue[*iter];
+      double duration = frametime;
+#ifdef CB1_HAS_HDR10_AI
+      if (next.duration > 0) duration = next.duration;
+#endif
+      // Preparation lead does not make the next picture late on screen.
+      if ((adaptive && scanoutPts < next.pts + duration) ||
+          latePts < next.pts + x * frametime)
         break;
       idx = *iter;
       ++iter;

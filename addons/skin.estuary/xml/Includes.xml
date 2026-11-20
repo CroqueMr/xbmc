@@ -201,6 +201,7 @@
 		<param name="height">70</param>
 		<param name="font">font13</param>
 		<param name="fontcolor">grey</param>
+		<param name="notes">false</param>
 		<definition>
 			<itemlayout width="$PARAM[width]" height="$PARAM[height]">
 				<control type="group">
@@ -246,6 +247,17 @@
 						<textcolor>$PARAM[fontcolor]</textcolor>
 						<label>$INFO[ListItem.Label]</label>
 					</control>
+				</control>
+				<control type="label">
+					<left>480</left>
+					<top>0</top>
+					<right>20</right>
+					<bottom>0</bottom>
+					<font>font12</font>
+					<align>right</align>
+					<aligny>center</aligny>
+					<label>$INFO[ListItem.Property(CB1.LldvNote)]$INFO[ListItem.Property(CB1.LldvFocusNote)]</label>
+					<visible>$PARAM[notes]</visible>
 				</control>
 			</itemlayout>
 			<focusedlayout width="$PARAM[width]" height="$PARAM[height]">
@@ -300,6 +312,17 @@
 						<label>$INFO[ListItem.Label]</label>
 						<scroll>true</scroll>
 					</control>
+				</control>
+				<control type="label">
+					<left>480</left>
+					<top>0</top>
+					<right>20</right>
+					<bottom>0</bottom>
+					<font>font12</font>
+					<align>right</align>
+					<aligny>center</aligny>
+					<label>$INFO[ListItem.Property(CB1.LldvNote)]$INFO[ListItem.Property(CB1.LldvFocusNote)]</label>
+					<visible>$PARAM[notes]</visible>
 				</control>
 			</focusedlayout>
 		</definition>

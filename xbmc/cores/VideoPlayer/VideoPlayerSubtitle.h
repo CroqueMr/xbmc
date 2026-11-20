@@ -45,7 +45,7 @@ public:
   void CloseStream(bool bWaitForBuffers) override;
 
   bool IsInited() const override { return true; }
-  bool IsStalled() const override { return m_pOverlayContainer->GetSize() == 0; }
+  bool IsStalled() const override { return m_pOverlayContainer->GetSize(DVDOverlaySource::SUBTITLE) == 0; }
 private:
   CDVDOverlayContainer* m_pOverlayContainer;
 

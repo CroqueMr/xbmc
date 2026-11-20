@@ -22,7 +22,7 @@ inline bool DiagnosticsEnabled()
   return enabled;
 }
 
-inline std::atomic<bool> detailedDiagnostics{true};
+inline std::atomic<bool> detailedDiagnostics{false};
 
 inline void SetDetailedDiagnostics(bool enabled)
 {
