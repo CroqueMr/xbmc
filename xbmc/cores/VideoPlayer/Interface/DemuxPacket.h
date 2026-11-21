@@ -15,6 +15,8 @@
 #define DMX_SPECIALID_STREAMCHANGE DEMUX_SPECIALID_STREAMCHANGE
 
 #ifdef __cplusplus
+#include <memory>
+struct AVPacket;
 extern "C"
 {
 #endif /* __cplusplus */
@@ -55,6 +57,9 @@ extern "C"
       uint64_t epoch{0};
       int clockNum{0}, clockDen{0};
       bool valid{false}, presentable{false};
+      std::shared_ptr<const AVPacket> enhancement;
+      int enhancementSize{0};
+      int baseFlags{0};
     } doviLayerTimes;
   };
 

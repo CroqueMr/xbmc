@@ -19,9 +19,10 @@ extern "C" {
 #include <libavutil/mastering_display_metadata.h>
 }
 
-#include <vector>
-#include <string>
 #include <map>
+#include <memory>
+#include <string>
+#include <vector>
 
 class CSetting;
 class VideoSourceSideData;
@@ -33,6 +34,14 @@ class VideoSourceSideData;
 #define FRAME_TYPE_B     3
 #define FRAME_TYPE_D     4
 
+// Dolby Vision RPU for UWP/Xbox Dolby Vision renderer effect
+struct DoviRpu
+{
+  int profile = 0;
+  int compatibilityId = 0;
+  // whole RPU NAL unit (header, prefix, RPU), emulation prevention bytes removed
+  std::vector<uint8_t> data;
+};
 
 // should be entirely filled by all codecs
 struct VideoPicture
@@ -44,6 +53,14 @@ public:
   VideoPicture& SetParams(const VideoPicture &pic);
   void Reset(); // reinitialize members, videoBuffer will be released if set!
   bool IsSameParams(const VideoPicture& pic) const;
+
+  bool IsLimitedHLG8() const
+  {
+    return hdrType == StreamHdrType::HDR_TYPE_HLG && !doviSourceInfo.profile &&
+           colorBits == 8 && !color_range && color_transfer == AVCOL_TRC_ARIB_STD_B67 &&
+           !colorPrimariesGuessed && color_primaries == AVCOL_PRI_BT2020 &&
+           color_space == AVCOL_SPC_BT2020_NCL;
+  }
 
   CVideoBuffer *videoBuffer = nullptr;
 
@@ -81,6 +98,7 @@ public:
   std::shared_ptr<AVFrame> doviEnhancement;
   DVBRIDGE::SourceBinding doviEnhancementBinding{};
 #endif
+  std::shared_ptr<const DoviRpu> doviRpu;
 
   bool hasDisplayMetadata = false;
   AVMasteringDisplayMetadata displayMetadata;

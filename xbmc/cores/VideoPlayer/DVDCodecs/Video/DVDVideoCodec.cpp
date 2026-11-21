@@ -59,6 +59,7 @@ void VideoPicture::Reset()
   doviEnhancement.reset();
   doviEnhancementBinding = {};
 #endif
+  doviRpu.reset();
 
   hasDisplayMetadata = false;
   hasLightMetadata = false;

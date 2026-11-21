@@ -2992,6 +2992,16 @@ bool CDVBridgeGLES::PlayerLedCpuPending() const
   return m_playerLedCpu && !m_playerLedCpu->queue.empty();
 }
 
+bool CDVBridgeGLES::PlayerLedCpuHasNewPicture(DVBRIDGE::SourceBinding displayed) const
+{
+  if (!PlayerLedCpuPending()) return false;
+  const auto& cpu = *m_playerLedCpu;
+  return std::any_of(cpu.queue.begin(), cpu.queue.end(), [&](unsigned index)
+  {
+    return cpu.slots[index].frame->decoded != displayed;
+  });
+}
+
 bool CDVBridgeGLES::PlayerLedCpuCurrent(uint64_t generation) const
 {
   if (!PlayerLedCpuPending()) return true;

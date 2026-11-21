@@ -939,6 +939,11 @@ bool CFileItem::IsLibraryFolder() const
   return GetURL().IsLibraryFolder();
 }
 
+bool CFileItem::IsStrm() const
+{
+  return GetURL().HasExtension(".strm");
+}
+
 bool CFileItem::IsPythonScript() const
 {
   return GetURL().HasExtension(".py");
@@ -2114,6 +2119,14 @@ std::string CFileItem::GetLocalMetadataPath() const
   return URIUtils::GetParentPath(m_strPath);
 }
 
+std::string CFileItem::GetSubtitleAnchorPath() const
+{
+  if (IsStrm() && !IsPlugin())
+    return m_strPath;
+
+  return GetDynPath();
+}
+
 bool CFileItem::LoadMusicTag()
 {
   // not audio
@@ -2235,6 +2248,10 @@ bool CFileItem::LoadDetails()
     {
       const CFileItem loadedItem{*tag};
       UpdateInfo(loadedItem);
+
+      // The record names the file a videodb:// path plays, and nothing later resolves it
+      if (!HasDynPath())
+        SetDynPath(loadedItem.GetPath());
     }
     return ret;
   }

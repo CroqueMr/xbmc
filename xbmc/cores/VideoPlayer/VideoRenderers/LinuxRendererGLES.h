@@ -75,6 +75,10 @@ public:
   bool Flush(bool saveBuffers) override;
   void SetBufferSize(int numBuffers) override { m_NumYUVBuffers = numBuffers; }
   bool IsGuiLayer() override;
+#ifdef HAVE_DVBRIDGE
+  void UpdateVideoRenderLayer() override;
+  bool VideoRenderLayerPending() const override { return m_pendingHdrFbo; }
+#endif
   bool VideoBypassesFramebuffer() override { return false; }
   void ReleaseBuffer(int idx) override;
   void RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha) override;
@@ -112,6 +116,7 @@ protected:
   bool m_aiOutputPending{false};
   bool m_aiFrameRendered{true};
   bool m_preserveHLGOutput{false};
+  bool m_planarHLG8{false};
 #endif
   // Returns 0 if scaling is below hqscalers threshold.
   // Otherwise returns the scale factor: < 1.0 = downscale, > 1.0 = upscale.
@@ -294,6 +299,9 @@ protected:
   // HDR FBO compositing: when active, IsGuiLayer() returns false so
   // video renders separately from GUI via RenderUpdateVideo()
   bool m_hdrFboActive{false};
+#ifdef HAVE_DVBRIDGE
+  bool m_pendingHdrFbo{false};
+#endif
   bool m_shaderSDRBT2020{false};
 
 private:

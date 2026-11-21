@@ -30,11 +30,13 @@
 #include "settings/SettingsComponent.h"
 #include "utils/CPUInfo.h"
 #include "utils/DVBridgeDiagnosticLog.h"
+#include "utils/DolbyVisionRpu.h"
 #include "utils/StringUtils.h"
 #include "utils/XTimeUtils.h"
 #include "utils/log.h"
 
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include "dvbridge_metadata_bounds.h"
@@ -385,6 +387,12 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
   m_dvHasStreamLightMetadata = false;
 #endif
 
+  const int doviProfile = hints.dovi.dv_profile;
+  m_exportDoviRpu =
+      (doviProfile == 5 || doviProfile == 7 || doviProfile == 8 || doviProfile == 10) &&
+      m_processInfo.WantsDolbyVisionRpu();
+  m_av1DoviRpus.clear();
+
   const AVCodec* pCodec = nullptr;
 
   m_iOrientation = hints.orientation;
@@ -566,7 +574,32 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
     if (!parameters)
       return m_hints.preferHybridHDR10Plus;
     int result = avcodec_parameters_from_context(parameters, m_pCodecContext);
-    if (result >= 0 && hints.doviELConfig)
+    AVCodecParameters* enhancement = nullptr;
+    if (result >= 0 && hints.doviDeclaredEL)
+    {
+      enhancement = avcodec_parameters_alloc();
+      if (!enhancement)
+        result = AVERROR(ENOMEM);
+      else
+      {
+        enhancement->codec_type = AVMEDIA_TYPE_VIDEO;
+        enhancement->codec_id = AV_CODEC_ID_HEVC;
+        enhancement->width = hints.doviELWidth;
+        enhancement->height = hints.doviELHeight;
+        if (hints.doviELConfig)
+        {
+          enhancement->extradata_size = hints.doviELConfig.GetSize();
+          enhancement->extradata = static_cast<uint8_t*>(
+              av_mallocz(enhancement->extradata_size + AV_INPUT_BUFFER_PADDING_SIZE));
+          if (!enhancement->extradata)
+            result = AVERROR(ENOMEM);
+          else
+            std::memcpy(enhancement->extradata, hints.doviELConfig.GetData(),
+                        enhancement->extradata_size);
+        }
+      }
+    }
+    else if (result >= 0 && hints.doviELConfig)
     {
       AVPacketSideData* side = av_packet_side_data_new(&parameters->coded_side_data,
           &parameters->nb_coded_side_data, AV_PKT_DATA_HEVC_CONF, hints.doviELConfig.GetSize(), 0);
@@ -576,7 +609,9 @@ bool CDVDVideoCodecFFmpeg::Open(CDVDStreamInfo &hints, CDVDCodecOptions &options
         result = AVERROR(ENOMEM);
     }
     if (result >= 0)
-      m_dvFel = {dvbridge_fel_create(parameters, AVRational{1, AV_TIME_BASE}), dvbridge_fel_destroy};
+      m_dvFel = {dvbridge_fel_create_layers(parameters, enhancement, AVRational{1, AV_TIME_BASE}),
+                 dvbridge_fel_destroy};
+    avcodec_parameters_free(&enhancement);
     avcodec_parameters_free(&parameters);
     if (!m_dvFel && !m_hints.preferHybridHDR10Plus)
       return false;
@@ -700,11 +735,10 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   if (!m_pCodecContext)
     return true;
 
-  if (!packet.pData)
-    return true;
-
 #ifdef HAVE_DVBRIDGE
   const auto& layer = packet.doviLayerTimes;
+  if (!packet.pData && !layer.enhancement)
+    return true;
   const bool hybridLayer = m_hints.dovi.dv_profile == 7 &&
                            (m_hints.preferHybridHDR10Plus || m_hints.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS);
   if ((m_dvFel || hybridLayer) && layer.valid && m_dvLayerEpoch && layer.epoch != m_dvLayerEpoch)
@@ -720,6 +754,9 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
                                    layer.enhancementPts != AV_NOPTS_VALUE;
   if (!m_dvFel && terminalEnhancement)
     return true; // A terminal enhancement unit has no base picture to decode.
+#else
+  if (!packet.pData)
+    return true;
 #endif
   if (m_eof)
   {
@@ -729,7 +766,10 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   if (packet.recoveryPoint)
     m_started = true;
 
-  m_dts = packet.dts;
+#ifdef HAVE_DVBRIDGE
+  if (!terminalEnhancement)
+#endif
+    m_dts = packet.dts;
 
 #if LIBAVCODEC_VERSION_MAJOR < 60
   m_pCodecContext->reordered_opaque = pts_dtoi(packet.pts);
@@ -748,6 +788,8 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   bool discard = packet.videoDecodeOnly;
 #ifdef HAVE_DVBRIDGE
   const bool decodeOnly = discard || (layer.valid && !layer.presentable);
+  if (layer.valid)
+    avpkt->flags = layer.baseFlags & ~AV_PKT_FLAG_DISCARD;
   if ((m_dvFel && packet.videoWindowed) || (hybridLayer && (packet.videoWindowed || decodeOnly)))
     avpkt->opaque = decodeOnly ? &decodeOnlyDVPacket : &presentableDVPacket;
   discard = !m_dvFel && decodeOnly;
@@ -795,19 +837,30 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
   {
     const auto& timing = packet.doviLayerTimes;
     const dvbridge_fel_source source{timing.basePts, timing.enhancementPts,
-        {timing.clockNum, timing.clockDen}, timing.epoch, timing.presentable};
-    // Kodi's normalized time is for presentation. The companion decoder joins
-    // declared layers by the original access-unit identity.
-    if (timing.valid)
-      avpkt->pts = timing.basePts;
-    const bool submitted = timing.valid ? dvbridge_fel_submit_source(m_dvFel.get(), avpkt, &source) :
-                                         dvbridge_fel_submit(m_dvFel.get(), avpkt);
+        {timing.clockNum, timing.clockDen}, timing.epoch, timing.presentable && !(timing.baseFlags & AV_PKT_FLAG_DISCARD)};
+    // The BL entered the decoder exactly once. Its companion AU can now be
+    // admitted independently, using the source identities kept by the demuxer.
+    const bool submitted = timing.valid ?
+        dvbridge_fel_submit_layers(m_dvFel.get(), timing.enhancement.get(), &source) :
+        dvbridge_fel_submit(m_dvFel.get(), avpkt);
     if (!submitted)
       m_dvFailed = true;
     else
       ReportDVStartup(2, "fel-input-accepted");
   }
 #endif
+  // FFmpeg doesn't export the AV1 RPU, so keep it for the frame with the same pts
+  if (ret == 0 && m_exportDoviRpu && m_hints.codec == AV_CODEC_ID_AV1 && avpkt->pts != AV_NOPTS_VALUE)
+  {
+    std::vector<uint8_t> rpu = KODI::UTILS::DOLBYVISION::ExtractAv1Rpu(packet.pData, packet.iSize);
+    if (!rpu.empty())
+    {
+      m_av1DoviRpus[avpkt->pts] = std::move(rpu);
+      if (m_av1DoviRpus.size() > 64)
+        m_av1DoviRpus.erase(m_av1DoviRpus.begin());
+    }
+  }
+
 
   //! @todo: properly handle avpkt side_data. this works around our improper use of the side_data
   // as we pass pointers to ffmpeg allocated memory for the side_data. we should really be allocating
@@ -837,6 +890,13 @@ bool CDVDVideoCodecFFmpeg::AddData(const DemuxPacket &packet)
         return false;
       }
     }
+#ifdef HAVE_DVBRIDGE
+    if (m_dvFel && layer.valid)
+    {
+      m_dvFailed = true;
+      return true;
+    }
+#endif
   }
 
   m_iLastKeyframe++;
@@ -985,6 +1045,13 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
         break;
       if (paired != VC_NONE)
         return paired;
+      if (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN)
+      {
+        if (result == VC_NONE)
+          return VC_NONE; // A BL was consumed. Retry before acknowledging end of output.
+        if (result == VC_ERROR || result == VC_REOPEN || result == VC_FLUSHED)
+          return VC_FATAL; // Terminal FEL cannot resume with a partial decoder epoch.
+      }
       if (result == VC_EOF || ((m_codecControlFlags & DVD_CODEC_CTRL_DRAIN) &&
           ((m_hints.codecOptions & CODEC_BLURAY_NAVIGATION) || m_dvLayerEpoch ||
            dvbridge_fel_has_enhancement(m_dvFel.get()))))
@@ -1135,6 +1202,10 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVid
       }
       else
       {
+#ifdef HAVE_DVBRIDGE
+        if (m_dvFel && ret != VC_BUFFER && ret != VC_EOF)
+          return ret == VC_FATAL ? HandleHwFatal() : static_cast<VCReturn>(ret);
+#endif
         m_eof = true;
         CLog::Log(LOGDEBUG, "CDVDVideoCodecFFmpeg::GetPicture - eof hw accel");
         return VC_EOF;
@@ -1177,10 +1248,8 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetBasePicture(VideoPicture* pVid
   // The base advanced. During terminal drain an empty VAAPI output slot
   // must not end playback before the remaining BL pictures are classified.
 #ifdef HAVE_DVBRIDGE
-  const bool continueBaseDrain = m_dvFel && !m_dvLayerEpoch &&
-      !(m_hints.codecOptions & CODEC_BLURAY_NAVIGATION) &&
-      (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN) &&
-      !dvbridge_fel_has_enhancement(m_dvFel.get());
+  const bool continueBaseDrain = m_dvFel && (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN) &&
+                                 !(m_codecControlFlags & DVD_CODEC_CTRL_POLL);
 #else
   constexpr bool continueBaseDrain = false;
 #endif
@@ -1379,6 +1448,8 @@ void CDVDVideoCodecFFmpeg::Reset()
 
   if (m_pHardware)
     m_pHardware->Reset();
+
+  m_av1DoviRpus.clear();
 
   m_filters = "";
   m_multiviewPairer.Reset();
@@ -1603,6 +1674,25 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
   bool retainStaticDV = m_dvNativeOutput;
 #endif
 
+#if defined(TARGET_DARWIN_TVOS)
+  // Adaptive manifests may omit HDR signaling even when the decoded HEVC
+  // picture identifies an HDR10/HLG base layer. A Dolby Vision fallback is
+  // valid only when its profile and compatibility ID say so explicitly.
+  if ((pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_NONE ||
+       pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION) &&
+      pVideoPicture->color_primaries == AVCOL_PRI_BT2020)
+  {
+    const bool noDolbyVision =
+        pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_NONE && m_hints.dovi.dv_profile == 0;
+    if (pVideoPicture->color_transfer == AVCOL_TRC_SMPTE2084 &&
+        (noDolbyVision || m_hints.HasHDR10DolbyVisionBaseLayer()))
+      pVideoPicture->hdrType = StreamHdrType::HDR_TYPE_HDR10;
+    else if (pVideoPicture->color_transfer == AVCOL_TRC_ARIB_STD_B67 &&
+             (noDolbyVision || m_hints.HasHLGDolbyVisionBaseLayer()))
+      pVideoPicture->hdrType = StreamHdrType::HDR_TYPE_HLG;
+  }
+#endif
+
   AVFrameSideData* sd;
 
   // https://github.com/FFmpeg/FFmpeg/blob/991d417692/doc/APIchanges#L18-L20
@@ -1731,6 +1821,31 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
     }
   }
 #endif
+  pVideoPicture->doviRpu.reset();
+  if (m_exportDoviRpu)
+  {
+    std::vector<uint8_t> rpu;
+    if (m_hints.codec == AV_CODEC_ID_AV1)
+    {
+      const auto it = m_av1DoviRpus.find(m_pFrame->pts);
+      if (it != m_av1DoviRpus.end())
+      {
+        rpu = std::move(it->second);
+        m_av1DoviRpus.erase(m_av1DoviRpus.begin(), std::next(it));
+      }
+    }
+    else
+    {
+      sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DOVI_RPU_BUFFER);
+      if (sd && sd->size > 0)
+        rpu = KODI::UTILS::DOLBYVISION::HevcRpuToNal(sd->data, sd->size);
+    }
+
+    if (!rpu.empty())
+      pVideoPicture->doviRpu = std::make_shared<DoviRpu>(DoviRpu{
+          m_hints.dovi.dv_profile, m_hints.dovi.dv_bl_signal_compatibility_id, std::move(rpu)});
+  }
+
   if (pVideoPicture->hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION)
   {
     sd = av_frame_get_side_data(m_pFrame, AV_FRAME_DATA_DOVI_METADATA);
@@ -1756,7 +1871,7 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
         if (hdr->el_spatial_resampling_filter_flag == 1 && hdr->disable_residual_flag == 0)
           pVideoPicture->strDVELType = dvbridge_dv_is_mel(dovi) ? "MEL" : "FEL";
 #ifdef HAVE_DVBRIDGE
-        if (m_dvFel && !m_dvLayerEpoch && !(m_hints.codecOptions & CODEC_BLURAY_NAVIGATION))
+        if (m_dvFel && (m_dvLayerEpoch || !(m_hints.codecOptions & CODEC_BLURAY_NAVIGATION)))
         {
           // FFmpeg can retain parsed metadata from a previous picture. The
           // current picture must also carry its own RPU.

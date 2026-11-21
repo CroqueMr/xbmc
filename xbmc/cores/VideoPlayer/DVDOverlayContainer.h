@@ -46,6 +46,11 @@ public:
   void Clear(DVDOverlaySource source);
 
   /*
+   * \brief Delete all overlays except disc menus, which are not redrawn until they change.
+   */
+  void ClearSubtitles() { Clear(DVDOverlaySource::SUBTITLE); }
+
+  /*
    * \brief Flush the overlays.
    */
   void Flush();
@@ -53,6 +58,7 @@ public:
   void CleanUp(double pts); // validates all overlays against current pts
   size_t GetSize();
   size_t GetSize(DVDOverlaySource source);
+  size_t GetSubtitleSize() { return GetSize(DVDOverlaySource::SUBTITLE); }
 
   void UpdateOverlayInfo(const std::shared_ptr<CDVDInputStreamNavigator>& pStream,
                          CDVDDemuxSPU* pSpu,

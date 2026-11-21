@@ -115,6 +115,8 @@ public:
     m_prepared = false;
     if (!success)
       Fallback();
+    else
+      m_spent = 0; // Presenting a new picture ends the stall.
     m_presented = success;
     return success;
   }
