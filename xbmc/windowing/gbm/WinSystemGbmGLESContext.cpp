@@ -688,7 +688,14 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
   }
   if (m_dvState.Captured())
   {
-    if (!m_dvFrame) return;
+    if (!m_dvFrame)
+    {
+      // Pace an idle loop while the previous buffer is still scanning out.
+      // Keep polling immediately when a new picture is already in preparation.
+      if (!m_cb1FramePending)
+        KODI::TIME::Sleep(10ms);
+      return;
+    }
     bool presented = false;
     CDVBridgeGLES::Submission submitted;
     // EGL's window framebuffer has a bottom-left GL origin, while transport
