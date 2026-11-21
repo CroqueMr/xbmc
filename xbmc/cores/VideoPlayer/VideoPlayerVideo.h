@@ -115,6 +115,7 @@ protected:
   void ResetFrameRateCalc();
   void CalcFrameRate();
   int CalcDropRequirement(double pts);
+  void ResetSeekDrop();
 
   double m_iSubtitleDelay;
 
@@ -147,6 +148,12 @@ protected:
   bool m_paused;
   IDVDStreamPlayer::ESyncState m_syncState;
   std::atomic_bool m_bAbortOutput;
+
+  // Pictures of packets dropped to reach a seek target, see ProcessDecoderOutput()
+  bool m_awaitingFirstKeptPacket{true};
+  bool m_seekDropping{false};
+  double m_seekDropBeforePts{DVD_NOPTS_VALUE};
+  int m_seekDroppedPictures{0};
 
   BitstreamStats m_videoStats;
 

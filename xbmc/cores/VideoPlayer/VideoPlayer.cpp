@@ -846,14 +846,19 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   CLog::Log(LOGINFO, "VideoPlayer::OpenFile: {}", CURL::GetRedacted(file.GetPath()));
 
 #ifdef HAVE_DVBRIDGE
+  const auto request = ++m_requestedOpen;
   // Refresh on the open request, before the demuxer worker needs the sink.
   // SendMsg runs immediately when playback is opened by the application thread.
   MESSAGING::ThreadMessageCallback refresh{
       [](void*) {
         auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
             CServiceBroker::GetWinSystem());
-        if (window && window->RefreshDisplayInfoForVideo())
-          window->RefreshDVOutputCapabilities();
+        if (window)
+        {
+          if (window->RefreshDisplayInfoForVideo())
+            window->RefreshDVOutputCapabilities();
+          window->BeginDVStartupEdidWait();
+        }
       }, nullptr};
   CServiceBroker::GetAppMessenger()->SendMsg(TMSG_CALLBACK, 0, 0, &refresh);
 #endif
@@ -862,6 +867,9 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     CDVDMsgOpenFile::FileParams params;
     params.m_item = file;
     params.m_options = options;
+#ifdef HAVE_DVBRIDGE
+    params.m_request = request;
+#endif
     params.m_item.SetMimeTypeForInternetFile();
     m_messenger.Put(std::make_shared<CDVDMsgOpenFile>(params), 1);
 
@@ -871,6 +879,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_item = file;
   m_playerOptions = options;
 #ifdef HAVE_DVBRIDGE
+  m_activeOpen = request;
   DVBRIDGE::PlaybackNotification::StartVideo();
   DVBRIDGE::DiagnosticOpen();
 #endif
@@ -892,6 +901,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
 bool CVideoPlayer::CloseFile(bool reopen)
 {
 #ifdef HAVE_DVBRIDGE
+  ++m_requestedOpen;
   DVBRIDGE::DiagnosticFinal("close-file");
   DVBRIDGE::PlaybackNotification::StopVideo();
 #endif
@@ -911,6 +921,8 @@ bool CVideoPlayer::CloseFile(bool reopen)
   if(m_pInputStream)
     m_pInputStream->Abort();
 
+  m_renderManager.SetDiscMenuOnly(false);
+  m_renderManager.SetDiscMenuPage({});
   m_renderManager.UnInit();
 
   CLog::Log(LOGINFO, "VideoPlayer: waiting for threads to exit");
@@ -964,6 +976,9 @@ bool CVideoPlayer::OpenInputStream()
   m_pInputStream.reset();
   m_overlayContainer.Clear();
 
+  // Flushes keep disc menu overlays, and the closed input stream can no longer remove them
+  m_overlayContainer.Clear();
+
   CLog::Log(LOGINFO, "Creating InputStream");
 
   m_pInputStream = CDVDFactoryInputStream::CreateInputStream(this, m_item, true);
@@ -990,7 +1005,9 @@ bool CVideoPlayer::OpenInputStream()
 
     if (!URIUtils::IsUPnP(m_item.GetPath()) &&
         !m_item.GetProperty("no-ext-subs-scan").asBoolean(false))
-      CUtil::ScanForExternalSubtitles(m_item.GetDynPath(), filenames);
+      CUtil::ScanForExternalSubtitles(m_item.GetSubtitleAnchorPath(), filenames,
+                                      m_item.HasVideoInfoTag() ? m_item.GetVideoInfoTag()
+                                                               : nullptr);
 
     // load any subtitles from file item
     std::string key("subtitle:1");
@@ -1034,8 +1051,46 @@ bool CVideoPlayer::OpenInputStream()
   return true;
 }
 
+bool CVideoPlayer::WaitForBlurayPlaylist()
+{
+#if defined(HAVE_LIBBLURAY)
+  if (!IsBlurayInput())
+    return false;
+
+  auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
+  if (bluray.HdmvEndPending() && !m_VideoPlayerVideo->HasData() &&
+      !m_VideoPlayerAudio->HasData() && !m_renderManager.HasPendingVideoPresentation())
+  {
+    bluray.ReleaseHdmvEnd();
+    return true;
+  }
+
+  if (bluray.WaitingForHdmvProgram())
+    return true;
+  if (!bluray.WaitingForReadablePlaylist())
+    return false;
+
+  m_HasVideo = true;
+  m_renderManager.SetDiscMenuOnly(true);
+  UpdatePlayState(0);
+  if (!m_State.streamsReady)
+  {
+    if (m_playerOptions.fullscreen)
+      CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
+    IPlayerCallback* callback = &m_callback;
+    const CFileItem item = m_item;
+    m_outboundEvents->Submit([callback, item]() { callback->OnAVStarted(item); });
+    m_State.streamsReady = true;
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
 bool CVideoPlayer::OpenDemuxStream()
 {
+  m_blurayDemuxDeferred = false;
   CloseDemuxer();
 
   CLog::Log(LOGINFO, "Creating Demuxer");
@@ -1044,6 +1099,12 @@ bool CVideoPlayer::OpenDemuxStream()
   while (!m_bStop && attempts-- > 0)
   {
     m_pDemuxer.reset(CDVDFactoryDemuxer::CreateDemuxer(m_pInputStream));
+    if (!m_pDemuxer && WaitForBlurayPlaylist())
+    {
+      m_blurayDemuxDeferred = true;
+      return false;
+    }
+
     if(!m_pDemuxer && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
     {
       continue;
@@ -1061,6 +1122,11 @@ bool CVideoPlayer::OpenDemuxStream()
     CLog::Log(LOGERROR, "{} - Error creating demuxer", __FUNCTION__);
     return false;
   }
+
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+  if (IsBlurayInput())
+    static_cast<CDVDInputStreamBluray&>(*m_pInputStream).CaptureBdjClockEpoch();
+#endif
 
   // A matroska remux of a 3D disc carries the same plane offsets in its dependent view.
   // The Blu-ray input stream's store wins when there is one; otherwise the demuxer's is
@@ -1129,6 +1195,18 @@ void CVideoPlayer::UpdateHasVideoAudio()
     m_HasAudio = false;
 }
 
+bool CVideoPlayer::IsBluraySecondary(const CDemuxStream* stream) const
+{
+#if defined(HAVE_LIBBLURAY)
+  return IsBlurayInput() && stream &&
+         (stream->type == StreamType::VIDEO || stream->type == StreamType::AUDIO) &&
+         static_cast<const CDVDInputStreamBluray&>(*m_pInputStream)
+             .IsSecondaryStream(stream->dvdNavId, stream->type == StreamType::VIDEO);
+#else
+  return false;
+#endif
+}
+
 void CVideoPlayer::OpenDefaultStreams(bool reset)
 {
   // if input stream dictate, we will open later
@@ -1146,9 +1224,14 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   // open video stream
   valid   = false;
 
-  PredicateVideoFilter vf(m_processInfo->GetVideoSettings().m_VideoStream);
+  const int preferredVideo = m_processInfo->GetVideoSettings().m_VideoStream;
+  PredicateVideoFilter vf(preferredVideo);
   for (const auto& stream : m_SelectionStreams.Get(StreamType::VIDEO, vf))
   {
+    if (stream.type_index != preferredVideo && m_pDemuxer &&
+        IsBluraySecondary(m_pDemuxer->GetStream(stream.demuxerId, stream.id)))
+      continue;
+
     if (OpenStream(m_CurrentVideo, stream.demuxerId, stream.id, stream.source, reset))
     {
       valid = true;
@@ -1156,6 +1239,10 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
     }
     if (m_bAbortRequest)
       return;
+#ifdef HAVE_DVBRIDGE
+    if (m_activeOpen != m_requestedOpen.load())
+      return;
+#endif
   }
   if (!valid)
   {
@@ -1167,9 +1254,14 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   valid = false;
   if (!m_playerOptions.videoOnly)
   {
-    PredicateAudioFilter af(m_processInfo->GetVideoSettings().m_AudioStream, m_playerOptions.preferStereo);
+    const int preferredAudio = m_processInfo->GetVideoSettings().m_AudioStream;
+    PredicateAudioFilter af(preferredAudio, m_playerOptions.preferStereo);
     for (const auto& stream : m_SelectionStreams.Get(StreamType::AUDIO, af))
     {
+      if (stream.type_index != preferredAudio && m_pDemuxer &&
+          IsBluraySecondary(m_pDemuxer->GetStream(stream.demuxerId, stream.id)))
+        continue;
+
       if(OpenStream(m_CurrentAudio, stream.demuxerId, stream.id, stream.source, reset))
       {
         valid = true;
@@ -1436,7 +1528,7 @@ bool CVideoPlayer::IsBetterStream(const CCurrentStream& current, CDemuxStream* s
   if (m_playerOptions.videoOnly && current.type != StreamType::VIDEO)
     return false;
 
-  if(stream->disabled)
+  if (stream->disabled || IsBluraySecondary(stream))
     return false;
 
   if (m_pInputStream && (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) ||
@@ -1491,16 +1583,22 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
     OpenStream(current, stream->demuxerId, stream->uniqueId, stream->source);
 }
 
-void CVideoPlayer::Prepare()
-{
-  m_errorDetail = 0;
 #ifdef HAVE_DVBRIDGE
-  const auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
-      CServiceBroker::GetWinSystem());
+static void SelectDVStartupOutput(const KODI::WINDOWING::GBM::CWinSystemGbmGLESContext* window)
+{
   const auto caps = window ? window->GetDVOutputCapabilities(nullptr, true) :
                              DVBRIDGE::OutputCapabilities{};
   const bool canFallback = caps.hdr10 && !caps.HDR10DepthLimited();
   DVBRIDGE::SelectOutputSettings(!canFallback || caps.nativeDV, !canFallback || caps.playerLed);
+}
+#endif
+
+void CVideoPlayer::Prepare()
+{
+  m_errorDetail = 0;
+#ifdef HAVE_DVBRIDGE
+  SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      CServiceBroker::GetWinSystem()));
 #endif
   CFFmpegLog::SetLogLevel(1);
   SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
@@ -1551,7 +1649,7 @@ void CVideoPlayer::Prepare()
     }
   }
 
-  if (!OpenDemuxStream())
+  if (!WaitForBlurayPlaylist() && !OpenDemuxStream() && !m_blurayDemuxDeferred)
   {
     m_bAbortRequest = true;
     m_error = true;
@@ -1688,13 +1786,16 @@ void CVideoPlayer::ProcessBdjPresentation()
   auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
   const double pts = m_VideoPlayerVideo->GetCurrentPts();
 #if defined(BD_BDJ_PLAYBACK_CLOCK)
-  if (pts != DVD_NOPTS_VALUE && m_CurrentVideo.dts != DVD_NOPTS_VALUE &&
-      m_CurrentVideo.dispTime > 0)
+  if (pts != DVD_NOPTS_VALUE && m_CurrentVideo.inited &&
+      m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+      m_CurrentVideo.dts != DVD_NOPTS_VALUE && m_CurrentVideo.dispTime >= 0)
   {
     // The demux position and DTS describe the same packet. Use them to put
     // the rendered PTS on the playlist timeline, even when the reader is ahead.
     const double time = DVD_MSEC_TO_TIME(m_CurrentVideo.dispTime) + pts - m_CurrentVideo.dts;
-    bluray.SetBdjPlaybackTime(static_cast<uint64_t>(std::max(0.0, time) * 90000.0 / DVD_TIME_BASE));
+    const auto presented = static_cast<uint64_t>(std::max(0.0, time) * 90000.0 / DVD_TIME_BASE);
+    bluray.SetBdjPlaybackTime(presented);
+    bluray.SetHdmvPresentedTime(presented);
   }
 #endif
   while (!m_bdjPresentationEvents.empty())
@@ -1709,7 +1810,7 @@ void CVideoPlayer::ProcessBdjPresentation()
     CLog::Log(LOGDEBUG, "BD-J presentation: released seq {} at video pts {}", event.seq, pts);
   }
 
-  if (m_bdjDraining && bluray.WaitingForBdjPlaylist() &&
+  if (m_bdjDraining && (bluray.WaitingForBdjPlaylist() || bluray.HdmvEndPending()) &&
       !m_VideoPlayerVideo->HasData() && !m_VideoPlayerAudio->HasData() &&
       !m_renderManager.HasPendingVideoPresentation())
   {
@@ -1718,6 +1819,7 @@ void CVideoPlayer::ProcessBdjPresentation()
       bluray.ReleaseBdjEnd();
       CLog::Log(LOGDEBUG, "BD-J presentation: drained through sequence {}", seq);
     }
+    bluray.ReleaseHdmvEnd();
     m_bdjPresentationEvents.clear();
   }
   bluray.PollBdjEvents();
@@ -1805,8 +1907,14 @@ void CVideoPlayer::Process()
     // should we open a new demuxer?
     if (!m_pDemuxer)
     {
-      if (m_pInputStream->NextStream() == CDVDInputStream::NEXTSTREAM_NONE)
+      const auto next = m_pInputStream->NextStream();
+      if (next == CDVDInputStream::NEXTSTREAM_NONE)
         break;
+      if (next == CDVDInputStream::NEXTSTREAM_RETRY && WaitForBlurayPlaylist())
+      {
+        CThread::Sleep(50ms);
+        continue;
+      }
 
       if (m_pInputStream->IsEOF())
         break;
@@ -1817,8 +1925,10 @@ void CVideoPlayer::Process()
       if (bluray)
         bluray->TakeBdjPlaylistJump();
 #endif
-      if (OpenDemuxStream() == false)
+      if (!OpenDemuxStream())
       {
+        if (m_blurayDemuxDeferred)
+          continue;
         m_bAbortRequest = true;
         break;
       }
@@ -2012,8 +2122,11 @@ void CVideoPlayer::Process()
       if(next == CDVDInputStream::NEXTSTREAM_RETRY)
       {
 #if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
-        if (!m_bdjDraining && IsBlurayInput() &&
-            static_cast<CDVDInputStreamBluray&>(*m_pInputStream).WaitingForBdjPlaylist())
+        const auto* bluray = IsBlurayInput()
+                                 ? static_cast<CDVDInputStreamBluray*>(m_pInputStream.get())
+                                 : nullptr;
+        if (!m_bdjDraining && bluray &&
+            (bluray->WaitingForBdjPlaylist() || bluray->HdmvEndPending()))
         {
           m_bdjDraining = true;
           CLog::Log(LOGDEBUG, "BD-J presentation: draining the outgoing playlist");
@@ -2021,6 +2134,10 @@ void CVideoPlayer::Process()
           if (m_CurrentVideo.inited)
             m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN));
         }
+        if (bluray && bluray->WaitingForReadablePlaylist() &&
+            !m_VideoPlayerVideo->HasData() && !m_VideoPlayerAudio->HasData() &&
+            !m_renderManager.HasPendingVideoPresentation())
+          WaitForBlurayPlaylist();
 #endif
         // The disc ended this still's video input. Unlike an ordinary read
         // timeout, release its delayed pictures before waiting for navigation.
@@ -3007,18 +3124,21 @@ bool CVideoPlayer::CheckSceneSkip(const CCurrentStream& current)
   return hasEdit && hasEdit.value()->action == EDL::Action::CUT;
 }
 
+bool CVideoPlayer::IsNearStreamEnd(std::chrono::milliseconds time) const
+{
+  // Cut/skip time arithmetic can produce a result fractionally past the true stream end due to
+  // millisecond rounding, which would cause the demuxer to stall rather than ending cleanly.
+  const auto streamLength{GetSourceStreamLength()};
+  return streamLength > 0ms && time + 50ms >= streamLength;
+}
+
 void CVideoPlayer::QueueAutoSceneSkip(std::chrono::milliseconds seekTime)
 {
-  const auto streamLength{GetSourceStreamLength()};
-
-  // Use the same 50ms tolerance as the chapter-seek EOF guard (see HandleMessages PLAYER_SEEK_CHAPTER):
-  // cut/skip time arithmetic can produce a result fractionally past the true stream end due to
-  // millisecond rounding, which would cause the demuxer to stall rather than ending cleanly.
-  if (streamLength > 0ms && seekTime + 50ms >= streamLength)
+  if (IsNearStreamEnd(seekTime))
   {
     CLog::Log(LOGDEBUG, "{} - Resolved EDL skip target [{}] is at/near EOF [{}]. Ending playback.",
               __FUNCTION__, StringUtils::MillisecondsToTimeString(seekTime),
-              StringUtils::MillisecondsToTimeString(streamLength));
+              StringUtils::MillisecondsToTimeString(GetSourceStreamLength()));
 
     SetCaching(CACHESTATE_DONE);
 
@@ -3043,6 +3163,20 @@ void CVideoPlayer::QueueAutoSceneSkip(std::chrono::milliseconds seekTime)
   m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
 }
 
+void CVideoPlayer::MarkCommBreakSkipped(const EDL::Edit& edit, std::chrono::milliseconds seekTime)
+{
+  CVariant announcement{StringUtils::SecondsToTimeString(
+      std::chrono::duration_cast<std::chrono::seconds>(edit.end - edit.start).count(),
+      TIME_FORMAT_MM_SS)};
+  CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::Player, "OnCommercial",
+                                                     announcement);
+
+  // use resolved seek target, not edit.start, to also suppress
+  // adjacent commercial breaks encountered while seeking
+  m_Edl.SetLastEditTime(seekTime);
+  m_Edl.SetLastEditActionType(EDL::Action::COMM_BREAK);
+}
+
 void CVideoPlayer::CheckAutoSceneSkip()
 {
   if (!m_Edl.HasEdits())
@@ -3059,10 +3193,36 @@ void CVideoPlayer::CheckAutoSceneSkip()
       m_CurrentVideo.inited == false)
     return;
 
-  const std::chrono::milliseconds clock{GetTime()};
+  // m_State.time is refreshed only every 200 ms, so up to that much of a break would be shown
+  // before skipping it. Advance it by what the clock moved since, unless a seek lies in between.
+  std::chrono::milliseconds clock{GetTime()};
+  const double elapsed{GetCaughtUpClock() - m_stateClock};
+  if (elapsed > 0 && elapsed < DVD_MSEC_TO_TIME(1000))
+    clock += std::chrono::milliseconds{llrint(DVD_TIME_TO_MSEC(elapsed))};
 
   const std::chrono::milliseconds correctClock = m_Edl.GetTimeAfterRestoringCuts(clock);
-  const auto hasEdit = m_Edl.InEdit(correctClock);
+  auto hasEdit = m_Edl.InEdit(correctClock);
+
+  // The renderer shows pictures ahead of the clock by its display latency, and the picture on
+  // screen when a skip starts stays there until the seek is done. Skip a commercial break that
+  // early, plus a margin for the time the skip takes to reach the renderer.
+  if (!hasEdit && m_playSpeed == DVD_PLAYSPEED_NORMAL && m_SkipCommercials)
+  {
+    constexpr std::chrono::milliseconds SKIP_MARGIN{100};
+    const std::chrono::milliseconds lead{
+        std::max(0ll, llrint(DVD_TIME_TO_MSEC(m_renderManager.GetDisplayLatency()))) +
+        SKIP_MARGIN.count()};
+    auto ahead = m_Edl.InEdit(correctClock + lead);
+    if (ahead && ahead.value()->action == EDL::Action::COMM_BREAK)
+    {
+      if (m_Edl.GetLastEditTime() != m_Edl.GetNextPlayableTime(ahead.value()->end))
+        CLog::Log(LOGDEBUG, "{} - Commercial break [{}] is less than {} ms ahead of the clock.",
+                  __FUNCTION__, StringUtils::MillisecondsToTimeString(ahead.value()->start),
+                  lead.count());
+      hasEdit = std::move(ahead);
+    }
+  }
+
   if (!hasEdit)
   {
     // @note: Users are allowed to jump back into EDL commercial breaks
@@ -3151,16 +3311,7 @@ void CVideoPlayer::CheckAutoSceneSkip()
     // total cut time grows.
     if (m_playSpeed >= 0 && m_Edl.GetLastEditTime() != seek && correctClock < edit->end - 1s)
     {
-      CVariant announcement{StringUtils::SecondsToTimeString(
-          std::chrono::duration_cast<std::chrono::seconds>(edit->end - edit->start).count(),
-          TIME_FORMAT_MM_SS)};
-      CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::Player, "OnCommercial",
-                                                         announcement);
-
-      // use resolved seek target, not edit->start, to also suppress
-      // adjacent commercial breaks encountered while seeking
-      m_Edl.SetLastEditTime(seek);
-      m_Edl.SetLastEditActionType(edit->action);
+      MarkCommBreakSkipped(*edit, seek);
 
       if (m_SkipCommercials)
       {
@@ -3258,7 +3409,7 @@ void CVideoPlayer::OnExit()
   CloseStream(m_CurrentAudioID3, !m_bAbortRequest);
   // the generalization principle was abused for subtitle player. actually it is not a stream player like
   // video and audio. subtitle player does not run on its own thread, hence waitForBuffers makes
-  // no sense here. waitForBuffers is abused to clear overlay container (false clears container)
+  // no sense here. waitForBuffers is abused to clear subtitle overlays (false clears them)
   // subtitles are added from video player. after video player has finished, overlays have to be cleared.
   CloseStream(m_CurrentSubtitle, false);
   m_overlayContainer.Clear();
@@ -3355,6 +3506,9 @@ void CVideoPlayer::HandleMessages()
 
       m_item = msg.GetItem();
       m_playerOptions = msg.GetOptions();
+#ifdef HAVE_DVBRIDGE
+      m_activeOpen = msg.GetRequest();
+#endif
 
       m_processInfo->SetPlayTimes(0,0,0,0);
 
@@ -3366,6 +3520,8 @@ void CVideoPlayer::HandleMessages()
       m_renderManager.Flush(false, false);
       m_processInfo->ResetVideoCodecInfo();
       m_renderManager.ResetPictureInfo();
+      m_renderManager.SetDiscMenuOnly(false);
+      m_renderManager.SetDiscMenuPage({});
       m_overlayContainer.Clear(DVDOverlaySource::MENU);
 #ifdef HAVE_DVBRIDGE
       DVBRIDGE::PlaybackNotification::StartVideo();
@@ -3425,6 +3581,40 @@ void CVideoPlayer::HandleMessages()
                        .count()
                  : time;
 
+      bool accurate = msg.GetAccurate();
+      bool backward = msg.GetBackward();
+
+      // Skip a commercial break now, CheckAutoSceneSkip() would show a picture of it first.
+      if (m_SkipCommercials && m_playSpeed >= 0 && !msg.GetTrickPlay())
+      {
+        const std::chrono::milliseconds target(std::lround(time));
+        const auto commEdit = m_Edl.InEdit(target);
+        if (commEdit && commEdit.value()->action == EDL::Action::COMM_BREAK &&
+            target < commEdit.value()->end - 1s)
+        {
+          const auto& edit = commEdit.value();
+          const std::chrono::milliseconds seek = m_Edl.GetNextPlayableTime(edit->end);
+
+          // Leave a break at the end of the stream to CheckAutoSceneSkip(), which ends playback.
+          if (m_Edl.GetLastEditTime() != seek && !IsNearStreamEnd(seek))
+          {
+            CLog::Log(LOGDEBUG,
+                      "{} - Seek target {} is in commercial break [{} - {}]. Seeking to next "
+                      "playable point [{}] instead.",
+                      __FUNCTION__, StringUtils::MillisecondsToTimeString(target),
+                      StringUtils::MillisecondsToTimeString(edit->start),
+                      StringUtils::MillisecondsToTimeString(edit->end),
+                      StringUtils::MillisecondsToTimeString(seek));
+
+            MarkCommBreakSkipped(*edit, seek);
+
+            time = static_cast<double>(seek.count());
+            accurate = true;
+            backward = true;
+          }
+        }
+      }
+
       // if input stream doesn't support ISeekTime, convert back to pts
       //! @todo
       //! After demuxer we add an offset to input pts so that displayed time and clock are
@@ -3435,12 +3625,12 @@ void CVideoPlayer::HandleMessages()
         time -= m_State.time_offset/1000l;
 
       CLog::Log(LOGDEBUG, "demuxer seek to: {:f}", time);
-      if (m_pDemuxer && m_pDemuxer->SeekTime(time, msg.GetBackward(), &start))
+      if (m_pDemuxer && m_pDemuxer->SeekTime(time, backward, &start))
       {
         CLog::Log(LOGDEBUG, "demuxer seek to: {:f}, success", time);
         if(m_pSubtitleDemuxer)
         {
-          if(!m_pSubtitleDemuxer->SeekTime(time, msg.GetBackward()))
+          if (!m_pSubtitleDemuxer->SeekTime(time, backward))
             CLog::Log(LOGDEBUG, "failed to seek subtitle demuxer: {:f}, success", time);
         }
         // dts after successful seek
@@ -3450,7 +3640,7 @@ void CVideoPlayer::HandleMessages()
         m_State.dts = start;
         m_State.lastSeek = m_clock.GetAbsoluteClock();
 
-        FlushBuffers(start, msg.GetAccurate(), msg.GetSync());
+        FlushBuffers(start, accurate, msg.GetSync());
       }
       else if (m_pDemuxer)
       {
@@ -3596,10 +3786,23 @@ void CVideoPlayer::HandleMessages()
             m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
           }
         }
-        else
+        else if (!st.IsCurrent(m_CurrentAudio))
         {
+          int secondaryPid = -1;
+#if defined(HAVE_LIBBLURAY)
+          if (IsBlurayInput() && STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX && m_pDemuxer)
+          {
+            CDemuxStream* stream = m_pDemuxer->GetStream(st.demuxerId, st.id);
+            if (stream && static_cast<CDVDInputStreamBluray&>(*m_pInputStream)
+                              .SetActiveAudioStream(stream->dvdNavId))
+              m_dvd.iSelectedAudioStream = stream->dvdNavId;
+            else if (IsBluraySecondary(stream))
+              secondaryPid = stream->dvdNavId;
+          }
+#endif
           CloseStream(m_CurrentAudio, false);
-          OpenStream(m_CurrentAudio, st.demuxerId, st.id, st.source);
+          if (OpenStream(m_CurrentAudio, st.demuxerId, st.id, st.source) && secondaryPid >= 0)
+            m_dvd.iSelectedAudioStream = secondaryPid;
           AdaptForcedSubtitles();
 
           CDVDMsgPlayerSeek::CMode mode;
@@ -3635,7 +3838,7 @@ void CVideoPlayer::HandleMessages()
             m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
           }
         }
-        else
+        else if (!st.IsCurrent(m_CurrentVideo))
         {
           CloseStream(m_CurrentVideo, false);
           OpenStream(m_CurrentVideo, st.demuxerId, st.id, st.source);
@@ -3665,25 +3868,20 @@ void CVideoPlayer::HandleMessages()
             CloseStream(m_CurrentSubtitle, false);
           }
         }
-        else
+        else if (!st.IsCurrent(m_CurrentSubtitle) || m_CurrentSubtitle.demuxDisabled)
         {
-          CloseStream(m_CurrentSubtitle, false);
-          OpenStream(m_CurrentSubtitle, st.demuxerId, st.id, st.source);
-
-          // For embedded subtitles the demuxer is ahead of playback (AV buffers
-          // are full), so the subtitle packets for the current playback time have
-          // already been read and discarded. Seek back to the current time so they
-          // get re-read, mirroring what audio stream switching does.
-          if (STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX)
+#if defined(HAVE_LIBBLURAY)
+          if (IsBlurayInput() && STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX && m_pDemuxer)
           {
-            CDVDMsgPlayerSeek::CMode mode;
-            mode.time = static_cast<double>(GetUpdatedTime());
-            mode.backward = true;
-            mode.accurate = true;
-            mode.trickplay = true;
-            mode.sync = true;
-            m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+            CDemuxStream* stream = m_pDemuxer->GetStream(st.demuxerId, st.id);
+            if (stream && static_cast<CDVDInputStreamBluray&>(*m_pInputStream)
+                              .SetActiveSubtitleStream(stream->dvdNavId,
+                                                       m_VideoPlayerVideo->IsSubtitleEnabled()))
+              m_dvd.iSelectedSPUStream = stream->dvdNavId;
           }
+#endif
+          // a stream disabled in the demuxer is only enabled again by a reopen
+          ReopenSubtitleStream(st);
         }
       }
     }
@@ -3700,12 +3898,23 @@ void CVideoPlayer::HandleMessages()
       {
         SetSubtitle(GetSubtitle());
       }
+      // A stream disabled in the demuxer when it was hidden is only enabled again by a reopen,
+      // done right away so that a stream selection queued after this message still wins
+      else if (isVisible && m_CurrentSubtitle.demuxDisabled)
+      {
+        ReopenSubtitleStream(ss);
+      }
 
       // SetEnableStream only if not visible, when visible OpenStream already implied that stream is enabled
       if (!isVisible)
         SetEnableStream(m_CurrentSubtitle, false);
 
       SetSubtitleVisibleInternal(isVisible);
+
+#if defined(HAVE_LIBBLURAY)
+      if (IsBlurayInput())
+        static_cast<CDVDInputStreamBluray&>(*m_pInputStream).SetSubtitleVisible(isVisible);
+#endif
 
       // Image type subtitles (e.g. VOBSUB) can support "forced" flag on overlays (images)
       // so you need to keep the stream open to parse "forced" flag on each image
@@ -3746,7 +3955,11 @@ void CVideoPlayer::HandleMessages()
     }
     else if (pMsg->IsType(CDVDMsg::GENERAL_FLUSH))
     {
-      FlushBuffers(DVD_NOPTS_VALUE, true, true);
+      // a Blu-ray playlist stop handled by NextStream() is queued before the streams are closed
+      if (m_CurrentAudio.id >= 0 || m_CurrentVideo.id >= 0)
+        FlushBuffers(DVD_NOPTS_VALUE, true, true);
+      else
+        m_VideoPlayerSubtitle->Flush();
     }
     else if (pMsg->IsType(CDVDMsg::PLAYER_SETSPEED))
     {
@@ -3766,6 +3979,7 @@ void CVideoPlayer::HandleMessages()
           offset = -1000;
         m_State.time += offset;
         m_State.timestamp = m_clock.GetAbsoluteClock();
+        m_stateClock = GetCaughtUpClock();
       }
 
       if (speed != DVD_PLAYSPEED_PAUSE && m_playSpeed != DVD_PLAYSPEED_PAUSE && speed != m_playSpeed)
@@ -4019,31 +4233,49 @@ bool CVideoPlayer::CanSeek() const
 
 void CVideoPlayer::Seek(bool bPlus, bool bLargeStep, bool bChapterOverride)
 {
+  const SeekStep step = bLargeStep ? SeekStep::LARGE : SeekStep::NORMAL;
+  SeekToNearestTarget(bPlus ? Direction::FORWARD : Direction::BACKWARD, step,
+                      step == SeekStep::LARGE && bChapterOverride, false);
+}
+
+void CVideoPlayer::SeekChapterOrSceneOrBigStep(Direction direction)
+{
+  SeekToNearestTarget(direction, SeekStep::LARGE, true, true);
+}
+
+void CVideoPlayer::SeekToNearestTarget(Direction direction,
+                                       SeekStep step,
+                                       bool includeChapters,
+                                       bool includeScenes)
+{
   if (!m_State.canseek)
     return;
 
   const int64_t time = GetTime();
-  const Direction direction = bPlus ? Direction::FORWARD : Direction::BACKWARD;
-  const SeekStep step = bLargeStep ? SeekStep::LARGE : SeekStep::NORMAL;
 
-  if (step == SeekStep::LARGE && bChapterOverride)
+  std::vector<SeekCandidate> candidates;
+  if (includeChapters)
   {
-    std::vector<SeekCandidate> candidates;
     if (auto candidate = GetChapterSeekCandidate(time, direction); candidate.has_value())
       candidates.push_back(std::move(*candidate));
     if (auto candidate = GetBookmarkSeekCandidate(time, direction); candidate.has_value())
       candidates.push_back(std::move(*candidate));
+  }
+  if (includeScenes)
+  {
+    if (auto candidate = GetSceneSeekCandidate(time, direction); candidate.has_value())
+      candidates.push_back(std::move(*candidate));
+  }
 
-    if (!candidates.empty())
+  if (!candidates.empty())
+  {
+    auto bestCandidateIt = std::ranges::min_element(candidates, std::less<>{},
+                                                    [time](const CVideoPlayer::SeekCandidate& c)
+                                                    { return std::abs(c.targetTime - time); });
+    if (bestCandidateIt != candidates.end())
     {
-      auto bestCandidateIt = std::ranges::min_element(candidates, std::less<>{},
-                                                      [time](const CVideoPlayer::SeekCandidate& c)
-                                                      { return std::abs(c.targetTime - time); });
-      if (bestCandidateIt != candidates.end())
-      {
-        bestCandidateIt->action();
-        return;
-      }
+      bestCandidateIt->action();
+      return;
     }
   }
 
@@ -4185,39 +4417,58 @@ std::optional<CVideoPlayer::SeekCandidate> CVideoPlayer::GetBookmarkSeekCandidat
                        { ExecuteTimeSeek(bookmarkTime, direction, true); }};
 }
 
-bool CVideoPlayer::SeekScene(Direction seekDirection)
+std::optional<CVideoPlayer::SeekCandidate> CVideoPlayer::GetSceneSeekCandidate(int64_t time,
+                                                                               Direction direction)
 {
   if (!m_Edl.HasSceneMarker())
-    return false;
+    return std::nullopt;
 
   /*
    * There is a 5 second grace period applied when seeking for scenes backwards. If there is no
    * grace period applied it is impossible to go backwards past a scene marker.
+   * Forwards, a 1 second grace period is needed because the time reported right after the
+   * inaccurate seek to a scene marker is slightly before it, which would select it again.
    */
-  auto clock = std::chrono::milliseconds(GetTime());
-  if (seekDirection == Direction::BACKWARD && clock > 5s) // 5 seconds
+  auto clock = std::chrono::milliseconds(time);
+  if (direction == Direction::BACKWARD && clock > 5s) // 5 seconds
     clock -= 5s;
+  else if (direction == Direction::FORWARD)
+    clock += 1s;
 
   const std::optional<std::chrono::milliseconds> sceneMarker =
-      m_Edl.GetNextSceneMarker(seekDirection, clock);
-  if (sceneMarker)
-  {
-    /*
-     * Seeking is flushed and inaccurate, just like Seek()
-     */
-    CDVDMsgPlayerSeek::CMode mode;
-    mode.time = sceneMarker.value().count();
-    mode.backward = seekDirection == Direction::BACKWARD;
-    mode.accurate = false;
-    mode.restore = false;
-    mode.trickplay = false;
-    mode.sync = true;
+      m_Edl.GetNextSceneMarker(direction, clock);
+  if (!sceneMarker)
+    return std::nullopt;
 
-    m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
-    SynchronizeDemuxer();
-    return true;
-  }
-  return false;
+  // Scene markers are raw times, the other candidates are compared without cuts.
+  const int64_t sceneTime = sceneMarker.value().count();
+  return SeekCandidate{m_Edl.GetTimeWithoutCuts(sceneMarker.value()).count(),
+                       [this, sceneTime, direction]()
+                       {
+                         /*
+                          * Seeking is flushed and inaccurate, just like Seek()
+                          */
+                         CDVDMsgPlayerSeek::CMode mode;
+                         mode.time = sceneTime;
+                         mode.backward = direction == Direction::BACKWARD;
+                         mode.accurate = false;
+                         mode.restore = false;
+                         mode.trickplay = false;
+                         mode.sync = true;
+
+                         m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+                         SynchronizeDemuxer();
+                       }};
+}
+
+bool CVideoPlayer::SeekScene(Direction seekDirection)
+{
+  const std::optional<SeekCandidate> candidate = GetSceneSeekCandidate(GetTime(), seekDirection);
+  if (!candidate)
+    return false;
+
+  candidate->action();
+  return true;
 }
 
 void CVideoPlayer::GetGeneralInfo(std::string& strGeneralInfo)
@@ -4326,7 +4577,10 @@ void CVideoPlayer::SetEnableStream(CCurrentStream& current, bool isEnabled)
   if (m_pDemuxer && STREAM_SOURCE_MASK(current.source) == STREAM_SOURCE_DEMUX &&
       m_SelectionStreams.Contains(current.type, current.source, current.demuxerId, current.id))
   {
-    m_pDemuxer->EnableStream(current.demuxerId, current.id, isEnabled);
+    // Only a demuxer that really supports it stops delivering a disabled stream. Others
+    // (e.g. ffmpeg) ignore the request and keep delivering, so there is nothing to reopen later.
+    if (m_pDemuxer->EnableStream(current.demuxerId, current.id, isEnabled))
+      current.demuxDisabled = !isEnabled;
   }
 }
 
@@ -4338,6 +4592,30 @@ void CVideoPlayer::SetSubtitleVisibleInternal(bool bVisible)
     std::static_pointer_cast<CDVDInputStreamNavigator>(m_pInputStream)->EnableSubtitleStream(bVisible);
 
   CServiceBroker::GetDataCacheCore().SignalSubtitleInfoChange();
+}
+
+void CVideoPlayer::ReopenSubtitleStream(const SelectionStream& stream)
+{
+  CloseStream(m_CurrentSubtitle, false);
+  const bool opened{OpenStream(m_CurrentSubtitle, stream.demuxerId, stream.id, stream.source)};
+
+  // For embedded subtitles the demuxer is ahead of playback (AV buffers
+  // are full), so the subtitle packets for the current playback time have
+  // already been read and discarded. Seek back to the current time so they
+  // get re-read, mirroring what audio stream switching does.
+  // A seek already queued re-reads them as well and must not be overridden.
+  if (opened && STREAM_SOURCE_MASK(stream.source) == STREAM_SOURCE_DEMUX &&
+      m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK) == 0 &&
+      m_messenger.GetPacketCount(CDVDMsg::PLAYER_SEEK_CHAPTER) == 0)
+  {
+    CDVDMsgPlayerSeek::CMode mode;
+    mode.time = static_cast<double>(GetUpdatedTime());
+    mode.backward = true;
+    mode.accurate = true;
+    mode.trickplay = true;
+    mode.sync = true;
+    m_messenger.Put(std::make_shared<CDVDMsgPlayerSeek>(mode));
+  }
 }
 
 void CVideoPlayer::SetSubtitleVerticalPosition(int value, bool save)
@@ -4576,6 +4854,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       break;
     case StreamType::VIDEO:
       res = OpenVideoStream(hint, reset);
+#ifdef HAVE_DVBRIDGE
+      if (!res && (m_bStop || m_activeOpen != m_requestedOpen.load()))
+        return false; // A cancelled startup is not an unsupported stream.
+#endif
       // Set the m_bFullScreenVideo flag now, before streamsReady, so the
       // renderer's Configure() sees a valid viewport via GetViewWindow().
       // The WINDOW_FULLSCREEN_VIDEO skin activation is deferred to
@@ -4625,6 +4907,7 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
     current.id = iStream;
     current.demuxerId = demuxerId;
     current.source = source;
+    current.demuxDisabled = false;
     current.hint = hint;
     current.stream = (void*)stream;
     current.lastdts = DVD_NOPTS_VALUE;
@@ -4741,7 +5024,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
     if (gui != nullptr)
     {
       const CStereoscopicsManager &stereoscopicsManager = gui->GetStereoscopicsManager();
-      hint.stereo_mode = stereoscopicsManager.DetectStereoModeByString(m_item.GetPath());
+      hint.stereo_mode = stereoscopicsManager.DetectStereoModeByString(m_item.GetDynPath());
     }
   }
 
@@ -4763,7 +5046,23 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   {
     auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
         CServiceBroker::GetWinSystem());
-    const auto preferences = DVBRIDGE::FrameOutputSettings();
+    auto preferences = DVBRIDGE::FrameOutputSettings();
+    if (window && !m_HasVideo && !pMenus && m_pInputStream && !m_pInputStream->IsRealtime() &&
+        hint.dovi.dv_profile == 7 && hint.dovi.el_present_flag && !hint.interlaced &&
+        !(hint.codecOptions & CODEC_FORCE_SOFTWARE) &&
+        preferences.output == DVBRIDGE::OutputMode::MasterReference)
+    {
+      // The GUI publishes HDMI capabilities while this startup is parked.
+      while (!m_bStop && m_activeOpen == m_requestedOpen.load() && window->PendingDVStartupEdid())
+        Sleep(25ms);
+      if (m_bStop || m_activeOpen != m_requestedOpen.load())
+        return false;
+      // The EDID can return while the demuxer is still opening the file.
+      SelectDVStartupOutput(window);
+      if (m_bStop || m_activeOpen != m_requestedOpen.load())
+        return false;
+      preferences = DVBRIDGE::FrameOutputSettings();
+    }
     const auto mode = preferences.Policy().mode;
     if (window && (mode == DVBRIDGE_MODE_HDR10_BASIC || mode == DVBRIDGE_MODE_HDR10_EXPERT) &&
         window->GetDVOutputCapabilities(nullptr, true).HDR10DepthLimited())
@@ -5182,6 +5481,11 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   if (sync)
     m_renderManager.DiscardBuffer();
 
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+  if (IsBlurayInput())
+    static_cast<CDVDInputStreamBluray&>(*m_pInputStream).CaptureBdjClockEpoch();
+#endif
+
   if (m_playSpeed == DVD_PLAYSPEED_NORMAL || m_playSpeed == DVD_PLAYSPEED_PAUSE ||
       m_processInfo->IsTempoAllowed(static_cast<float>(m_playSpeed) / DVD_PLAYSPEED_NORMAL))
   {
@@ -5245,9 +5549,12 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
     }
 #endif
     case BD_EVENT_MENU_OVERLAY:
-      m_overlayContainer.ProcessAndAddOverlayIfValid(
-          *static_cast<std::shared_ptr<CDVDOverlay>*>(pData));
+    {
+      auto& page = *static_cast<std::shared_ptr<CDVDOverlayGroup>*>(pData);
+      m_renderManager.SetDiscMenuPage(page);
+      m_overlayContainer.ProcessAndAddOverlayIfValid(page);
       break;
+    }
     case BD_EVENT_MENU:
       // Interactive menu visible?
       if (*static_cast<uint32_t*>(pData) == false)
@@ -5256,11 +5563,22 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
         m_dvd.iDVDStillTime = 0ms;
         CLog::Log(LOGDEBUG, "BD_EVENT_MENU - libbluray leave menu (DVDSTATE_NORMAL)");
       }
+      else
+      {
+        // The disc may open a menu itself, so close the player controls as ShowVideoMenu does
+        CServiceBroker::GetAnnouncementManager()->Announce(ANNOUNCEMENT::Player, "OnMenu");
+      }
       break;
     case BD_EVENT_PLAYLIST_STOP:
       m_dvd.state = DVDSTATE_NORMAL;
       m_dvd.iDVDStillTime = 0ms;
-      m_messenger.Put(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_FLUSH));
+      // while the demuxer is being opened no streams are open yet, and a queued flush would only
+      // discard the first packets of the streams opened next. The subtitle player isn't closed
+      // on a stream change, so its overlays are flushed now.
+      if (m_CurrentAudio.id >= 0 || m_CurrentVideo.id >= 0)
+        m_messenger.Put(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_FLUSH));
+      else
+        m_VideoPlayerSubtitle->Flush();
       break;
     case BD_EVENT_AUDIO_STREAM:
       m_dvd.iSelectedAudioStream = *static_cast<int*>(pData);
@@ -5582,10 +5900,29 @@ bool CVideoPlayer::OnAction(const CAction &action)
       break;
 #endif
     case ACTION_SHOW_VIDEOMENU:   // start button
+    case ACTION_SHOW_BLURAY_TOP_MENU:
+    case ACTION_SHOW_BLURAY_POPUP_MENU:
       {
         THREAD_ACTION(action);
-        CLog::LogF(LOGDEBUG, "Trying to go to the menu");
-        if (pMenus->OnMenu())
+        const int menuAction = action.GetID();
+        if (menuAction != ACTION_SHOW_VIDEOMENU && !IsBlurayInput())
+          return false;
+
+        bool opened;
+        if (menuAction == ACTION_SHOW_VIDEOMENU)
+          opened = pMenus->OnMenu();
+#if defined(HAVE_LIBBLURAY)
+        else
+        {
+          auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
+          opened = menuAction == ACTION_SHOW_BLURAY_TOP_MENU ? bluray.OnTopMenu()
+                                                           : bluray.OnPopupMenu();
+        }
+#else
+        else
+          return false;
+#endif
+        if (opened)
         {
           if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
           {
@@ -6019,8 +6356,9 @@ int CVideoPlayer::AddSubtitleFile(const std::string& filename, const std::string
       pDemux = pDemuxFFmpeg;
     }
 
-    ExternalStreamInfo info =
-        CUtil::GetExternalStreamDetailsFromFilename(m_item.GetDynPath(), filename);
+    ExternalStreamInfo info = CUtil::GetExternalStreamDetailsFromFilename(
+        m_item.GetDynPath(), filename,
+        m_item.HasVideoInfoTag() ? m_item.GetVideoInfoTag() : nullptr);
 
     for (auto sub : pDemux->GetStreams())
     {
@@ -6063,7 +6401,8 @@ int CVideoPlayer::AddSubtitleFile(const std::string& filename, const std::string
   s.type = StreamType::SUBTITLE;
   s.id       = 0;
   s.filename = filename;
-  ExternalStreamInfo info = CUtil::GetExternalStreamDetailsFromFilename(m_item.GetDynPath(), filename);
+  ExternalStreamInfo info = CUtil::GetExternalStreamDetailsFromFilename(
+      m_item.GetDynPath(), filename, m_item.HasVideoInfoTag() ? m_item.GetVideoInfoTag() : nullptr);
   s.name = info.name;
   s.language = info.language;
   if (static_cast<StreamFlags>(info.flag) != StreamFlags::FLAG_NONE)
@@ -6197,11 +6536,7 @@ void CVideoPlayer::UpdatePlayState(double timeout)
       chapterNbEnabled = true;
     }
 
-    state.time = DVD_TIME_TO_MSEC(m_clock.GetClock());
-    // Let the clock catch up after seek
-    if (m_CurrentVideo.startpts != DVD_NOPTS_VALUE &&
-        state.time < DVD_TIME_TO_MSEC(m_CurrentVideo.startpts))
-      state.time = DVD_TIME_TO_MSEC(m_CurrentVideo.startpts);
+    state.time = DVD_TIME_TO_MSEC(GetCaughtUpClock());
 
     state.timeMax = static_cast<double>(rawStreamLength.count());
   }
@@ -6404,6 +6739,16 @@ void CVideoPlayer::UpdatePlayState(double timeout)
 
   std::unique_lock lock(m_StateSection);
   m_State = state;
+  m_stateClock = GetCaughtUpClock();
+}
+
+double CVideoPlayer::GetCaughtUpClock()
+{
+  // Let the clock catch up after seek
+  const double clock{m_clock.GetClock()};
+  if (m_CurrentVideo.startpts != DVD_NOPTS_VALUE && clock < m_CurrentVideo.startpts)
+    return m_CurrentVideo.startpts;
+  return clock;
 }
 
 bool CVideoPlayer::CanTempo()
@@ -6448,6 +6793,11 @@ void CVideoPlayer::FrameMove()
 void CVideoPlayer::Render(bool clear, uint32_t alpha, bool gui)
 {
   m_renderManager.Render(clear, 0, alpha, gui);
+}
+
+bool CVideoPlayer::CompositeVideoCapture(KODI::RENDERING::CAPTURE::CaptureResult& result)
+{
+  return m_renderManager.CompositeVideoCapture(result);
 }
 
 void CVideoPlayer::FlushRenderer()

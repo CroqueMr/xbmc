@@ -678,26 +678,29 @@ unsigned int CAEStreamParser::DetectType(uint8_t* data, unsigned int size)
 
   while (size > 8)
   {
-    // if it could be DTS
-    unsigned int header = data[0] << 24 | data[1] << 16 | data[2] << 8 | data[3];
-    if (header == DTS_PREAMBLE_14LE || header == DTS_PREAMBLE_14BE || header == DTS_PREAMBLE_16LE ||
-        header == DTS_PREAMBLE_16BE)
+    if (!m_trueHdOnly)
     {
-      unsigned int skip = SyncDTS(data, size);
-      if (m_hasSync || m_needBytes)
-        return skipped + skip;
-      else
-        possible = skipped;
-    }
+      // if it could be DTS
+      unsigned int header = data[0] << 24 | data[1] << 16 | data[2] << 8 | data[3];
+      if (header == DTS_PREAMBLE_14LE || header == DTS_PREAMBLE_14BE ||
+          header == DTS_PREAMBLE_16LE || header == DTS_PREAMBLE_16BE)
+      {
+        unsigned int skip = SyncDTS(data, size);
+        if (m_hasSync || m_needBytes)
+          return skipped + skip;
+        else
+          possible = skipped;
+      }
 
-    // if it could be AC3
-    if (data[0] == 0x0b && data[1] == 0x77)
-    {
-      unsigned int skip = SyncAC3(data, size);
-      if (m_hasSync || m_needBytes)
-        return skipped + skip;
-      else
-        possible = skipped;
+      // if it could be AC3
+      if (data[0] == 0x0b && data[1] == 0x77)
+      {
+        unsigned int skip = SyncAC3(data, size);
+        if (m_hasSync || m_needBytes)
+          return skipped + skip;
+        else
+          possible = skipped;
+      }
     }
 
     // if it could be TrueHD
@@ -1060,11 +1063,27 @@ unsigned int CAEStreamParser::SyncDTS(uint8_t* data, unsigned int size)
       if (m_coreOnly)
         dataType = CAEStreamInfo::STREAM_TYPE_DTSHD_CORE;
       else if (hd_sync == DTS_PREAMBLE_XLL)
+      {
         dataType = CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
+        m_skipCount = 0;
+      }
       else if (hd_sync == DTS_PREAMBLE_XCH || hd_sync == DTS_PREAMBLE_XXCH ||
                hd_sync == DTS_PREAMBLE_X96K || hd_sync == DTS_PREAMBLE_XBR ||
                hd_sync == DTS_PREAMBLE_LBR)
-        dataType = CAEStreamInfo::STREAM_TYPE_DTSHD;
+      {
+        // DTS-HD is only confirmed if no other preceding format detected or format is
+        // already DTS-HD or it's the third DTS-HD syncword, with no DTS-HD MA in between.
+        if (m_info.m_type == CAEStreamInfo::STREAM_TYPE_NULL ||
+            m_info.m_type == CAEStreamInfo::STREAM_TYPE_DTSHD || m_skipCount > 1)
+        {
+          dataType = CAEStreamInfo::STREAM_TYPE_DTSHD;
+        }
+        else
+        {
+          m_skipCount++;
+          dataType = m_info.m_type;
+        }
+      }
       else
         dataType = m_info.m_type;
 
