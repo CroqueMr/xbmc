@@ -597,7 +597,7 @@ void CRenderer::PrepareOverlays(int idx)
   UpdateSubtitlePosition(resolution);
 
   bool doMarkDirty = false;
-  bool hasImageSpu = false;
+  size_t bitmapCount = 0;
   bool hasVisible = false;
   for (auto& e : m_buffers[idx])
   {
@@ -611,14 +611,20 @@ void CRenderer::PrepareOverlays(int idx)
 
     CDVDOverlay& o = *e.overlay_dvd;
 
-    // PGS/DVB and DVD SPU: only added to m_buffers at their visible PTS,
-    // so finding one means it is on screen now. m_textureid == 0 is the
-    // "new arrival" signal (also true every frame for animated PGS where
-    // each frame is a fresh CDVDOverlay). Disappearance is caught after
-    // the loop by the hasImageSpu vs m_prevHadImageSpu check.
+    // Compare already uploaded bitmaps too: a menu can remove only part of its page.
     if (o.IsOverlayType(DVDOVERLAY_TYPE_IMAGE) || o.IsOverlayType(DVDOVERLAY_TYPE_SPU))
     {
-      hasImageSpu = true;
+      if (bitmapCount == m_previousBitmapOverlays.size())
+      {
+        m_previousBitmapOverlays.push_back(&o);
+        doMarkDirty = true;
+      }
+      else if (m_previousBitmapOverlays[bitmapCount] != &o)
+      {
+        m_previousBitmapOverlays[bitmapCount] = &o;
+        doMarkDirty = true;
+      }
+      ++bitmapCount;
       hasVisible = true;
       if (o.m_textureid == 0)
         doMarkDirty = true;
@@ -651,12 +657,11 @@ void CRenderer::PrepareOverlays(int idx)
     }
   }
 
-  // PGS/DVB/SPU disappearance: arrival is caught by m_textureid==0 in
-  // the loop above. Without this, a PGS subtitle ending leaves its
-  // cached bitmap on the GUI plane until something else dirties.
-  if (hasImageSpu != m_prevHadImageSpu)
+  if (bitmapCount < m_previousBitmapOverlays.size())
+  {
+    m_previousBitmapOverlays.resize(bitmapCount);
     doMarkDirty = true;
-  m_prevHadImageSpu = hasImageSpu;
+  }
 
   // A title may vary the plane offset every frame, moving the subtitle in depth without
   // touching its bitmap, which nothing else here would notice. Compared against what was

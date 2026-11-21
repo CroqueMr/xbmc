@@ -44,6 +44,7 @@ class CCaptureBlit;
 } // namespace KODI
 
 struct VideoPicture;
+class CDVDOverlayGroup;
 
 class CWinRenderer;
 class CLinuxRenderer;
@@ -126,6 +127,9 @@ public:
   bool Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers = 0);
   bool AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop, EINTERLACEMETHOD deintMethod, bool wait);
   void AddOverlay(std::shared_ptr<CDVDOverlay> o, double pts);
+  bool IsDiscMenuOnly() const { return m_discMenuOnly; }
+  void SetDiscMenuOnly(bool enabled);
+  void SetDiscMenuPage(std::shared_ptr<CDVDOverlayGroup> page);
   void ShowVideo(bool enable);
 #ifdef CB1_HAS_HDR10_AI
   bool HDR10AILookahead();
@@ -219,6 +223,11 @@ protected:
   //! Owns the video tap's private FBO; render-thread only, reset in UnInit
   std::unique_ptr<KODI::RENDERING::CAPTURE::CCaptureBlit> m_captureBlit;
   OVERLAY::CRenderer m_overlays;
+  std::atomic_bool m_discMenuOnly{false};
+  std::atomic_bool m_discMenuBufferInvalidated{false};
+  CCriticalSection m_discMenuLock;
+  std::shared_ptr<CDVDOverlayGroup> m_discMenuPage;
+  std::shared_ptr<CDVDOverlayGroup> m_renderedDiscMenuPage;
   CDebugRenderer m_debugRenderer;
   mutable CCriticalSection m_statelock;
   CCriticalSection m_presentlock;
