@@ -1251,11 +1251,15 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   {
     std::unique_lock lock(m_presentlock);
 #ifdef HAVE_DVBRIDGE
-    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
-        window && window->CB1FramePending())
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+            CServiceBroker::GetWinSystem()))
     {
-      m_cb1PresentPending = true;
-      return;
+      m_cb1OutputPending = window->HasPendingCB1VideoPresentation();
+      if (window->CB1FramePending())
+      {
+        m_cb1PresentPending = true;
+        return;
+      }
     }
 #endif
 #ifdef CB1_HAS_HDR10_AI
@@ -1902,7 +1906,7 @@ bool CRenderManager::HasPendingVideoPresentation()
 {
   std::unique_lock lock(m_presentlock);
 #ifdef HAVE_DVBRIDGE
-  if (m_cb1PresentPending || m_cb1OutputPending)
+  if (m_cb1OutputPending)
     return true;
 #endif
   return !m_queued.empty() || m_presentstep != PRESENT_IDLE;

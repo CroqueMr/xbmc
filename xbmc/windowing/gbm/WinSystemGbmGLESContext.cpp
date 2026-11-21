@@ -640,6 +640,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         if (drm) drm->SetCB1PresentationPts(m_preparedRenderPts);
         presented = drm && (nvidiaRestore ? (valid && FlipDVBridgePage(m_dvState,true,false,true,bo)) :
                             drm->FlipPageTransactional(valid ? bo : nullptr, false, asynchronous));
+        if (presented) TrackCB1VideoPage(drm->HasPendingCB1Page());
         CompleteCB1Mode(presented,true);
         if (signalChange && bo)
         {
@@ -656,7 +657,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     if (m_dvBridge && m_dvBridge->Presented(presented,submitted))
     {
       PublishVideoSource(true, submitted.sourceSideData);
-      m_previousSourceStream = m_preparedSourceStream;
+      m_previousSourceStream = m_preparedSource.stream;
       m_previousSourcePts = m_preparedSourcePts;
       DVBRIDGE::PlaybackNotification::NativeOutputAccepted(DVBRIDGE::StreamTelemetry::Read().output);
       const auto* plane=m_DRM->GetGuiPlane() ? m_DRM->GetGuiPlane() : m_DRM->GetVideoPlane();
@@ -683,7 +684,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
       }
       RejectDVOutputSurface();
     }
-    m_cb1FramePending = m_dvFrame = false;
+    m_cb1FramePending = m_cb1SourcePreparing = m_dvFrame = false;
     return;
   }
   if (m_dvState.Captured())
@@ -718,6 +719,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
           const auto started = std::chrono::steady_clock::now();
           drm->SetCB1PresentationPts(m_preparedRenderPts);
           presented = FlipDVBridgePage(m_dvState, false, asynchronous);
+          if (presented) TrackCB1VideoPage(drm->HasPendingCB1Page());
           CompleteCB1Mode(presented,true);
           if (presented)
           {
@@ -748,7 +750,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     if (m_dvBridge && m_dvBridge->Presented(presented,submitted))
     {
       PublishVideoSource(true, submitted.sourceSideData);
-      m_previousSourceStream = m_preparedSourceStream;
+      m_previousSourceStream = m_preparedSource.stream;
       m_previousSourcePts = m_preparedSourcePts;
       DVBRIDGE::PlaybackNotification::NativeOutputAccepted(DVBRIDGE::StreamTelemetry::Read().output);
       const auto* plane=m_DRM->GetGuiPlane() ? m_DRM->GetGuiPlane() : m_DRM->GetVideoPlane();
@@ -765,7 +767,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
       m_hdrDeepColorPrevious.reset();
     }
     else RejectDVOutputSurface();
-    m_cb1FramePending = m_dvFrame = false;
+    m_cb1FramePending = m_cb1SourcePreparing = m_dvFrame = false;
     return;
   }
 #endif
@@ -930,8 +932,13 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 bool CWinSystemGbmGLESContext::HasPendingCB1VideoPresentation() const
 {
   const auto* drm = dynamic_cast<const CDRMAtomic*>(m_DRM.get());
-  return CB1FramePending() || (drm && drm->HasPendingCB1Page()) ||
-         (m_dvBridge && m_dvBridge->PlayerLedCpuPending());
+  const auto& pageSource = m_playerLedPage ? m_playerLedPage->decoded : m_cb1PageSource;
+  // A refresh that only recomposes the last source does not advance playback.
+  return ((m_dvFrame || m_cb1SourcePreparing) && m_preparedSource.Valid() &&
+          m_preparedSource != m_cb1DisplayedSource) ||
+         (drm && drm->HasPendingCB1Page() && pageSource.Valid() &&
+          pageSource != m_cb1DisplayedSource) ||
+         (m_dvBridge && m_dvBridge->PlayerLedCpuHasNewPicture(m_cb1DisplayedSource));
 }
 
 bool CWinSystemGbmGLESContext::PresentPlayerLedFrame()
@@ -986,7 +993,7 @@ bool CWinSystemGbmGLESContext::PresentPlayerLedFrame()
       drm->FlipPageTransactional(nullptr);
   }
   auto frame = m_dvBridge->SubmitPlayerLed(accepted, submission);
-  m_cb1FramePending = m_dvFrame = false;
+  m_cb1FramePending = m_cb1SourcePreparing = m_dvFrame = false;
   if (accepted)
     CompleteDVOutputSurface(true); // Even a failed readback must retain its scanout.
   if (frame && drm && drm->HasPendingCB1Page())
@@ -1065,9 +1072,22 @@ void CWinSystemGbmGLESContext::RefreshPlayerLedRejection(const DVBRIDGE::LldvTra
   m_dvLldvStatus = std::move(status);
 }
 
+void CWinSystemGbmGLESContext::TrackCB1VideoPage(bool pending)
+{
+  if (pending)
+    m_cb1PageSource = m_preparedSource;
+  else
+    m_cb1DisplayedSource = m_preparedSource;
+}
+
 bool CWinSystemGbmGLESContext::CompleteDVBridgePage(int timeoutMs)
 {
   if (!CWinSystemGbm::CompleteDVBridgePage(timeoutMs)) return false;
+  if (m_cb1PageSource.Valid())
+  {
+    m_cb1DisplayedSource = m_cb1PageSource;
+    m_cb1PageSource = {};
+  }
   if (!m_playerLedPage) return true;
   auto frame = std::move(*m_playerLedPage);
   m_playerLedPage.reset();
@@ -1090,6 +1110,7 @@ bool CWinSystemGbmGLESContext::FinishPlayerLedFrame(
   if (!m_dvBridge || status.activeExperimentalPacked12 != frame.transport.experimentalPacked12 ||
       !m_dvBridge->ConfirmPlayerLed(frame, status))
     return false;
+  m_cb1DisplayedSource = frame.decoded;
   const auto& submission = frame.submission;
   PublishVideoSource(true, submission.sourceSideData);
   m_previousSourceStream = submission.identity.stream;
@@ -2281,7 +2302,7 @@ bool CWinSystemGbmGLESContext::RetainNativeDVOutput(const VideoPicture& picture)
 
   // Only retain the accepted scanout. The successor imports and admits its own BL/EL/RPU.
   m_dvBridge->Reset();
-  m_cb1FramePending = m_dvFrame = m_dvNativeGui = false;
+  m_cb1FramePending = m_cb1SourcePreparing = m_dvFrame = m_dvNativeGui = false;
   m_dvConfiguredOutput.reset();
   return true;
 }
@@ -2305,7 +2326,7 @@ bool CWinSystemGbmGLESContext::RetainHDR10DVOutput(const VideoPicture& picture)
   // Keep the accepted framebuffer and connector state, while resetting
   // source-dependent renderer history before admitting the next clip.
   m_dvBridge->Reset();
-  m_cb1FramePending = m_dvFrame = m_dvNativeGui = false;
+  m_cb1FramePending = m_cb1SourcePreparing = m_dvFrame = m_dvNativeGui = false;
   return true;
 }
 
@@ -3031,7 +3052,7 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
       {
         m_dvBridge->Cancel();
         // Cancelled readiness cannot cross an output-format transaction.
-        m_cb1FramePending = m_dvFrame = m_dvNativeGui = false;
+        m_cb1FramePending = m_cb1SourcePreparing = m_dvFrame = m_dvNativeGui = false;
         m_dvOutputRetiring = true;
         if (!m_dvContext->FenceLastUse()) return false;
       }
@@ -3462,8 +3483,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
 {
   // A delayed KMS handoff must not replace the one prepared next picture.
   if (m_cb1FramePending && m_dvFrame) return true;
-  m_cb1FramePending = false;
-  m_dvFrame = false;
+  m_cb1FramePending = m_cb1SourcePreparing = m_dvFrame = false;
   if (!BeginDVBridge() || (m_sdrConversion && !m_dvBridge->SetSDROutputRange(UseLimitedColor())))
     return false;
   if (m_dvBridge->PlayerLedCpuPending() && CB1AsyncAvailable())
@@ -3527,7 +3547,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
     }
     drm->SetCB1TimingPeriod(m_masterFramePeriodNs);
   }
-  m_preparedSourceStream = layer.binding.stream;
+  m_preparedSource = layer.binding;
   m_preparedSourcePts = layer.pts;
   m_preparedRenderPts = m_cb1RenderPts;
   geometry.ignore_l5=false;
@@ -3751,12 +3771,12 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
       RejectDVOutputSurface();
     }
   }
-  const bool renderPending = status == CDVBridgeGLES::FrameStatus::Pending ||
+  m_cb1SourcePreparing = status == CDVBridgeGLES::FrameStatus::Pending ||
       status == CDVBridgeGLES::FrameStatus::Busy;
   m_cb1FramePending = (metadata.Data() && (policy.mode == DVBRIDGE_MODE_ENHANCED_DV ||
-                                         policy.mode == DVBRIDGE_MODE_HDR10PLUS) && renderPending) ||
+                                         policy.mode == DVBRIDGE_MODE_HDR10PLUS) && m_cb1SourcePreparing) ||
       (allowAsync && (m_dvBridge->PlayerLed() || m_dvContext->AsyncPreparation(layer.binding.stream)) &&
-       (m_dvFrame || renderPending));
+       (m_dvFrame || m_cb1SourcePreparing));
   if (std::getenv("CB1_PRESENTATION_AUDIT"))
   {
     static unsigned samples=0,ready=0,pending=0,busy=0,repeats=0;
@@ -3968,7 +3988,7 @@ void CWinSystemGbmGLESContext::DiscardDVBridgeFrame()
 {
   // Discard unsubmitted work; accepted KMS buffers retain their retirement owner.
   if (m_dvBridge) m_dvBridge->Cancel();
-  m_cb1FramePending = m_dvFrame = m_dvNativeGui = false;
+  m_cb1FramePending = m_cb1SourcePreparing = m_dvFrame = m_dvNativeGui = false;
 }
 
 bool CWinSystemGbmGLESContext::DeferRendererForOutputRestore()
@@ -4060,7 +4080,7 @@ bool CWinSystemGbmGLESContext::EndDVBridge()
     if (DVBRIDGE::DiagnosticsEnabled())
       DVBRIDGE::DiagnosticLog(LOGINFO, "DVBridge HDR10: native link policy restored");
   }
-  m_cb1FramePending = m_dvFrame = false;
+  m_cb1FramePending = m_cb1SourcePreparing = m_dvFrame = false;
   m_presentStall.Reset();
   // Never reset Kodi's ordinary HDR GUI compositor unless we owned DV output.
   if (!m_dvState.Captured() && !m_hdrConversion)
