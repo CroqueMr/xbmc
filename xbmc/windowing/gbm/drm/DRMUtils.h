@@ -37,6 +37,7 @@ constexpr const char* SETTING_VIDEOSCREEN_MAXBPC = "videoscreen.maxbpc";
 // amdgpu drm driver needs at least 1 primary plane to active when doing a modeset
 inline constexpr int QUIRK_NEEDSPRIMARY = 1 << 0;
 inline constexpr int QUIRK_NVIDIA_EGL_GBM = 1 << 1;
+inline constexpr int QUIRK_AMD_HDR10_HDMI_AUTO_FORMAT = 1 << 2;
 
 struct drm_fb
 {

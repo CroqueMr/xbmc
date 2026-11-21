@@ -2920,8 +2920,18 @@ bool CWinSystemGbmGLESContext::StageCB1ConnectorPreferences(bool restore)
     SetHDR(nullptr);
   if (!m_cb1ConnectorState.Captured()) return true;
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-  return drm && m_cb1ConnectorState.Stage(*drm, restore,
-      m_sdrConversion ? m_sdrBroadcastRange : std::nullopt);
+  if (!drm) return false;
+  std::optional<uint64_t> colorFormat;
+  auto* connector = drm->GetConnector();
+  // HDMI HDR10 with a deep-color requirement can need YCbCr at high pixel clocks.
+  // Native Dolby Vision still owns its explicit transport format.
+  if (!restore && m_hdrConversion && !m_sdrConversion &&
+      drm->HasQuirk(QUIRK_AMD_HDR10_HDMI_AUTO_FORMAT) &&
+      connector && connector->GetType() == "HDMI-A" &&
+      connector->SupportsProperty("DVBRIDGE_HDR10_DEEP_COLOR"))
+    colorFormat = connector->GetPropertyEnumValue("color format", "AUTO");
+  return m_cb1ConnectorState.Stage(*drm, restore,
+      m_sdrConversion ? m_sdrBroadcastRange : std::nullopt, colorFormat);
 }
 
 bool CWinSystemGbmGLESContext::StageTransportPreferences()
