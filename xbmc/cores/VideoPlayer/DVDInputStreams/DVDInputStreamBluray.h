@@ -104,6 +104,7 @@ public:
   bool HdmvEndPending() const { return m_hdmvEndPending; }
   bool WaitingForHdmvProgram() const { return m_hdmvEndPending || m_hdmvEndReleased; }
   void ReleaseHdmvEnd();
+  void SetHdmvPresentedTime(uint64_t time);
   bool OnTopMenu();
   bool OnPopupMenu();
   void OnBack() override
@@ -148,6 +149,13 @@ public:
 
   void GetStreamInfo(int pid, std::string &language);
   bool GetVideoPresentationWindow(bool& required, int64_t& first, int64_t& last) const;
+  struct ClipTime
+  {
+    unsigned int playlist, item;
+    int64_t in, start;
+  };
+  std::optional<ClipTime> GetClipTime() const;
+  bool IsNavigationPlayback() const { return m_navmode; }
 #if defined(BD_BDJ_PRESENTATION_TIMING)
   void PollBdjEvents();
 #if defined(BD_BDJ_PLAYBACK_CLOCK)
@@ -171,7 +179,7 @@ public:
   void CaptureBdjClockEpoch()
   {
 #if defined(BD_BDJ_PLAYBACK_CLOCK_EPOCH)
-    if (IsBdjTitle())
+    if (m_bd && m_navmode)
       m_bdjClockEpoch = bd_bdj_get_clock_epoch(m_bd);
 #endif
   }
@@ -273,7 +281,9 @@ public:
 
   void ProcessEvent();
   bool CanContinuePlayItem(uint32_t next) const;
-  bool HoldEvent();
+  bool IsSequentialClipRead(uint64_t position) const;
+  uint64_t m_lastReadEnd{0};
+  bool HoldEvent(bool sequentialRead = false);
 
   void SaveCurrentState(const CStreamDetails& details) override;
   UpdateState UpdateItemFromSavedStates(CFileItem& item, double time, bool& closed) override;
@@ -307,6 +317,7 @@ protected:
   uint32_t m_angle = 0;
   std::atomic_bool m_menu{false};
   bool m_isInMainMenu = false;
+  uint64_t m_hdmvPresentedTime{UINT64_MAX};
   bool m_hdmvEndPending{false};
   bool m_hdmvEndReleased{false};
   bool m_hdmvProgramEnded{false};
