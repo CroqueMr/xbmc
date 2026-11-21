@@ -277,6 +277,7 @@ public:
   bool PlayerLedCpuPrepared() const;
   bool PlayerLedCpuReserve() const;
   bool PlayerLedCpuPending() const;
+  bool PlayerLedCpuHasNewPicture(DVBRIDGE::SourceBinding displayed) const;
   bool PlayerLedCpuCurrent(uint64_t generation) const;
   bool QueuePlayerLedCpu(DVBRIDGE::LldvTransport transport, double pts, double renderPts, int acquire,
                          std::shared_ptr<const VideoSourceSideData> source,

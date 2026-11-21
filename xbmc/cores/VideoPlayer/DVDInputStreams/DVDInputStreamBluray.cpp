@@ -8,6 +8,8 @@
 
 #include "DVDInputStreamBluray.h"
 
+#include "BlurayClipClock.h"
+
 #include "DVDCodecs/Overlay/DVDOverlay.h"
 #include "DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "DVDInputStreamBlurayFile.h"
@@ -442,6 +444,12 @@ bool CDVDInputStreamBluray::Open()
 #if defined(BD_BDJ_PRESENTATION_TIMING)
     bd_bdj_set_presentation_timing(m_bd, 1);
 #endif
+#if defined(BD_HDMV_END_HOLD)
+    bd_hdmv_set_end_hold(m_bd, 1);
+#endif
+#if defined(BD_HDMV_GRAPHICS_HOLD)
+    bd_hdmv_set_graphics_hold(m_bd, 1);
+#endif
     if(bd_play(m_bd) <= 0)
     {
       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed play disk {}",
@@ -515,6 +523,7 @@ void CDVDInputStreamBluray::FreeTitleInfo()
 
   m_titleInfo = nullptr;
   m_clip = nullptr;
+  m_lastReadEnd = 0;
   FreeClipInfo();
 }
 
@@ -599,6 +608,9 @@ void CDVDInputStreamBluray::ProcessEvent() {
   /* playback control */
 
   case BD_EVENT_SEEK:
+    m_hdmvPresentedTime = UINT64_MAX;
+    m_hdmvEndPending = false;
+    m_hdmvEndReleased = false;
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_SEEK");
     //m_player->OnDVDNavResult(nullptr, 1);
     //bd_read_skip_still(m_bd);
@@ -646,12 +658,30 @@ void CDVDInputStreamBluray::ProcessEvent() {
     m_bdjWaitingForPlaylist = IsBdjTitle();
     m_bdjEndSequence = m_bdjWaitingForPlaylist ? bd_bdj_pending_seq(m_bd) : 0;
 #endif
+#if defined(BD_HDMV_END_HOLD)
+    if (m_event.param == 1)
+    {
+      m_hdmvEndPending = true;
+      break;
+    }
+#endif
     /* when a title ends, playlist WILL eventually change */
     FreeTitleInfo();
     break;
 
+#if defined(BD_HDMV_END_HOLD)
+  case BD_EVENT_HDMV_PROGRAM_END:
+    m_hdmvEndReleased = false;
+    m_hdmvProgramEnded = true;
+    break;
+#endif
+
   case BD_EVENT_TITLE:
   {
+    m_hdmvPresentedTime = UINT64_MAX;
+    m_hdmvProgramEnded = false;
+    m_hdmvEndPending = false;
+    m_hdmvEndReleased = false;
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_TITLE {}", m_event.param);
     const BLURAY_DISC_INFO* disc_info = bd_get_disc_info(m_bd);
 
@@ -674,6 +704,10 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
   }
   case BD_EVENT_PLAYLIST:
+    m_hdmvPresentedTime = UINT64_MAX;
+    m_hdmvProgramEnded = false;
+    m_hdmvEndPending = false;
+    m_hdmvEndReleased = false;
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_PLAYLIST {}", m_event.param);
 #if defined(BD_BDJ_PRESENTATION_TIMING)
     m_bdjWaitingForPlaylist = false;
@@ -741,6 +775,12 @@ void CDVDInputStreamBluray::ProcessEvent() {
     m_player->OnDiscNavResult(&visible, BD_EVENT_MENU);
     break;
   }
+
+#if defined(BD_BDJ_WAITING_FOR_PLAYLIST)
+  case BD_EVENT_BDJ_GRAPHICS:
+    CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - current BD-J title has visible graphics");
+    break;
+#endif
 
   case BD_EVENT_IDLE:
     KODI::TIME::Sleep(100ms);
@@ -811,7 +851,8 @@ bool CDVDInputStreamBluray::CanContinuePlayItem(uint32_t next) const
   const auto& current = m_titleInfo->clips[m_playItem];
   const auto& incoming = m_titleInfo->clips[next];
   // Dual-layer preroll and pairing keep a presentation window per play item.
-  if (current.dv_stream_count || incoming.dv_stream_count || !current.video_stream_count)
+  if (current.still_mode != BLURAY_STILL_NONE || current.dv_stream_count ||
+      incoming.dv_stream_count || !current.video_stream_count)
     return false;
 
   const auto sameStreams = [](const BLURAY_STREAM_INFO* left, unsigned leftCount,
@@ -839,7 +880,18 @@ bool CDVDInputStreamBluray::CanContinuePlayItem(uint32_t next) const
                      incoming.pg_streams, incoming.pg_stream_count);
 }
 
-bool CDVDInputStreamBluray::HoldEvent()
+bool CDVDInputStreamBluray::IsSequentialClipRead(uint64_t position) const
+{
+  if (!m_titleInfo || m_event.param >= m_titleInfo->clip_count)
+    return false;
+
+  uint64_t itemStart = 0;
+  for (unsigned int i = 0; i < m_event.param; ++i)
+    itemStart += uint64_t{m_titleInfo->clips[i].pkt_count} * 192;
+  return KODI::BLURAY::IsSequentialClipRead(m_lastReadEnd, position, itemStart);
+}
+
+bool CDVDInputStreamBluray::HoldEvent(bool sequentialRead)
 {
   if (m_aborted || m_hold == HOLD_ERROR)
     return true;
@@ -849,13 +901,18 @@ bool CDVDInputStreamBluray::HoldEvent()
     case BD_EVENT_PLAYITEM:
       // Navigation reads already deliver the event before the next clip's bytes.
       // Keep the demuxer running across an authored, compatible continuation.
-      if (m_hold == HOLD_NONE && CanContinuePlayItem(m_event.param))
+      if (m_hold == HOLD_NONE && sequentialRead && CanContinuePlayItem(m_event.param))
+      {
+        CLog::Log(LOGDEBUG, "Blu-ray: keep streams at playlist {} play item {}", m_playlist,
+                  m_event.param);
         return false;
+      }
       [[fallthrough]];
     case BD_EVENT_SEEK:
     case BD_EVENT_TITLE:
     case BD_EVENT_ANGLE:
     case BD_EVENT_PLAYLIST:
+      m_lastReadEnd = 0;
       if (m_hold != HOLD_DATA)
       {
         m_hold = HOLD_HELD;
@@ -863,6 +920,7 @@ bool CDVDInputStreamBluray::HoldEvent()
       }
       break;
     case BD_EVENT_STILL_TIME:
+      m_lastReadEnd = 0;
       if (m_hold == HOLD_STILL)
         m_event.event = BD_EVENT_NONE;
       else
@@ -956,7 +1014,7 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
       if (m_hold == HOLD_ERROR || m_aborted || HasGivenUpReading())
         return -1;
 
-      if (m_hold == HOLD_HELD)
+      if (m_hold == HOLD_HELD || WaitingForHdmvProgram() || m_hdmvProgramEnded)
         return 0;
 
 #if defined(BD_BDJ_PRESENTATION_TIMING)
@@ -971,22 +1029,29 @@ int CDVDInputStreamBluray::Read(uint8_t* buf, int buf_size)
         return result;
       }
 
-      // Before the holding events, as a read crossing a clip boundary returns data with one
+      const bool playItem = m_event.event == BD_EVENT_PLAYITEM;
+      const bool sequential = playItem && result == 0 && IsSequentialClipRead(bd_tell(m_bd));
       if (result > 0)
+      {
         m_readErrors = 0;
+        m_lastReadEnd = bd_tell(m_bd);
+      }
 
 #if defined(BD_BDJ_PRESENTATION_TIMING)
       StampBdjPending();
 #endif
-      if (HoldEvent())
+      if (HoldEvent(sequential))
         return result;
 
       if(result > 0)
         m_hold = HOLD_NONE;
 
+      const bool idle = m_event.event == BD_EVENT_IDLE;
       ProcessEvent();
       if (m_hold == HOLD_ERROR || m_aborted || HasGivenUpReading())
         return -1;
+      if (WaitingForHdmvProgram() || m_hdmvProgramEnded || (idle && WaitingForReadablePlaylist()))
+        return result;
 #if defined(BD_BDJ_PRESENTATION_TIMING)
       if (m_bdjWaitingForPlaylist || m_hold == HOLD_HELD)
         return result;
@@ -1425,6 +1490,19 @@ void CDVDInputStreamBluray::OverlayCallbackARGB(const struct bd_argb_overlay_s *
 }
 #endif
 
+
+std::optional<CDVDInputStreamBluray::ClipTime> CDVDInputStreamBluray::GetClipTime() const
+{
+  if (!m_titleInfo || m_playItem >= m_titleInfo->clip_count || IsStereoscopic())
+    return std::nullopt;
+
+  const auto& clip = m_titleInfo->clips[m_playItem];
+  if (clip.in_time > INT64_MAX || clip.start_time > INT64_MAX)
+    return std::nullopt;
+
+  return ClipTime{m_playlist, m_playItem, static_cast<int64_t>(clip.in_time),
+                  static_cast<int64_t>(clip.start_time)};
+}
 
 bool CDVDInputStreamBluray::GetVideoPresentationWindow(
     bool& required, int64_t& first, int64_t& last) const
@@ -1880,6 +1958,29 @@ void CDVDInputStreamBluray::SetSubtitleVisible(bool visible)
     bd_select_stream(m_bd, BLURAY_PG_TEXTST_STREAM, m_pgStreamNumber, visible);
 }
 
+void CDVDInputStreamBluray::SetHdmvPresentedTime(uint64_t time)
+{
+#if defined(BD_HDMV_GRAPHICS_HOLD)
+  if (m_bd && m_navmode && m_title && !m_title->bdj && m_hdmvPresentedTime != time)
+  {
+    m_hdmvPresentedTime = time;
+    bd_hdmv_presented(m_bd, m_bdjClockEpoch, static_cast<int64_t>(time));
+  }
+#endif
+}
+
+void CDVDInputStreamBluray::ReleaseHdmvEnd()
+{
+#if defined(BD_HDMV_END_HOLD)
+  if (m_hdmvEndPending)
+  {
+    bd_hdmv_release_end(m_bd);
+    m_hdmvEndPending = false;
+    m_hdmvEndReleased = true;
+  }
+#endif
+}
+
 CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
 {
   if (!m_navmode || m_aborted || m_hold == HOLD_ERROR || HasGivenUpReading())
@@ -1903,7 +2004,29 @@ CDVDInputStream::ENextStream CDVDInputStreamBluray::NextStream()
     return NEXTSTREAM_RETRY;
 #endif
 
-  if(m_hold == HOLD_STILL)
+  if (m_hdmvEndPending)
+    return NEXTSTREAM_RETRY;
+
+  if (m_hdmvEndReleased)
+  {
+    // Give the resumed VM a chance to select its next playlist without consuming its TS.
+    for (unsigned i = 0; i < 64 && m_hdmvEndReleased; ++i)
+    {
+      if (bd_read_ext(m_bd, nullptr, 0, &m_event) < 0)
+        return NEXTSTREAM_NONE;
+      if (m_event.event == BD_EVENT_NONE)
+        return NEXTSTREAM_RETRY;
+      ProcessEvent();
+      if (m_hold == HOLD_ERROR || m_aborted)
+        return NEXTSTREAM_NONE;
+    }
+    if (m_hdmvEndReleased)
+      return NEXTSTREAM_RETRY;
+  }
+
+  if (m_hdmvProgramEnded)
+    return NEXTSTREAM_NONE;
+  if (m_hold == HOLD_STILL || WaitingForReadablePlaylist())
     return NEXTSTREAM_RETRY;
 
   m_hold = HOLD_DATA;
@@ -1974,6 +2097,31 @@ bool CDVDInputStreamBluray::MouseClick(const CPoint &point)
 
   CLog::Log(LOGDEBUG, "CDVDInputStreamBluray::MouseClick - mouse click (user input) failed");
   return false;
+}
+
+bool CDVDInputStreamBluray::IsSecondaryStream(int pid, bool video) const
+{
+  if (!m_clip)
+    return false;
+
+  const auto* streams = video ? m_clip->sec_video_streams : m_clip->sec_audio_streams;
+  const auto count = video ? m_clip->sec_video_stream_count : m_clip->sec_audio_stream_count;
+  for (unsigned int i = 0; i < count; ++i)
+  {
+    if (streams[i].pid == pid)
+      return true;
+  }
+  return false;
+}
+
+bool CDVDInputStreamBluray::WaitingForReadablePlaylist() const
+{
+#if defined(BD_BDJ_WAITING_FOR_PLAYLIST)
+  return m_bd && m_navmode && !m_aborted && m_hold != HOLD_ERROR &&
+         bd_bdj_waiting_for_playlist(m_bd);
+#else
+  return false;
+#endif
 }
 
 bool CDVDInputStreamBluray::OnMenu()
