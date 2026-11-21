@@ -89,9 +89,12 @@ public:
     return CWinSystemBase::UseGuiCoverageAlpha();
   }
 #ifdef HAVE_DVBRIDGE
+  void InvalidateGuiComposite();
   static bool DVBridgeRequested(const VideoPicture* picture);
   bool CreateNewWindow(const std::string& name, bool fullScreen, RESOLUTION_INFO& res) override;
   void RefreshDVOutputCapabilities();
+  void BeginDVStartupEdidWait();
+  bool PendingDVStartupEdid() const;
   void RefreshHDR10LinkDepth();
   DVBRIDGE::OutputCapabilities GetDVOutputCapabilities(const VideoPicture* picture,
       bool allowModeSwitch = false) const;
@@ -226,6 +229,7 @@ private:
   bool PresentPlayerLedFrame();
   void PresentPlayerLedCpu(const DVBRIDGE::LldvTransport& transport);
   void RefreshPlayerLedRejection(const DVBRIDGE::LldvTransport& transport);
+  void TrackCB1VideoPage(bool pending);
   bool CompleteDVBridgePage(int timeoutMs = 0);
   bool FinishPlayerLedFrame(const CDVBridgeGLES::PlayerLedFrame& frame, double pts);
   std::optional<CDVBridgeGLES::PlayerLedFrame> m_playerLedPage;
@@ -273,7 +277,7 @@ private:
   bool m_continuousFrameEligible{};
   uint64_t m_previousSourceStream{};
   double m_previousSourcePts{};
-  uint64_t m_preparedSourceStream{};
+  DVBRIDGE::SourceBinding m_preparedSource{}, m_cb1PageSource{}, m_cb1DisplayedSource{};
   double m_preparedSourcePts{};
   double m_cb1RenderPts{}, m_preparedRenderPts{};
   bool m_dvShutdownFence{};
@@ -310,6 +314,9 @@ private:
   std::atomic<uint64_t> m_hdr10MaxBpc{0};
   DVBRIDGE::LldvConnectorStatus m_dvLldvStatus{};
   XbmcThreads::EndTime<> m_lldvEdidRefresh;
+  uint32_t m_lastMasterConnector{};
+  uint64_t m_lastMasterPresentationMs{};
+  std::atomic<uint64_t> m_dvStartupEdidUntil{};
   DVBRIDGE::SourceBinding m_dvImportBinding{};
   dvbridge_geometry m_dvImportGeometry{};
   bool m_dvImportUsable{};
@@ -330,6 +337,7 @@ private:
   DVBRIDGE::DiagnosticInterval m_dvGuiDiagnostic;
   bool m_dvFrame = false;
   bool m_cb1FramePending{};
+  bool m_cb1SourcePreparing{};
   bool m_dvEndPending{};
   bool m_dvStopPending{};
   enum class PascalHDRMode { None, Conversion, Native };
