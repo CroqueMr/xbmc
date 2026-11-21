@@ -1597,6 +1597,7 @@ void CVideoPlayer::Prepare()
 {
   m_errorDetail = 0;
 #ifdef HAVE_DVBRIDGE
+  m_dvStartupPlaybackPending = true;
   SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
       CServiceBroker::GetWinSystem()));
 #endif
@@ -5041,7 +5042,10 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
   hint.preferHybridHDR10Plus = hint.HasHDR10PlusCompatibleDolbyVisionBase() &&
       settings->GetInt("dvbridge.hybridsource") == 1;
-  if (!hint.preferHybridHDR10Plus && m_CurrentVideo.id < 0 && hint.stereo_mode.empty() &&
+  bool lldvRateFallback = false;
+  if (!hint.preferHybridHDR10Plus &&
+      (m_CurrentVideo.id < 0 || (m_dvStartupPlaybackPending && !pMenus)) &&
+      hint.stereo_mode.empty() &&
       (hint.dovi.dv_profile || hint.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION))
   {
     auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
@@ -5076,28 +5080,40 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
       return false;
     }
     const bool tryPlayerLed = mode == DVBRIDGE_MODE_PLAYER_LED && !preferences.hdr10TransportFallback;
-    if (window && !m_HasVideo && !pMenus && !hint.interlaced &&
+    if (window && m_dvStartupPlaybackPending && !pMenus && !hint.interlaced &&
         (tryPlayerLed || preferences.hdr10TransportFallback))
     {
       const bool adjustRefresh = m_playerOptions.fullscreen &&
           window->GetGfxContext().IsFullScreenRoot() &&
           settings->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF;
+      const double fps = hint.fpsrate && hint.fpsscale ? streamFrameRate() : 0.0;
+      const auto selectPlayerLedFallback = [&](RESOLUTION resolution) {
+        if (!tryPlayerLed || m_bStop || m_activeOpen != m_requestedOpen.load())
+          return resolution;
+        const bool sourceRateTooHigh = DVBRIDGE::LldvFrameRateTooHigh(fps) &&
+            window->GetDVOutputCapabilities(nullptr, true).playerLed;
+        const auto fallback = window->PlayerLedStartupHDR10Resolution(
+            resolution, preferences.lldvFormat, sourceRateTooHigh);
+        if (fallback || sourceRateTooHigh)
+        {
+          DVBRIDGE::UsePlayerLedStartupFallback();
+          if (sourceRateTooHigh)
+          {
+            lldvRateFallback = true;
+            DVBRIDGE::PlaybackNotification::ArmLldvRateFallback(fps);
+          }
+        }
+        return fallback.value_or(resolution);
+      };
       if (adjustRefresh && hint.fpsrate && hint.fpsscale)
       {
         // The file startup request already waits for the GUI. Select and apply its
         // catalogue index in that same operation so hotplug cannot reuse the index.
         auto setStartupMode = [&] {
-          auto resolution = CRenderManager::ChoosePlaybackResolution(
-              streamFrameRate(), hint.width, hint.height, false, WantsNativePresentation(hint), true);
-          if (tryPlayerLed)
-          {
-            if (const auto fallback =
-                    window->PlayerLedStartupHDR10Resolution(resolution, preferences.lldvFormat))
-            {
-              resolution = *fallback;
-              DVBRIDGE::UsePlayerLedStartupFallback();
-            }
-          }
+          if (m_bStop || m_activeOpen != m_requestedOpen.load())
+            return;
+          const auto resolution = selectPlayerLedFallback(CRenderManager::ChoosePlaybackResolution(
+              fps, hint.width, hint.height, false, WantsNativePresentation(hint), true));
           const auto previous = DVBRIDGE::guiModeChangeResolution;
           DVBRIDGE::guiModeChangeResolution =
               WantsNativePresentation(hint) ? static_cast<int>(resolution) : -1;
@@ -5110,9 +5126,10 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
             &setStartupMode};
         CServiceBroker::GetAppMessenger()->SendMsg(TMSG_CALLBACK, -1, -1, &callback);
       }
-      else if (!adjustRefresh && tryPlayerLed &&
-               window->PlayerLedStartupHDR10Resolution(RES_INVALID, preferences.lldvFormat))
-        DVBRIDGE::UsePlayerLedStartupFallback();
+      else if (!adjustRefresh)
+        selectPlayerLedFallback(RES_INVALID);
+      if (m_bStop || m_activeOpen != m_requestedOpen.load())
+        return false;
     }
   }
 #endif
@@ -5186,7 +5203,18 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
       m_pCCDemuxer.reset();
 
     if (!player->OpenStream(hint))
+    {
+#ifdef HAVE_DVBRIDGE
+      if (lldvRateFallback && !m_bStop && m_activeOpen == m_requestedOpen.load())
+      {
+        // A different track may still open. Give it the original default and toast state.
+        SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+            CServiceBroker::GetWinSystem()));
+        DVBRIDGE::PlaybackNotification::StartVideo();
+      }
+#endif
       return false;
+    }
 
     player->SendMessage(std::make_shared<CDVDMsgBool>(CDVDMsg::GENERAL_PAUSE, m_displayLost), 1);
 
@@ -5214,6 +5242,9 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   else if (reset)
     player->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::GENERAL_RESET), 0);
 
+#ifdef HAVE_DVBRIDGE
+  m_dvStartupPlaybackPending = false;
+#endif
   m_HasVideo = true;
 
   static_cast<IDVDStreamPlayerVideo*>(player)->SendMessage(

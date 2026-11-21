@@ -2019,8 +2019,10 @@ bool CWinSystemGbmGLESContext::CanRetainDVSource() const
 bool CWinSystemGbmGLESContext::LldvSupportsPlaybackTiming(double fps, bool requireCurrentMode) const
 {
   std::lock_guard lock(m_dvCapabilityMutex);
-  return !m_dvLldvStatus.cta93FractionalOnly ||
-         ((!requireCurrentMode || m_dvLldvStatus.currentTiming) && std::abs(fps - 24000.0 / 1001) < 0.01);
+  return !DVBRIDGE::LldvFrameRateTooHigh(fps) &&
+      (!m_dvLldvStatus.cta93FractionalOnly ||
+       ((!requireCurrentMode || m_dvLldvStatus.currentTiming) &&
+        std::abs(fps - 24000.0 / 1001) < 0.01));
 }
 
 std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedResolution(double fps, bool atStartup) const
@@ -2030,7 +2032,8 @@ std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedResolution(double f
       preferences.hdr10TransportFallback || !std::isfinite(fps) || !LldvSupportsPlaybackTiming(fps) ||
       !GetDVOutputCapabilities(nullptr, preferences, true).playerLed)
     return {};
-  constexpr std::array rates{24000.0 / 1001, 24.0, 25.0, 30000.0 / 1001, 30.0};
+  constexpr std::array rates{24000.0 / 1001, 24.0, 25.0, 30000.0 / 1001,
+                             DVBRIDGE::LLDV_MAX_FRAME_RATE};
   const auto rate = std::find_if(rates.begin(), rates.end(),
                                 [fps](double rate) { return std::abs(fps - rate) < 0.01; });
   if (rate == rates.end())
@@ -2079,12 +2082,15 @@ int CWinSystemGbmGLESContext::PlayerLedResolutionReason(RESOLUTION resolution, i
 }
 
 std::optional<RESOLUTION> CWinSystemGbmGLESContext::PlayerLedStartupHDR10Resolution(
-    RESOLUTION resolution, int preference) const
+    RESOLUTION resolution, int preference, bool sourceRateTooHigh) const
 {
-  constexpr int timingUnavailable = 41212;
-  const int reason = PlayerLedResolutionReason(resolution, preference);
-  if (reason != DVBRIDGE::LLDV_DRIVER_REJECTED_LABEL && reason != timingUnavailable)
-    return std::nullopt;
+  if (!sourceRateTooHigh)
+  {
+    constexpr int timingUnavailable = 41212;
+    const int reason = PlayerLedResolutionReason(resolution, preference);
+    if (reason != DVBRIDGE::LLDV_DRIVER_REJECTED_LABEL && reason != timingUnavailable)
+      return std::nullopt;
+  }
 
   const bool allowModeSwitch = resolution != RES_INVALID;
   const auto target = allowModeSwitch ? ChooseHDR10FallbackResolution(resolution) : RES_INVALID;

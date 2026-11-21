@@ -539,13 +539,22 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   caps.hdr10plus=available.hdr10plus;
   caps.playerLed = available.playerLed;
   caps.lldvUnavailableLabel = available.lldvUnavailableLabel;
+  double lldvUnsupportedRate = 0.0;
   if (window && menu && inPlayback)
   {
     const auto lldv = window->GetDVOutputCapabilities(nullptr, false);
     caps.playerLed = lldv.playerLed;
     caps.lldvUnavailableLabel = lldv.lldvUnavailableLabel;
-    if ((caps.playerLed || caps.lldvUnavailableLabel == DVBRIDGE::LLDV_CHOOSE_FORMAT_LABEL) &&
-        !window->LldvSupportsPlaybackTiming(CServiceBroker::GetDataCacheCore().GetVideoFps(), true))
+    const double fps = CServiceBroker::GetDataCacheCore().GetVideoFps();
+    if (DVBRIDGE::LldvFrameRateTooHigh(fps) &&
+        (available.playerLed || available.lldvUnavailableLabel == DVBRIDGE::LLDV_CHOOSE_FORMAT_LABEL))
+    {
+      caps.playerLed = false;
+      caps.lldvUnavailableLabel = 41504;
+      lldvUnsupportedRate = fps;
+    }
+    else if ((caps.playerLed || caps.lldvUnavailableLabel == DVBRIDGE::LLDV_CHOOSE_FORMAT_LABEL) &&
+             !window->LldvSupportsPlaybackTiming(fps, true))
     {
       caps.playerLed = false;
       caps.lldvUnavailableLabel = 41212;
@@ -633,6 +642,8 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
       option.label+=" / "+localizer.Get(40851);
     option.label2=reasonId ? localizer.Get(reasonId) :
         guided ? localizer.Get(40971) : mode==3 ? localizer.Get(40864) : "";
+    if (reasonId == 41504)
+      option.label2 = StringUtils::Format(option.label2, DVBRIDGE::LldvFrameRateLabel(lldvUnsupportedRate));
     // Settings must allow selection before the required profile controls appear.
     const bool configure=profile && !menu && !hdr10Menu && !hdr10PlusMenu && !hlgMenu;
     option.properties.emplace_back("disabled",reasonId!=0 && !configure && !chooseLldv);

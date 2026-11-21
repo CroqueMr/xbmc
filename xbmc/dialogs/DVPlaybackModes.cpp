@@ -26,6 +26,7 @@
 #include "settings/lib/Setting.h"
 #include "settings/lib/SettingDefinitions.h"
 #include "utils/StringUtils.h"
+#include "utils/log.h"
 #include "utils/JSONVariantParser.h"
 #include "utils/Variant.h"
 #include "utils/DVBridgeDiagnosticLog.h"
@@ -238,19 +239,29 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
       dialog->SetProperty("CB1.SwitchOutput", output ? output : strings.Get(40877));
     }
     bool recommendMaster = false;
+    bool recommendLldv = false;
 #ifdef HAVE_GBM
     if (!settingsMenu && nativeSource == StreamHdrType::HDR_TYPE_DOLBYVISION)
     {
       const auto* window =
           dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
-      recommendMaster = window && window->GetLldvConnectorStatus().sink.status == DV_EDID_STANDARD &&
-          std::ranges::any_of(options, [choices](const auto& option) {
-            return choices[option.value].output ==
-                       static_cast<int>(DVBRIDGE::OutputMode::MasterReference) &&
-                   std::ranges::none_of(option.properties, [](const auto& property) {
-                     return property.first == "disabled" && property.second.asBoolean();
-                   });
-          });
+      const auto selectable = [&](DVBRIDGE::OutputMode mode) {
+        return std::ranges::any_of(options, [&](const auto& option) {
+          return choices[option.value].output == static_cast<int>(mode) &&
+              std::ranges::none_of(option.properties, [](const auto& property) {
+                return (property.first == "disabled" || property.first == "cb1ChooseLldv") &&
+                    property.second.asBoolean();
+              });
+        });
+      };
+      if (window)
+      {
+        const auto status = window->GetLldvConnectorStatus().sink.status;
+        recommendMaster = status == DV_EDID_STANDARD &&
+            selectable(DVBRIDGE::OutputMode::MasterReference);
+        recommendLldv = status == DV_EDID_LLDV_ONLY &&
+            selectable(DVBRIDGE::OutputMode::PlayerLed);
+      }
     }
 #endif
     dialog->SetUseDetails(true);
@@ -277,6 +288,9 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
         if (recommendMaster && !disabled && option.label2.empty() &&
             choice.output == static_cast<int>(DVBRIDGE::OutputMode::PlayerLed))
           item.SetLabel2(strings.Get(40881));
+        else if (recommendLldv && disabled &&
+                 choice.output == static_cast<int>(DVBRIDGE::OutputMode::MasterReference))
+          item.SetLabel2(strings.Get(41506));
       }
       dialog->Add(item);
     }
@@ -595,6 +609,14 @@ void DVBRIDGE::PlaybackNotification::Emit(const std::string& text)
   if (settings && settings->GetBool("dvbridge.startupmode"))
     CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info,
         CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(40863),text,3000,false);
+}
+void DVBRIDGE::PlaybackNotification::EmitLldvRateFallback(double fps)
+{
+  const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
+  const auto rate = LldvFrameRateLabel(fps);
+  CLog::Log(LOGINFO, "CB1 fallback: LLDV unavailable at {} fps, HDR10 presentation accepted", rate);
+  CGUIDialogKaiToast::QueueNotification(CGUIDialogKaiToast::Info, strings.Get(40863),
+      StringUtils::Format(strings.Get(41505), rate), 3000, false);
 }
 void DVBRIDGE::PlaybackNotification::EmitAI(int mode)
 {
