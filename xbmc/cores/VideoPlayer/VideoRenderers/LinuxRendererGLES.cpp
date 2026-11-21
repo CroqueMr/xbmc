@@ -320,6 +320,7 @@ bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps,
   m_scalingMethodGui = VS_SCALINGMETHOD_MAX;
   m_scalingMethod = m_videoSettings.m_ScalingMethod;
 #ifdef HAVE_DVBRIDGE
+  m_pendingHdrFbo = false;
   m_reportedUpscaler = -2;
 #endif
 
@@ -678,6 +679,7 @@ bool CLinuxRendererGLES::Flush(bool saveBuffers)
       if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
               CServiceBroker::GetWinSystem()))
         window->DiscardDVBridgeFrame();
+    m_pendingHdrFbo = false;
 #endif
     for (int i = 0; i < m_NumYUVBuffers; i++)
     {
@@ -854,6 +856,14 @@ void CLinuxRendererGLES::RenderUpdate(int index, int index2, bool clear, unsigne
   m_frameRendered = false;
 #ifdef CB1_HAS_HDR10_AI
   m_aiFrameRendered = false;
+#endif
+#ifdef HAVE_DVBRIDGE
+  if (m_pendingHdrFbo)
+  {
+    if (!m_hdrFboActive)
+      return;
+    m_pendingHdrFbo = false;
+  }
 #endif
   m_iYUVRenderBuffer = index;
 
@@ -1424,6 +1434,7 @@ void CLinuxRendererGLES::UnInit()
 
   bool outputStopped = false;
 #ifdef HAVE_DVBRIDGE
+  m_pendingHdrFbo = false;
   m_shaderUpscaler.reset();
   m_rcasShader.reset();
   m_rcasInput.Cleanup();
@@ -1919,6 +1930,12 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
     if (!window || !window->PrepareDVOutputFrame(picture))
       return false;
     m_dvRequested = window->DVBridgeRequested(&picture);
+    if (m_dvRequested && window->IsHdrComposite() && IsGuiLayer())
+    {
+      // The composite video pass must run after this frame's GUI and subtitles.
+      m_pendingHdrFbo = true;
+      return false;
+    }
   }
   if (m_dvRequested)
   {
@@ -3154,6 +3171,26 @@ bool CLinuxRendererGLES::IsGuiLayer()
 {
   return !m_hdrFboActive && !CServiceBroker::GetWinSystem()->UsesNativeSDRBT2020();
 }
+
+#ifdef HAVE_DVBRIDGE
+void CLinuxRendererGLES::UpdateVideoRenderLayer()
+{
+  if (!m_pendingHdrFbo || m_hdrFboActive)
+    return;
+
+  const auto& picture = m_buffers[m_iYUVRenderBuffer].doviSourcePicture;
+  if (!picture || (picture->doviSourceInfo.informationGeneration &&
+                   picture->doviSourceInfo.informationGeneration !=
+                       CServiceBroker::GetDataCacheCore().GetVideoProcessingGeneration()))
+  {
+    m_pendingHdrFbo = false;
+    return;
+  }
+  m_hdrFboActive = true;
+  static_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      CServiceBroker::GetWinSystem())->InvalidateGuiComposite();
+}
+#endif
 
 void CLinuxRendererGLES::CheckVideoParameters(int index)
 {
