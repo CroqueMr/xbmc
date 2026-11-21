@@ -92,6 +92,8 @@ public:
   static bool DVBridgeRequested(const VideoPicture* picture);
   bool CreateNewWindow(const std::string& name, bool fullScreen, RESOLUTION_INFO& res) override;
   void RefreshDVOutputCapabilities();
+  void BeginDVStartupEdidWait();
+  bool PendingDVStartupEdid() const;
   void RefreshHDR10LinkDepth();
   DVBRIDGE::OutputCapabilities GetDVOutputCapabilities(const VideoPicture* picture,
       bool allowModeSwitch = false) const;
@@ -311,6 +313,9 @@ private:
   std::atomic<uint64_t> m_hdr10MaxBpc{0};
   DVBRIDGE::LldvConnectorStatus m_dvLldvStatus{};
   XbmcThreads::EndTime<> m_lldvEdidRefresh;
+  uint32_t m_lastMasterConnector{};
+  uint64_t m_lastMasterPresentationMs{};
+  std::atomic<uint64_t> m_dvStartupEdidUntil{};
   DVBRIDGE::SourceBinding m_dvImportBinding{};
   dvbridge_geometry m_dvImportGeometry{};
   bool m_dvImportUsable{};

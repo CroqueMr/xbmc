@@ -451,8 +451,11 @@ void CWinSystemGbmGLESContext::PresentRender(bool rendered, bool videoLayer)
   RefreshHDR10LinkDepth();
   if (m_lldvEdidRefresh.IsTimePast())
   {
-    m_lldvEdidRefresh.Set(m_dvSelection.route == DVBRIDGE::OutputRoute::PlayerLed ? 1000ms : 3000ms);
-    if (RefreshDisplayInfoForVideo()) RefreshDVOutputCapabilities();
+    const bool startupEdid = PendingDVStartupEdid();
+    m_lldvEdidRefresh.Set(startupEdid ? 100ms :
+        m_dvSelection.route == DVBRIDGE::OutputRoute::PlayerLed ? 1000ms : 3000ms);
+    if (RefreshDisplayInfoForVideo() || (startupEdid && GetDisplayInfo()))
+      RefreshDVOutputCapabilities();
   }
 #endif
   if (m_dispReset && m_dispResetTimer.IsTimePast()
@@ -723,6 +726,12 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
           CompleteCB1Mode(presented,true);
           if (presented)
           {
+            if (m_dvSelection.route == DVBRIDGE::OutputRoute::NativeDV &&
+                m_dvSelection.policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE)
+            {
+              m_lastMasterConnector = drm->GetConnector()->GetId();
+              m_lastMasterPresentationMs = DVBRIDGE::DiagnosticNowMs();
+            }
             const double elapsed = std::chrono::duration<double,std::milli>(
                 std::chrono::steady_clock::now()-started).count();
             const auto verdict = m_presentStall.Presented(plain,elapsed);
@@ -1785,6 +1794,30 @@ bool CWinSystemGbmGLESContext::CreateNewWindow(const std::string& name, bool ful
   return true;
 }
 
+void CWinSystemGbmGLESContext::BeginDVStartupEdidWait()
+{
+  const auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  const uint64_t now = DVBRIDGE::DiagnosticNowMs();
+  constexpr uint64_t startupWindowMs = 1500;
+  if (connector && m_lastMasterConnector == connector->GetId() &&
+      !GetDisplayInfo() && now - m_lastMasterPresentationMs < startupWindowMs)
+  {
+    if (!PendingDVStartupEdid())
+    {
+      m_dvStartupEdidUntil = now + startupWindowMs;
+      m_lldvEdidRefresh.Set(100ms);
+      CLog::Log(LOGDEBUG, "CB1 DV startup: waiting for HDMI EDID on connector {}", connector->GetId());
+    }
+  }
+  else
+    m_dvStartupEdidUntil = 0;
+}
+
+bool CWinSystemGbmGLESContext::PendingDVStartupEdid() const
+{
+  return DVBRIDGE::DiagnosticNowMs() < m_dvStartupEdidUntil.load();
+}
+
 void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
 {
   const auto lldvStatus = GetLldvConnectorStatus(true);
@@ -1878,6 +1911,13 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
   m_dvAvailableNativeDV = availableNativeDV;
   m_dvAvailableHDR10 = availableHDR10;
   m_dvOutputTimings = std::move(timings);
+  if (PendingDVStartupEdid() &&
+      ((GetDisplayInfo() && lldvStatus.display.received >= lldvStatus.display.expected) ||
+       (connector && connector->GetId() != m_lastMasterConnector)))
+  {
+    m_dvStartupEdidUntil = 0;
+    CLog::Log(LOGDEBUG, "CB1 DV startup: HDMI capabilities refreshed");
+  }
   if (DVBRIDGE::DiagnosticsEnabled())
   {
     try
