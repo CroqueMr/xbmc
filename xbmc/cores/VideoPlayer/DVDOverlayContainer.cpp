@@ -104,7 +104,8 @@ void CDVDOverlayContainer::CleanUp(double pts)
           continue;
         // There can be multiple overlays queued at same start point.
         // Skip them to find a new start point.
-        if (pOverlay2->bForced && pOverlay2->iPTSStartTime <= pts)
+        if (pOverlay2->bForced && pOverlay2->GetSource() == pOverlay->GetSource() &&
+            pOverlay2->iPTSStartTime <= pts)
           bNewer = true;
       }
 

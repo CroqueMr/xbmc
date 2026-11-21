@@ -136,6 +136,9 @@ struct PlaylistInformation
   //! picture-in-picture (see IsPictureInPicturePresentation)
   bool hasSecondaryVideo{false};
 
+  //! Whether the playlist carries a Dolby Vision enhancement layer
+  bool hasDolbyVision{false};
+
   void clear()
   {
     playlist = 0;
@@ -150,6 +153,7 @@ struct PlaylistInformation
     dependentViewClips.clear();
     baseViewIsRightEye = false;
     hasSecondaryVideo = false;
+    hasDolbyVision = false;
   }
 };
 
@@ -532,7 +536,7 @@ private:
   std::vector<std::vector<CandidatePlaylistInformation>> m_groups;
   std::vector<std::vector<CandidatePlaylistInformation>> m_allGroups;
   CandidatePlaylistsMap m_candidatePlaylists;
-  std::set<unsigned int> m_candidateSpecials;
+  std::vector<unsigned int> m_candidateSpecials; // Longest first
   std::vector<CandidatePlaylistInformation> m_nthLongestPlaylists;
 
   static bool GetItems(CFileItemList& items, const std::string& directory, bool silent = false);

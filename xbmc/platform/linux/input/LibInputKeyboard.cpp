@@ -292,23 +292,10 @@ CLibInputKeyboard::CLibInputKeyboard()
     return;
   }
 
-  m_composeTable =
-      std::unique_ptr<xkb_compose_table, XkbComposeTableDeleter>{xkb_compose_table_new_from_locale(
-          m_ctx.get(), g_langInfo.GetSystemLocale().name().c_str(), XKB_COMPOSE_COMPILE_NO_FLAGS)};
-  if (!m_composeTable)
-  {
-    CLog::LogF(LOGWARNING,
-               "Failed to compile localized compose table, composed key support will be disabled");
-    return;
-  }
-
-  m_composedState = std::unique_ptr<xkb_compose_state, XkbComposeStateDeleter>{
-      xkb_compose_state_new(m_composeTable.get(), XKB_COMPOSE_STATE_NO_FLAGS)};
-
-  if (!m_composedState)
-  {
-    throw std::runtime_error("Failed to create keyboard composer");
-  }
+  // We do not ship the X11 locale Compose data, so xkb_compose_table_new_from_locale()
+  // can never succeed and libxkbcommon logs an error for the missing file on every
+  // start. Leave the compose table unset, which is the state the lookup failure
+  // produced anyway, and skip the lookup.
 }
 
 void CLibInputKeyboard::XkbContextDeleter::operator()(xkb_context* ctx) const

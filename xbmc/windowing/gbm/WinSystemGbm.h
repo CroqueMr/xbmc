@@ -166,6 +166,7 @@ protected:
   bool RequeueOutputProperties();
   std::optional<uint64_t> m_queuedColorspace, m_queuedHdrMetadata;
   void OnLostDevice();
+  void OnResetDisplay();
 
 #ifdef HAVE_DVBRIDGE
   bool StageOrdinaryHDR10Recovery();

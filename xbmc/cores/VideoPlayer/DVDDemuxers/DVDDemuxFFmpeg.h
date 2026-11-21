@@ -145,6 +145,10 @@ public:
     return m_offsetMetadata;
   }
 
+#ifdef HAVE_LIBBLURAY
+  void CaptureBlurayClip(int bytes);
+#endif
+
   AVFormatContext* m_pFormatContext;
   std::shared_ptr<CDVDInputStream> m_pInput;
 
@@ -167,6 +171,22 @@ protected:
   void ResetVideoStreams();
   AVDictionary* GetFFMpegOptionsFromInput();
   double ConvertTimestamp(int64_t pts, int den, int num);
+#ifdef HAVE_LIBBLURAY
+  void TranslateBlurayTimestamps(DemuxPacket& packet, const AVStream& stream);
+  void FlushInputSeek();
+
+  struct ClipSpan
+  {
+    int64_t pos;
+    unsigned int playlist, item;
+    int64_t in, start;
+    bool valid;
+  };
+  std::vector<ClipSpan> m_blurayClips;
+  std::map<int, int64_t> m_blurayPacketPositions;
+  int64_t m_blurayBytes{0};
+  std::optional<int64_t> m_blurayNavigationIn;
+#endif
   bool IsProgramChange();
   unsigned int HLSSelectProgram();
 
