@@ -261,7 +261,7 @@ namespace OVERLAY {
     };
 
     mutable CCriticalSection m_section;
-    std::vector<SElement> m_buffers[MAX_RENDER_BUFFERS];
+    std::vector<SElement> m_buffers[MAX_RENDER_BUFFERS + 1];
     std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;
     static unsigned int m_textureid;
     CRect m_rv; // Frame size
