@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -170,6 +171,22 @@ inline LldvDisplay ReadLldvDisplay(const uint8_t* edid, size_t size)
 }
 
 // Stable preference values. A request of zero means off in the driver.
+constexpr double LLDV_MAX_FRAME_RATE = 30.0;
+
+inline bool LldvFrameRateTooHigh(double fps)
+{
+  return std::isfinite(fps) && fps >= LLDV_MAX_FRAME_RATE + 0.01;
+}
+
+inline std::string LldvFrameRateLabel(double fps)
+{
+  auto rate = std::to_string(std::round(fps * 100.0) / 100.0);
+  rate.erase(rate.find_last_not_of('0') + 1);
+  if (rate.back() == '.')
+    rate.pop_back();
+  return rate;
+}
+
 enum class LldvFormat { Auto, Y422_10, Y422_12, Rgb10, Rgb12, Y444_10, Y444_12 };
 enum class LldvReason { Ready, Edid, Display, Driver, Timing };
 

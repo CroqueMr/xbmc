@@ -26,6 +26,7 @@ public:
     m_nativeFloor=nativeRevision.load(std::memory_order_relaxed);
     m_ordinaryFrame=false;
     m_nativeFrame={};
+    m_lldvFallbackRate = 0.0;
     m_pending.store(enabled,std::memory_order_relaxed);
   }
   static void StopVideo()
@@ -33,7 +34,14 @@ public:
     std::lock_guard lock(m_mutex);
     m_ordinaryFrame=false;
     m_nativeFrame={};
+    m_lldvFallbackRate = 0.0;
     m_pending.store(false,std::memory_order_relaxed);
+  }
+  static void ArmLldvRateFallback(double fps)
+  {
+    std::lock_guard lock(m_mutex);
+    m_lldvFallbackRate = fps;
+    m_pending.store(true, std::memory_order_relaxed);
   }
   static void RenderedOrdinary(uint64_t generation)
   {
@@ -67,13 +75,21 @@ public:
   {
     if (!Pending()) return;
     if (!(output.flags & (CDVPlaybackInfo::HDMI | CDVPlaybackInfo::HDR10 | CDVPlaybackInfo::SDR))) return;
+    double lldvFallbackRate;
     {
       std::lock_guard lock(m_mutex);
       if (!output.picture || output.stream<=m_nativeFloor) return;
       if (output.stream!=m_nativeFrame.stream || output.picture!=m_nativeFrame.picture) return;
       if (!m_pending.exchange(false)) return;
+      lldvFallbackRate = m_lldvFallbackRate;
       m_ordinaryFrame=false;
       m_nativeFrame={};
+    }
+    if (lldvFallbackRate > 0.0 && output.requested == CDVPlaybackInfo::PlayerLedMode &&
+        (output.flags & CDVPlaybackInfo::HDR10))
+    {
+      EmitLldvRateFallback(lldvFallbackRate);
+      return;
     }
 #ifdef CB1_HAS_HDR10_AI
     if constexpr (requires { output.hdr10AI; })
@@ -92,11 +108,13 @@ public:
   }
   static void Emit(const std::string& text);
   static void EmitAI(int mode);
+  static void EmitLldvRateFallback(double fps);
 private:
   inline static std::atomic<bool> m_pending{false};
   inline static std::atomic<uint64_t> m_generation{0};
   inline static std::mutex m_mutex;
   inline static bool m_ordinaryFrame{};
+  inline static double m_lldvFallbackRate{};
   inline static uint64_t m_nativeFloor{};
   inline static SourceBinding m_nativeFrame{};
 };

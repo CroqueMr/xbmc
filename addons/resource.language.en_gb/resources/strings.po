@@ -27062,3 +27062,15 @@ msgstr ""
 msgctxt "#41503"
 msgid "HDR10+"
 msgstr ""
+
+msgctxt "#41504"
+msgid "Unsupported frame rate ({} fps)"
+msgstr ""
+
+msgctxt "#41505"
+msgid "{} fps too high for LLDV. HDR10"
+msgstr ""
+
+msgctxt "#41506"
+msgid "This display requires LLDV. Select LLDV Reference."
+msgstr ""

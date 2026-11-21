@@ -105,7 +105,8 @@ public:
   std::optional<RESOLUTION> PlayerLedResolution(double fps, bool atStartup = false) const;
   int PlayerLedResolutionReason(RESOLUTION resolution, int preference) const;
   std::optional<RESOLUTION> PlayerLedStartupHDR10Resolution(RESOLUTION resolution,
-                                                           int preference) const;
+                                                         int preference,
+                                                         bool sourceRateTooHigh) const;
   bool LldvSupportsPlaybackTiming(double fps, bool requireCurrentMode = false) const;
   bool DVModeSwitchDeferred()
   {

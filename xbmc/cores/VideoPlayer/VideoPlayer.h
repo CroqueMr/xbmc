@@ -604,6 +604,7 @@ protected:
 #ifdef HAVE_DVBRIDGE
   std::atomic<uint64_t> m_requestedOpen{};
   uint64_t m_activeOpen{};
+  bool m_dvStartupPlaybackPending{false};
 #endif
   bool m_bAbortRequest;
   bool m_error;
