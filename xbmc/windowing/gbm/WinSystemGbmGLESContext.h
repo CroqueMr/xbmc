@@ -332,7 +332,8 @@ private:
   CDVBridgeState m_cb1ConnectorState;
   bool m_cb1RestoringPreferences{};
   std::optional<bool> m_cb1LimitedRange, m_cb1OrdinaryLimitedRange;
-  std::optional<uint64_t> m_sdrBroadcastRange;
+  std::optional<uint64_t> m_cb1LimitedBroadcastRange;
+  std::optional<uint64_t> m_hdr10AutoColorFormat;
   DVBRIDGE::DiagnosticFailures m_dvSetupFailures;
   DVBRIDGE::DiagnosticFailures m_dvScreenshotFailures;
   DVBRIDGE::DiagnosticInterval m_dvGuiDiagnostic;
