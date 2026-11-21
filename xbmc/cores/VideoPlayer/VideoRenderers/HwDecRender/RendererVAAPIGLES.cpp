@@ -290,6 +290,9 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
       source.doviSourceBinding.Valid() && !source.doviSourceInfo.profile;
   if (!hdr10 && (!buffer.doviMetadata.Data() || buffer.doviPts == DVD_NOPTS_VALUE))
     return false;
+  if (hdr10 && source.hdrType == StreamHdrType::HDR_TYPE_HLG &&
+      m_vaapiFourcc == VA_FOURCC_NV12 && !source.IsLimitedHLG8())
+    return false;
   switch (m_vaapiFourcc)
   {
     case VA_FOURCC_NV12: layer.layout = DVBRIDGE_NV12; break;
@@ -521,8 +524,11 @@ bool CRendererVAAPIGLES::UploadTexture(int index)
   {
     const bool layout = m_vaapiFourcc == VA_FOURCC_NV12 || m_vaapiFourcc == VA_FOURCC_P010 ||
         m_vaapiFourcc == VA_FOURCC_P012 || m_vaapiFourcc == VA_FOURCC_P016;
-    const bool usable = layout && m_textureTarget == GL_TEXTURE_2D &&
-        DVBridgeOrientationSupported(m_renderOrientation);
+    const auto& picture = *buf.doviSourcePicture;
+    const bool hlg8 = m_vaapiFourcc == VA_FOURCC_NV12 &&
+        picture.hdrType == StreamHdrType::HDR_TYPE_HLG && !picture.doviSourceInfo.profile;
+    const bool usable = layout && (!hlg8 || picture.IsLimitedHLG8()) &&
+        m_textureTarget == GL_TEXTURE_2D && DVBridgeOrientationSupported(m_renderOrientation);
     const auto binding = buf.doviSourcePicture->doviSourceBinding.Valid() ?
         buf.doviSourcePicture->doviSourceBinding : buf.doviMetadata.Binding();
     window->ObserveDVImport(binding, DVBridgeGeometry(), usable);

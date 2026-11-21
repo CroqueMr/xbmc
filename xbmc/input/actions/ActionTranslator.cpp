@@ -162,6 +162,8 @@ constexpr auto ActionMappings = make_map<ActionName, ActionID>({
     {"increasevisrating", ACTION_VIS_RATE_PRESET_PLUS},
     {"decreasevisrating", ACTION_VIS_RATE_PRESET_MINUS},
     {"showvideomenu", ACTION_SHOW_VIDEOMENU},
+    {"showbluraytopmenu", ACTION_SHOW_BLURAY_TOP_MENU},
+    {"showbluraypopupmenu", ACTION_SHOW_BLURAY_POPUP_MENU},
     {"enter", ACTION_ENTER},
     {"increaserating", ACTION_INCREASE_RATING},
     {"decreaserating", ACTION_DECREASE_RATING},
