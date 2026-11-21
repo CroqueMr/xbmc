@@ -601,6 +601,10 @@ protected:
 
   CFileItem m_item;
   CPlayerOptions m_playerOptions;
+#ifdef HAVE_DVBRIDGE
+  std::atomic<uint64_t> m_requestedOpen{};
+  uint64_t m_activeOpen{};
+#endif
   bool m_bAbortRequest;
   bool m_error;
   int m_errorDetail{0};

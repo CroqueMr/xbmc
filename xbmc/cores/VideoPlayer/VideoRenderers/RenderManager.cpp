@@ -639,9 +639,11 @@ void CRenderManager::FrameMove()
   {
     std::unique_lock lock2(m_presentlock);
 #ifdef HAVE_DVBRIDGE
+    m_pRenderer->UpdateVideoRenderLayer();
     {
       auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
-      m_cb1OutputPending = window && window->HasPendingCB1VideoPresentation();
+      m_cb1OutputPending = m_pRenderer->VideoRenderLayerPending() ||
+                           (window && window->HasPendingCB1VideoPresentation());
       if (m_cb1PresentPending && (!window || !window->CB1FramePending()))
       {
         m_cb1PresentPending = false;
@@ -673,7 +675,7 @@ void CRenderManager::FrameMove()
 
     if (m_queued.empty()
 #ifdef HAVE_DVBRIDGE
-        && !m_cb1PresentPending
+        && !m_cb1PresentPending && !m_pRenderer->VideoRenderLayerPending()
 #endif
 #ifdef CB1_HAS_HDR10_AI
         && !(m_presentstep == PRESENT_FRAME && m_pRenderer->HDR10AIFramePending())
@@ -689,7 +691,7 @@ void CRenderManager::FrameMove()
 
     if (m_presentstep == PRESENT_READY
 #ifdef HAVE_DVBRIDGE
-        && !m_cb1PresentPending
+        && !m_cb1PresentPending && !m_pRenderer->VideoRenderLayerPending()
 #endif
         )
       PrepareNextRender();
@@ -1180,6 +1182,10 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
     presented = true;
   }
 
+#ifdef HAVE_DVBRIDGE
+  presented = presented && !m_pRenderer->VideoRenderLayerPending();
+#endif
+
   // the just-presented region is video-only: OSD, GUI and subtitles come later
   if (presented)
   {
@@ -1251,6 +1257,11 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   {
     std::unique_lock lock(m_presentlock);
 #ifdef HAVE_DVBRIDGE
+    if (m_pRenderer->VideoRenderLayerPending())
+    {
+      m_cb1OutputPending = true;
+      return;
+    }
     if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
             CServiceBroker::GetWinSystem()))
     {
