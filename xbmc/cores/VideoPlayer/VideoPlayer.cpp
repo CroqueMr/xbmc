@@ -3765,6 +3765,7 @@ void CVideoPlayer::HandleMessages()
         }
         else if (!st.IsCurrent(m_CurrentAudio))
         {
+          int secondaryPid = -1;
 #if defined(HAVE_LIBBLURAY)
           if (IsBlurayInput() && STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX && m_pDemuxer)
           {
@@ -3772,10 +3773,13 @@ void CVideoPlayer::HandleMessages()
             if (stream && static_cast<CDVDInputStreamBluray&>(*m_pInputStream)
                               .SetActiveAudioStream(stream->dvdNavId))
               m_dvd.iSelectedAudioStream = stream->dvdNavId;
+            else if (IsBluraySecondary(stream))
+              secondaryPid = stream->dvdNavId;
           }
 #endif
           CloseStream(m_CurrentAudio, false);
-          OpenStream(m_CurrentAudio, st.demuxerId, st.id, st.source);
+          if (OpenStream(m_CurrentAudio, st.demuxerId, st.id, st.source) && secondaryPid >= 0)
+            m_dvd.iSelectedAudioStream = secondaryPid;
           AdaptForcedSubtitles();
 
           CDVDMsgPlayerSeek::CMode mode;
