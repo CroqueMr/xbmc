@@ -99,6 +99,14 @@ public:
   * \return true if the menu is successfully opened, false otherwise
   */
   bool OnMenu() override;
+  bool WaitingForReadablePlaylist() const;
+  bool IsSecondaryStream(int pid, bool video) const;
+  bool HdmvEndPending() const { return m_hdmvEndPending; }
+  bool WaitingForHdmvProgram() const { return m_hdmvEndPending || m_hdmvEndReleased; }
+  void ReleaseHdmvEnd();
+  void SetHdmvPresentedTime(uint64_t time);
+  bool OnTopMenu();
+  bool OnPopupMenu();
   void OnBack() override
   {
     if(IsInMenu())
@@ -141,18 +149,40 @@ public:
 
   void GetStreamInfo(int pid, std::string &language);
   bool GetVideoPresentationWindow(bool& required, int64_t& first, int64_t& last) const;
+  struct ClipTime
+  {
+    unsigned int playlist, item;
+    int64_t in, start;
+  };
+  std::optional<ClipTime> GetClipTime() const;
+  bool IsNavigationPlayback() const { return m_navmode; }
 #if defined(BD_BDJ_PRESENTATION_TIMING)
   void PollBdjEvents();
 #if defined(BD_BDJ_PLAYBACK_CLOCK)
   void SetBdjPlaybackTime(uint64_t time)
   {
     if (IsBdjTitle() && m_titleInfo)
+    {
+#if defined(BD_BDJ_PLAYBACK_CLOCK_EPOCH)
+      if (m_bdjClockEpoch)
+        bd_bdj_set_playback_time_at_epoch(m_bd, m_bdjClockEpoch,
+                                          std::min(time, m_titleInfo->duration));
+#else
       bd_bdj_set_playback_time(m_bd, std::min(time, m_titleInfo->duration));
+#endif
+    }
   }
 #endif
   void ReleaseBdjEvents(uint32_t seq);
   void ReleaseBdjEnd();
   void ResetBdjPresentation();
+  void CaptureBdjClockEpoch()
+  {
+#if defined(BD_BDJ_PLAYBACK_CLOCK_EPOCH)
+    if (m_bd && m_navmode)
+      m_bdjClockEpoch = bd_bdj_get_clock_epoch(m_bd);
+#endif
+  }
   uint32_t BdjEndSequence() const { return m_bdjEndSequence; }
   bool WaitingForBdjPlaylist() const { return m_bdjWaitingForPlaylist; }
   bool TakeBdjPlaylistJump();
@@ -251,7 +281,9 @@ public:
 
   void ProcessEvent();
   bool CanContinuePlayItem(uint32_t next) const;
-  bool HoldEvent();
+  bool IsSequentialClipRead(uint64_t position) const;
+  uint64_t m_lastReadEnd{0};
+  bool HoldEvent(bool sequentialRead = false);
 
   void SaveCurrentState(const CStreamDetails& details) override;
   UpdateState UpdateItemFromSavedStates(CFileItem& item, double time, bool& closed) override;
@@ -261,6 +293,7 @@ protected:
   struct SPlane;
 
   bool CanSelectStream() const;
+  void UpdateSelectedStream(bool audio);
   static bool PlaneShows(const SPlane& plane);
   void OverlayFlush(SPlane& updated, int64_t pts);
   void SendMenuOverlays(int64_t pts);
@@ -275,6 +308,7 @@ protected:
   BLURAY_TITLE_INFO* m_titleInfo = nullptr;
   uint32_t m_playlist = MAX_PLAYLIST_ID + 1;
   BLURAY_CLIP_INFO* m_clip = nullptr;
+  uint32_t m_audioStreamNumber{0};
   uint32_t m_pgStreamNumber{0};
 
   //! The clip information of the play item being played, ie. every stream its m2ts carries (see
@@ -283,12 +317,17 @@ protected:
   uint32_t m_angle = 0;
   std::atomic_bool m_menu{false};
   bool m_isInMainMenu = false;
+  uint64_t m_hdmvPresentedTime{UINT64_MAX};
+  bool m_hdmvEndPending{false};
+  bool m_hdmvEndReleased{false};
+  bool m_hdmvProgramEnded{false};
   std::atomic_bool m_menuShows{false};
   bool m_navmode = false;
 #if defined(BD_BDJ_PRESENTATION_TIMING)
   bool IsBdjTitle() const;
   void StampBdjPending();
 
+  uint32_t m_bdjClockEpoch{0};
   uint32_t m_bdjStampedSeq{0};
   uint32_t m_bdjEndSequence{0};
   bool m_bdjWaitingForPlaylist{false};

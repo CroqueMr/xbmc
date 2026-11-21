@@ -471,6 +471,8 @@ constexpr const int ACTION_CHAPTER_OR_SCENE_OR_BIG_STEP_BACK = 269;
 //! Open the dialog window to select a video stream
 constexpr const int ACTION_DIALOG_SELECT_VIDEO = 270;
 constexpr const int ACTION_PLAYBACK_MODE_MENU = 273;
+constexpr const int ACTION_SHOW_BLURAY_TOP_MENU = 274;
+constexpr const int ACTION_SHOW_BLURAY_POPUP_MENU = 275;
 
 //! Open the dialog window to select a audio stream
 constexpr const int ACTION_DIALOG_SELECT_AUDIO = 271;

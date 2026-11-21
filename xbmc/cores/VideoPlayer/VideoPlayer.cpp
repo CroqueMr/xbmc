@@ -846,14 +846,19 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   CLog::Log(LOGINFO, "VideoPlayer::OpenFile: {}", CURL::GetRedacted(file.GetPath()));
 
 #ifdef HAVE_DVBRIDGE
+  const auto request = ++m_requestedOpen;
   // Refresh on the open request, before the demuxer worker needs the sink.
   // SendMsg runs immediately when playback is opened by the application thread.
   MESSAGING::ThreadMessageCallback refresh{
       [](void*) {
         auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
             CServiceBroker::GetWinSystem());
-        if (window && window->RefreshDisplayInfoForVideo())
-          window->RefreshDVOutputCapabilities();
+        if (window)
+        {
+          if (window->RefreshDisplayInfoForVideo())
+            window->RefreshDVOutputCapabilities();
+          window->BeginDVStartupEdidWait();
+        }
       }, nullptr};
   CServiceBroker::GetAppMessenger()->SendMsg(TMSG_CALLBACK, 0, 0, &refresh);
 #endif
@@ -862,6 +867,9 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     CDVDMsgOpenFile::FileParams params;
     params.m_item = file;
     params.m_options = options;
+#ifdef HAVE_DVBRIDGE
+    params.m_request = request;
+#endif
     params.m_item.SetMimeTypeForInternetFile();
     m_messenger.Put(std::make_shared<CDVDMsgOpenFile>(params), 1);
 
@@ -871,6 +879,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_item = file;
   m_playerOptions = options;
 #ifdef HAVE_DVBRIDGE
+  m_activeOpen = request;
   DVBRIDGE::PlaybackNotification::StartVideo();
   DVBRIDGE::DiagnosticOpen();
 #endif
@@ -892,6 +901,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
 bool CVideoPlayer::CloseFile(bool reopen)
 {
 #ifdef HAVE_DVBRIDGE
+  ++m_requestedOpen;
   DVBRIDGE::DiagnosticFinal("close-file");
   DVBRIDGE::PlaybackNotification::StopVideo();
 #endif
@@ -911,6 +921,8 @@ bool CVideoPlayer::CloseFile(bool reopen)
   if(m_pInputStream)
     m_pInputStream->Abort();
 
+  m_renderManager.SetDiscMenuOnly(false);
+  m_renderManager.SetDiscMenuPage({});
   m_renderManager.UnInit();
 
   CLog::Log(LOGINFO, "VideoPlayer: waiting for threads to exit");
@@ -1039,8 +1051,46 @@ bool CVideoPlayer::OpenInputStream()
   return true;
 }
 
+bool CVideoPlayer::WaitForBlurayPlaylist()
+{
+#if defined(HAVE_LIBBLURAY)
+  if (!IsBlurayInput())
+    return false;
+
+  auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
+  if (bluray.HdmvEndPending() && !m_VideoPlayerVideo->HasData() &&
+      !m_VideoPlayerAudio->HasData() && !m_renderManager.HasPendingVideoPresentation())
+  {
+    bluray.ReleaseHdmvEnd();
+    return true;
+  }
+
+  if (bluray.WaitingForHdmvProgram())
+    return true;
+  if (!bluray.WaitingForReadablePlaylist())
+    return false;
+
+  m_HasVideo = true;
+  m_renderManager.SetDiscMenuOnly(true);
+  UpdatePlayState(0);
+  if (!m_State.streamsReady)
+  {
+    if (m_playerOptions.fullscreen)
+      CServiceBroker::GetAppMessenger()->PostMsg(TMSG_SWITCHTOFULLSCREEN);
+    IPlayerCallback* callback = &m_callback;
+    const CFileItem item = m_item;
+    m_outboundEvents->Submit([callback, item]() { callback->OnAVStarted(item); });
+    m_State.streamsReady = true;
+  }
+  return true;
+#else
+  return false;
+#endif
+}
+
 bool CVideoPlayer::OpenDemuxStream()
 {
+  m_blurayDemuxDeferred = false;
   CloseDemuxer();
 
   CLog::Log(LOGINFO, "Creating Demuxer");
@@ -1049,6 +1099,12 @@ bool CVideoPlayer::OpenDemuxStream()
   while (!m_bStop && attempts-- > 0)
   {
     m_pDemuxer.reset(CDVDFactoryDemuxer::CreateDemuxer(m_pInputStream));
+    if (!m_pDemuxer && WaitForBlurayPlaylist())
+    {
+      m_blurayDemuxDeferred = true;
+      return false;
+    }
+
     if(!m_pDemuxer && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
     {
       continue;
@@ -1066,6 +1122,11 @@ bool CVideoPlayer::OpenDemuxStream()
     CLog::Log(LOGERROR, "{} - Error creating demuxer", __FUNCTION__);
     return false;
   }
+
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+  if (IsBlurayInput())
+    static_cast<CDVDInputStreamBluray&>(*m_pInputStream).CaptureBdjClockEpoch();
+#endif
 
   // A matroska remux of a 3D disc carries the same plane offsets in its dependent view.
   // The Blu-ray input stream's store wins when there is one; otherwise the demuxer's is
@@ -1134,6 +1195,18 @@ void CVideoPlayer::UpdateHasVideoAudio()
     m_HasAudio = false;
 }
 
+bool CVideoPlayer::IsBluraySecondary(const CDemuxStream* stream) const
+{
+#if defined(HAVE_LIBBLURAY)
+  return IsBlurayInput() && stream &&
+         (stream->type == StreamType::VIDEO || stream->type == StreamType::AUDIO) &&
+         static_cast<const CDVDInputStreamBluray&>(*m_pInputStream)
+             .IsSecondaryStream(stream->dvdNavId, stream->type == StreamType::VIDEO);
+#else
+  return false;
+#endif
+}
+
 void CVideoPlayer::OpenDefaultStreams(bool reset)
 {
   // if input stream dictate, we will open later
@@ -1151,9 +1224,14 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   // open video stream
   valid   = false;
 
-  PredicateVideoFilter vf(m_processInfo->GetVideoSettings().m_VideoStream);
+  const int preferredVideo = m_processInfo->GetVideoSettings().m_VideoStream;
+  PredicateVideoFilter vf(preferredVideo);
   for (const auto& stream : m_SelectionStreams.Get(StreamType::VIDEO, vf))
   {
+    if (stream.type_index != preferredVideo && m_pDemuxer &&
+        IsBluraySecondary(m_pDemuxer->GetStream(stream.demuxerId, stream.id)))
+      continue;
+
     if (OpenStream(m_CurrentVideo, stream.demuxerId, stream.id, stream.source, reset))
     {
       valid = true;
@@ -1161,6 +1239,10 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
     }
     if (m_bAbortRequest)
       return;
+#ifdef HAVE_DVBRIDGE
+    if (m_activeOpen != m_requestedOpen.load())
+      return;
+#endif
   }
   if (!valid)
   {
@@ -1172,9 +1254,14 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   valid = false;
   if (!m_playerOptions.videoOnly)
   {
-    PredicateAudioFilter af(m_processInfo->GetVideoSettings().m_AudioStream, m_playerOptions.preferStereo);
+    const int preferredAudio = m_processInfo->GetVideoSettings().m_AudioStream;
+    PredicateAudioFilter af(preferredAudio, m_playerOptions.preferStereo);
     for (const auto& stream : m_SelectionStreams.Get(StreamType::AUDIO, af))
     {
+      if (stream.type_index != preferredAudio && m_pDemuxer &&
+          IsBluraySecondary(m_pDemuxer->GetStream(stream.demuxerId, stream.id)))
+        continue;
+
       if(OpenStream(m_CurrentAudio, stream.demuxerId, stream.id, stream.source, reset))
       {
         valid = true;
@@ -1441,7 +1528,7 @@ bool CVideoPlayer::IsBetterStream(const CCurrentStream& current, CDemuxStream* s
   if (m_playerOptions.videoOnly && current.type != StreamType::VIDEO)
     return false;
 
-  if(stream->disabled)
+  if (stream->disabled || IsBluraySecondary(stream))
     return false;
 
   if (m_pInputStream && (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_DVD) ||
@@ -1496,16 +1583,22 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
     OpenStream(current, stream->demuxerId, stream->uniqueId, stream->source);
 }
 
-void CVideoPlayer::Prepare()
-{
-  m_errorDetail = 0;
 #ifdef HAVE_DVBRIDGE
-  const auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
-      CServiceBroker::GetWinSystem());
+static void SelectDVStartupOutput(const KODI::WINDOWING::GBM::CWinSystemGbmGLESContext* window)
+{
   const auto caps = window ? window->GetDVOutputCapabilities(nullptr, true) :
                              DVBRIDGE::OutputCapabilities{};
   const bool canFallback = caps.hdr10 && !caps.HDR10DepthLimited();
   DVBRIDGE::SelectOutputSettings(!canFallback || caps.nativeDV, !canFallback || caps.playerLed);
+}
+#endif
+
+void CVideoPlayer::Prepare()
+{
+  m_errorDetail = 0;
+#ifdef HAVE_DVBRIDGE
+  SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      CServiceBroker::GetWinSystem()));
 #endif
   CFFmpegLog::SetLogLevel(1);
   SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
@@ -1556,7 +1649,7 @@ void CVideoPlayer::Prepare()
     }
   }
 
-  if (!OpenDemuxStream())
+  if (!WaitForBlurayPlaylist() && !OpenDemuxStream() && !m_blurayDemuxDeferred)
   {
     m_bAbortRequest = true;
     m_error = true;
@@ -1693,13 +1786,16 @@ void CVideoPlayer::ProcessBdjPresentation()
   auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
   const double pts = m_VideoPlayerVideo->GetCurrentPts();
 #if defined(BD_BDJ_PLAYBACK_CLOCK)
-  if (pts != DVD_NOPTS_VALUE && m_CurrentVideo.dts != DVD_NOPTS_VALUE &&
-      m_CurrentVideo.dispTime > 0)
+  if (pts != DVD_NOPTS_VALUE && m_CurrentVideo.inited &&
+      m_CurrentVideo.syncState == IDVDStreamPlayer::SYNC_INSYNC &&
+      m_CurrentVideo.dts != DVD_NOPTS_VALUE && m_CurrentVideo.dispTime >= 0)
   {
     // The demux position and DTS describe the same packet. Use them to put
     // the rendered PTS on the playlist timeline, even when the reader is ahead.
     const double time = DVD_MSEC_TO_TIME(m_CurrentVideo.dispTime) + pts - m_CurrentVideo.dts;
-    bluray.SetBdjPlaybackTime(static_cast<uint64_t>(std::max(0.0, time) * 90000.0 / DVD_TIME_BASE));
+    const auto presented = static_cast<uint64_t>(std::max(0.0, time) * 90000.0 / DVD_TIME_BASE);
+    bluray.SetBdjPlaybackTime(presented);
+    bluray.SetHdmvPresentedTime(presented);
   }
 #endif
   while (!m_bdjPresentationEvents.empty())
@@ -1714,7 +1810,7 @@ void CVideoPlayer::ProcessBdjPresentation()
     CLog::Log(LOGDEBUG, "BD-J presentation: released seq {} at video pts {}", event.seq, pts);
   }
 
-  if (m_bdjDraining && bluray.WaitingForBdjPlaylist() &&
+  if (m_bdjDraining && (bluray.WaitingForBdjPlaylist() || bluray.HdmvEndPending()) &&
       !m_VideoPlayerVideo->HasData() && !m_VideoPlayerAudio->HasData() &&
       !m_renderManager.HasPendingVideoPresentation())
   {
@@ -1723,6 +1819,7 @@ void CVideoPlayer::ProcessBdjPresentation()
       bluray.ReleaseBdjEnd();
       CLog::Log(LOGDEBUG, "BD-J presentation: drained through sequence {}", seq);
     }
+    bluray.ReleaseHdmvEnd();
     m_bdjPresentationEvents.clear();
   }
   bluray.PollBdjEvents();
@@ -1810,8 +1907,14 @@ void CVideoPlayer::Process()
     // should we open a new demuxer?
     if (!m_pDemuxer)
     {
-      if (m_pInputStream->NextStream() == CDVDInputStream::NEXTSTREAM_NONE)
+      const auto next = m_pInputStream->NextStream();
+      if (next == CDVDInputStream::NEXTSTREAM_NONE)
         break;
+      if (next == CDVDInputStream::NEXTSTREAM_RETRY && WaitForBlurayPlaylist())
+      {
+        CThread::Sleep(50ms);
+        continue;
+      }
 
       if (m_pInputStream->IsEOF())
         break;
@@ -1822,8 +1925,10 @@ void CVideoPlayer::Process()
       if (bluray)
         bluray->TakeBdjPlaylistJump();
 #endif
-      if (OpenDemuxStream() == false)
+      if (!OpenDemuxStream())
       {
+        if (m_blurayDemuxDeferred)
+          continue;
         m_bAbortRequest = true;
         break;
       }
@@ -2017,8 +2122,11 @@ void CVideoPlayer::Process()
       if(next == CDVDInputStream::NEXTSTREAM_RETRY)
       {
 #if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
-        if (!m_bdjDraining && IsBlurayInput() &&
-            static_cast<CDVDInputStreamBluray&>(*m_pInputStream).WaitingForBdjPlaylist())
+        const auto* bluray = IsBlurayInput()
+                                 ? static_cast<CDVDInputStreamBluray*>(m_pInputStream.get())
+                                 : nullptr;
+        if (!m_bdjDraining && bluray &&
+            (bluray->WaitingForBdjPlaylist() || bluray->HdmvEndPending()))
         {
           m_bdjDraining = true;
           CLog::Log(LOGDEBUG, "BD-J presentation: draining the outgoing playlist");
@@ -2026,6 +2134,10 @@ void CVideoPlayer::Process()
           if (m_CurrentVideo.inited)
             m_VideoPlayerVideo->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::VIDEO_DRAIN));
         }
+        if (bluray && bluray->WaitingForReadablePlaylist() &&
+            !m_VideoPlayerVideo->HasData() && !m_VideoPlayerAudio->HasData() &&
+            !m_renderManager.HasPendingVideoPresentation())
+          WaitForBlurayPlaylist();
 #endif
         // The disc ended this still's video input. Unlike an ordinary read
         // timeout, release its delayed pictures before waiting for navigation.
@@ -3394,6 +3506,9 @@ void CVideoPlayer::HandleMessages()
 
       m_item = msg.GetItem();
       m_playerOptions = msg.GetOptions();
+#ifdef HAVE_DVBRIDGE
+      m_activeOpen = msg.GetRequest();
+#endif
 
       m_processInfo->SetPlayTimes(0,0,0,0);
 
@@ -3405,6 +3520,8 @@ void CVideoPlayer::HandleMessages()
       m_renderManager.Flush(false, false);
       m_processInfo->ResetVideoCodecInfo();
       m_renderManager.ResetPictureInfo();
+      m_renderManager.SetDiscMenuOnly(false);
+      m_renderManager.SetDiscMenuPage({});
       m_overlayContainer.Clear(DVDOverlaySource::MENU);
 #ifdef HAVE_DVBRIDGE
       DVBRIDGE::PlaybackNotification::StartVideo();
@@ -3671,6 +3788,7 @@ void CVideoPlayer::HandleMessages()
         }
         else if (!st.IsCurrent(m_CurrentAudio))
         {
+          int secondaryPid = -1;
 #if defined(HAVE_LIBBLURAY)
           if (IsBlurayInput() && STREAM_SOURCE_MASK(st.source) == STREAM_SOURCE_DEMUX && m_pDemuxer)
           {
@@ -3678,10 +3796,13 @@ void CVideoPlayer::HandleMessages()
             if (stream && static_cast<CDVDInputStreamBluray&>(*m_pInputStream)
                               .SetActiveAudioStream(stream->dvdNavId))
               m_dvd.iSelectedAudioStream = stream->dvdNavId;
+            else if (IsBluraySecondary(stream))
+              secondaryPid = stream->dvdNavId;
           }
 #endif
           CloseStream(m_CurrentAudio, false);
-          OpenStream(m_CurrentAudio, st.demuxerId, st.id, st.source);
+          if (OpenStream(m_CurrentAudio, st.demuxerId, st.id, st.source) && secondaryPid >= 0)
+            m_dvd.iSelectedAudioStream = secondaryPid;
           AdaptForcedSubtitles();
 
           CDVDMsgPlayerSeek::CMode mode;
@@ -4733,6 +4854,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       break;
     case StreamType::VIDEO:
       res = OpenVideoStream(hint, reset);
+#ifdef HAVE_DVBRIDGE
+      if (!res && (m_bStop || m_activeOpen != m_requestedOpen.load()))
+        return false; // A cancelled startup is not an unsupported stream.
+#endif
       // Set the m_bFullScreenVideo flag now, before streamsReady, so the
       // renderer's Configure() sees a valid viewport via GetViewWindow().
       // The WINDOW_FULLSCREEN_VIDEO skin activation is deferred to
@@ -4921,7 +5046,23 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   {
     auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
         CServiceBroker::GetWinSystem());
-    const auto preferences = DVBRIDGE::FrameOutputSettings();
+    auto preferences = DVBRIDGE::FrameOutputSettings();
+    if (window && !m_HasVideo && !pMenus && m_pInputStream && !m_pInputStream->IsRealtime() &&
+        hint.dovi.dv_profile == 7 && hint.dovi.el_present_flag && !hint.interlaced &&
+        !(hint.codecOptions & CODEC_FORCE_SOFTWARE) &&
+        preferences.output == DVBRIDGE::OutputMode::MasterReference)
+    {
+      // The GUI publishes HDMI capabilities while this startup is parked.
+      while (!m_bStop && m_activeOpen == m_requestedOpen.load() && window->PendingDVStartupEdid())
+        Sleep(25ms);
+      if (m_bStop || m_activeOpen != m_requestedOpen.load())
+        return false;
+      // The EDID can return while the demuxer is still opening the file.
+      SelectDVStartupOutput(window);
+      if (m_bStop || m_activeOpen != m_requestedOpen.load())
+        return false;
+      preferences = DVBRIDGE::FrameOutputSettings();
+    }
     const auto mode = preferences.Policy().mode;
     if (window && (mode == DVBRIDGE_MODE_HDR10_BASIC || mode == DVBRIDGE_MODE_HDR10_EXPERT) &&
         window->GetDVOutputCapabilities(nullptr, true).HDR10DepthLimited())
@@ -5340,6 +5481,11 @@ void CVideoPlayer::FlushBuffers(double pts, bool accurate, bool sync)
   if (sync)
     m_renderManager.DiscardBuffer();
 
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+  if (IsBlurayInput())
+    static_cast<CDVDInputStreamBluray&>(*m_pInputStream).CaptureBdjClockEpoch();
+#endif
+
   if (m_playSpeed == DVD_PLAYSPEED_NORMAL || m_playSpeed == DVD_PLAYSPEED_PAUSE ||
       m_processInfo->IsTempoAllowed(static_cast<float>(m_playSpeed) / DVD_PLAYSPEED_NORMAL))
   {
@@ -5403,9 +5549,12 @@ int CVideoPlayer::OnDiscNavResult(void* pData, int iMessage)
     }
 #endif
     case BD_EVENT_MENU_OVERLAY:
-      m_overlayContainer.ProcessAndAddOverlayIfValid(
-          *static_cast<std::shared_ptr<CDVDOverlay>*>(pData));
+    {
+      auto& page = *static_cast<std::shared_ptr<CDVDOverlayGroup>*>(pData);
+      m_renderManager.SetDiscMenuPage(page);
+      m_overlayContainer.ProcessAndAddOverlayIfValid(page);
       break;
+    }
     case BD_EVENT_MENU:
       // Interactive menu visible?
       if (*static_cast<uint32_t*>(pData) == false)
@@ -5751,10 +5900,29 @@ bool CVideoPlayer::OnAction(const CAction &action)
       break;
 #endif
     case ACTION_SHOW_VIDEOMENU:   // start button
+    case ACTION_SHOW_BLURAY_TOP_MENU:
+    case ACTION_SHOW_BLURAY_POPUP_MENU:
       {
         THREAD_ACTION(action);
-        CLog::LogF(LOGDEBUG, "Trying to go to the menu");
-        if (pMenus->OnMenu())
+        const int menuAction = action.GetID();
+        if (menuAction != ACTION_SHOW_VIDEOMENU && !IsBlurayInput())
+          return false;
+
+        bool opened;
+        if (menuAction == ACTION_SHOW_VIDEOMENU)
+          opened = pMenus->OnMenu();
+#if defined(HAVE_LIBBLURAY)
+        else
+        {
+          auto& bluray = static_cast<CDVDInputStreamBluray&>(*m_pInputStream);
+          opened = menuAction == ACTION_SHOW_BLURAY_TOP_MENU ? bluray.OnTopMenu()
+                                                           : bluray.OnPopupMenu();
+        }
+#else
+        else
+          return false;
+#endif
+        if (opened)
         {
           if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
           {
