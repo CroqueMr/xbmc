@@ -1298,6 +1298,14 @@ bool CWinSystemGbmGLESContext::ConfigureGuiCompositing(int colorTransfer, float 
   return m_guiCompositing;
 }
 
+#ifdef HAVE_DVBRIDGE
+void CWinSystemGbmGLESContext::InvalidateGuiComposite()
+{
+  m_guiCacheValid = false;
+  CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+}
+#endif
+
 bool CWinSystemGbmGLESContext::CanReuseGuiComposite() const
 {
 #ifdef HAVE_DVBRIDGE

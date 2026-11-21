@@ -89,6 +89,7 @@ public:
     return CWinSystemBase::UseGuiCoverageAlpha();
   }
 #ifdef HAVE_DVBRIDGE
+  void InvalidateGuiComposite();
   static bool DVBridgeRequested(const VideoPicture* picture);
   bool CreateNewWindow(const std::string& name, bool fullScreen, RESOLUTION_INFO& res) override;
   void RefreshDVOutputCapabilities();
