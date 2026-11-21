@@ -149,6 +149,13 @@ public:
 
   void GetStreamInfo(int pid, std::string &language);
   bool GetVideoPresentationWindow(bool& required, int64_t& first, int64_t& last) const;
+  struct ClipTime
+  {
+    unsigned int playlist, item;
+    int64_t in, start;
+  };
+  std::optional<ClipTime> GetClipTime() const;
+  bool IsNavigationPlayback() const { return m_navmode; }
 #if defined(BD_BDJ_PRESENTATION_TIMING)
   void PollBdjEvents();
 #if defined(BD_BDJ_PLAYBACK_CLOCK)
@@ -274,7 +281,9 @@ public:
 
   void ProcessEvent();
   bool CanContinuePlayItem(uint32_t next) const;
-  bool HoldEvent();
+  bool IsSequentialClipRead(uint64_t position) const;
+  uint64_t m_lastReadEnd{0};
+  bool HoldEvent(bool sequentialRead = false);
 
   void SaveCurrentState(const CStreamDetails& details) override;
   UpdateState UpdateItemFromSavedStates(CFileItem& item, double time, bool& closed) override;
