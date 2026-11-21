@@ -268,6 +268,9 @@ public:
   {
     CFileItem m_item;
     CPlayerOptions m_options;
+#ifdef HAVE_DVBRIDGE
+    uint64_t m_request{};
+#endif
   };
 
   explicit CDVDMsgOpenFile(const FileParams &params)
@@ -278,6 +281,9 @@ public:
 
   CFileItem& GetItem() { return m_params.m_item; }
   CPlayerOptions& GetOptions() { return m_params.m_options; }
+#ifdef HAVE_DVBRIDGE
+  uint64_t GetRequest() const { return m_params.m_request; }
+#endif
 
 private:
 

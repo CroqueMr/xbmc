@@ -846,14 +846,19 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   CLog::Log(LOGINFO, "VideoPlayer::OpenFile: {}", CURL::GetRedacted(file.GetPath()));
 
 #ifdef HAVE_DVBRIDGE
+  const auto request = ++m_requestedOpen;
   // Refresh on the open request, before the demuxer worker needs the sink.
   // SendMsg runs immediately when playback is opened by the application thread.
   MESSAGING::ThreadMessageCallback refresh{
       [](void*) {
         auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
             CServiceBroker::GetWinSystem());
-        if (window && window->RefreshDisplayInfoForVideo())
-          window->RefreshDVOutputCapabilities();
+        if (window)
+        {
+          if (window->RefreshDisplayInfoForVideo())
+            window->RefreshDVOutputCapabilities();
+          window->BeginDVStartupEdidWait();
+        }
       }, nullptr};
   CServiceBroker::GetAppMessenger()->SendMsg(TMSG_CALLBACK, 0, 0, &refresh);
 #endif
@@ -862,6 +867,9 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
     CDVDMsgOpenFile::FileParams params;
     params.m_item = file;
     params.m_options = options;
+#ifdef HAVE_DVBRIDGE
+    params.m_request = request;
+#endif
     params.m_item.SetMimeTypeForInternetFile();
     m_messenger.Put(std::make_shared<CDVDMsgOpenFile>(params), 1);
 
@@ -871,6 +879,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   m_item = file;
   m_playerOptions = options;
 #ifdef HAVE_DVBRIDGE
+  m_activeOpen = request;
   DVBRIDGE::PlaybackNotification::StartVideo();
   DVBRIDGE::DiagnosticOpen();
 #endif
@@ -892,6 +901,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
 bool CVideoPlayer::CloseFile(bool reopen)
 {
 #ifdef HAVE_DVBRIDGE
+  ++m_requestedOpen;
   DVBRIDGE::DiagnosticFinal("close-file");
   DVBRIDGE::PlaybackNotification::StopVideo();
 #endif
@@ -1229,6 +1239,10 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
     }
     if (m_bAbortRequest)
       return;
+#ifdef HAVE_DVBRIDGE
+    if (m_activeOpen != m_requestedOpen.load())
+      return;
+#endif
   }
   if (!valid)
   {
@@ -1569,16 +1583,22 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
     OpenStream(current, stream->demuxerId, stream->uniqueId, stream->source);
 }
 
-void CVideoPlayer::Prepare()
-{
-  m_errorDetail = 0;
 #ifdef HAVE_DVBRIDGE
-  const auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
-      CServiceBroker::GetWinSystem());
+static void SelectDVStartupOutput(const KODI::WINDOWING::GBM::CWinSystemGbmGLESContext* window)
+{
   const auto caps = window ? window->GetDVOutputCapabilities(nullptr, true) :
                              DVBRIDGE::OutputCapabilities{};
   const bool canFallback = caps.hdr10 && !caps.HDR10DepthLimited();
   DVBRIDGE::SelectOutputSettings(!canFallback || caps.nativeDV, !canFallback || caps.playerLed);
+}
+#endif
+
+void CVideoPlayer::Prepare()
+{
+  m_errorDetail = 0;
+#ifdef HAVE_DVBRIDGE
+  SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      CServiceBroker::GetWinSystem()));
 #endif
   CFFmpegLog::SetLogLevel(1);
   SetPlaySpeed(DVD_PLAYSPEED_NORMAL);
@@ -3486,6 +3506,9 @@ void CVideoPlayer::HandleMessages()
 
       m_item = msg.GetItem();
       m_playerOptions = msg.GetOptions();
+#ifdef HAVE_DVBRIDGE
+      m_activeOpen = msg.GetRequest();
+#endif
 
       m_processInfo->SetPlayTimes(0,0,0,0);
 
@@ -4831,6 +4854,10 @@ bool CVideoPlayer::OpenStream(CCurrentStream& current, int64_t demuxerId, int iS
       break;
     case StreamType::VIDEO:
       res = OpenVideoStream(hint, reset);
+#ifdef HAVE_DVBRIDGE
+      if (!res && (m_bStop || m_activeOpen != m_requestedOpen.load()))
+        return false; // A cancelled startup is not an unsupported stream.
+#endif
       // Set the m_bFullScreenVideo flag now, before streamsReady, so the
       // renderer's Configure() sees a valid viewport via GetViewWindow().
       // The WINDOW_FULLSCREEN_VIDEO skin activation is deferred to
@@ -5019,7 +5046,23 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
   {
     auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
         CServiceBroker::GetWinSystem());
-    const auto preferences = DVBRIDGE::FrameOutputSettings();
+    auto preferences = DVBRIDGE::FrameOutputSettings();
+    if (window && !m_HasVideo && !pMenus && m_pInputStream && !m_pInputStream->IsRealtime() &&
+        hint.dovi.dv_profile == 7 && hint.dovi.el_present_flag && !hint.interlaced &&
+        !(hint.codecOptions & CODEC_FORCE_SOFTWARE) &&
+        preferences.output == DVBRIDGE::OutputMode::MasterReference)
+    {
+      // The GUI publishes HDMI capabilities while this startup is parked.
+      while (!m_bStop && m_activeOpen == m_requestedOpen.load() && window->PendingDVStartupEdid())
+        Sleep(25ms);
+      if (m_bStop || m_activeOpen != m_requestedOpen.load())
+        return false;
+      // The EDID can return while the demuxer is still opening the file.
+      SelectDVStartupOutput(window);
+      if (m_bStop || m_activeOpen != m_requestedOpen.load())
+        return false;
+      preferences = DVBRIDGE::FrameOutputSettings();
+    }
     const auto mode = preferences.Policy().mode;
     if (window && (mode == DVBRIDGE_MODE_HDR10_BASIC || mode == DVBRIDGE_MODE_HDR10_EXPERT) &&
         window->GetDVOutputCapabilities(nullptr, true).HDR10DepthLimited())
