@@ -233,6 +233,27 @@ namespace OVERLAY {
      */
     void LoadSettings();
 
+    //! \brief The display values the overlays need
+    struct SubtitleResolution
+    {
+      float pixelRatio{1.0f};
+      int overscanTop{0};
+    };
+
+    //! \brief Reload the settings and rebuild the style when they have changed.
+    void UpdateSubtitleStyle();
+
+    /*!
+     * \brief Track changes to the subtitle position for the current frame.
+     * \param[out] resolution the display values read while doing so
+     */
+    void UpdateSubtitlePosition(SubtitleResolution& resolution);
+
+    //! \brief The libass render options for \p overlay drawn with \p style on the current frame.
+    KODI::SUBTITLES::STYLE::renderOpts GetRenderOptions(const CDVDOverlayLibass& overlay,
+                                                        const KODI::SUBTITLES::STYLE::style& style,
+                                                        const SubtitleResolution& resolution) const;
+
     enum PositonResInfoState
     {
       POSRESINFO_UNSET = -1,
@@ -240,7 +261,7 @@ namespace OVERLAY {
     };
 
     mutable CCriticalSection m_section;
-    std::vector<SElement> m_buffers[MAX_RENDER_BUFFERS];
+    std::vector<SElement> m_buffers[MAX_RENDER_BUFFERS + 1];
     std::map<unsigned int, std::shared_ptr<COverlay>> m_textureCache;
     static unsigned int m_textureid;
     CRect m_rv; // Frame size
@@ -257,8 +278,8 @@ namespace OVERLAY {
     std::optional<int> m_lastDrawnPlaneOffset;
     // Current subtitle position
     int m_subtitlePosition{0};
-    // Current subtitle position from resolution info,
-    // or PositonResInfoState enum values for deferred processing
+    // The calibration line for MANUAL alignment and the frame height otherwise,
+    // or a PositonResInfoState value for deferred processing
     int m_subtitlePosResInfo{POSRESINFO_UNSET};
     int m_subtitleVerticalMargin{0};
     bool m_saveSubtitlePosition{false}; // To save subtitle position permanently
@@ -268,10 +289,7 @@ namespace OVERLAY {
 
     std::shared_ptr<struct KODI::SUBTITLES::STYLE::style> m_overlayStyle;
     std::atomic<bool> m_isSettingsChanged{false};
-    // Whether last frame had any image/SPU overlay. Used by PrepareOverlays
-    // to detect arrival/disappearance transitions (image/SPU have no
-    // per-frame change signal of their own, unlike libass detect_change).
-    bool m_prevHadImageSpu{false};
+    std::vector<const CDVDOverlay*> m_previousBitmapOverlays;
     KODI::SUBTITLES::BitmapOptions m_bitmapOptions;
     std::atomic<bool> m_bitmapSettingsChanged{true};
     CRect m_bitmapBounds;

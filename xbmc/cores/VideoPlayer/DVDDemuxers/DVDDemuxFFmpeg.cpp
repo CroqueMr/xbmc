@@ -20,6 +20,7 @@ extern "C"
 #endif
 #include "DVDInputStreams/DVDInputStream.h"
 #ifdef HAVE_LIBBLURAY
+#include "DVDInputStreams/BlurayClipClock.h"
 #include "DVDInputStreams/DVDInputStreamBluray.h"
 #endif
 #include "DVDInputStreams/DVDInputStreamFFmpeg.h"
@@ -184,6 +185,10 @@ static int dvd_file_read(void* h, uint8_t* buf, int size)
   if (len > 0 && !static_cast<CDVDDemuxFFmpeg*>(h)->CaptureBlurayVideoWindow())
     return AVERROR_INVALIDDATA;
 #endif
+#ifdef HAVE_LIBBLURAY
+  if (len > 0 && pInputStream->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+    static_cast<CDVDDemuxFFmpeg*>(h)->CaptureBlurayClip(len);
+#endif
   if (len == 0)
     return AVERROR_EOF;
   else
@@ -282,6 +287,12 @@ bool CDVDDemuxFFmpeg::Open(const std::shared_ptr<CDVDInputStream>& pInput, bool 
     return false;
 
   m_pInput = pInput;
+#ifdef HAVE_LIBBLURAY
+  m_blurayClips.clear();
+  m_blurayPacketPositions.clear();
+  m_blurayBytes = 0;
+  m_blurayNavigationIn.reset();
+#endif
 #ifdef HAVE_DVBRIDGE
   m_blurayVideoWindow = {};
   m_blurayWindowCaptured = false;
@@ -811,6 +822,9 @@ bool CDVDDemuxFFmpeg::Reset()
 
 void CDVDDemuxFFmpeg::Flush()
 {
+#ifdef HAVE_LIBBLURAY
+  m_blurayPacketPositions.clear();
+#endif
 #ifdef HAVE_DVBRIDGE
   if (m_blurayDovi)
     m_blurayDovi->Reset(true);
@@ -1136,6 +1150,87 @@ double CDVDDemuxFFmpeg::ConvertTimestamp(int64_t pts, int den, int num)
   return timestamp * DVD_TIME_BASE;
 }
 
+#ifdef HAVE_LIBBLURAY
+void CDVDDemuxFFmpeg::CaptureBlurayClip(int bytes)
+{
+  const auto& bluray = static_cast<const CDVDInputStreamBluray&>(*m_pInput);
+  if (const auto clip = bluray.GetClipTime())
+  {
+    if (m_blurayClips.empty() || !m_blurayClips.back().valid ||
+        m_blurayClips.back().playlist != clip->playlist || m_blurayClips.back().item != clip->item ||
+        m_blurayClips.back().in != clip->in || m_blurayClips.back().start != clip->start)
+      m_blurayClips.push_back({m_blurayBytes, clip->playlist, clip->item, clip->in, clip->start, true});
+  }
+  else if (m_blurayClips.empty() || m_blurayClips.back().valid)
+    m_blurayClips.push_back({m_blurayBytes, 0, 0, 0, 0, false});
+  m_blurayBytes += bytes;
+}
+
+void CDVDDemuxFFmpeg::TranslateBlurayTimestamps(DemuxPacket& packet, const AVStream& stream)
+{
+  if (m_blurayClips.empty() || stream.time_base.num != 1 || stream.time_base.den != 90000)
+    return;
+
+  const AVPacket& source = m_pkt.pkt;
+  if (source.pos >= 0)
+    m_blurayPacketPositions.insert_or_assign(source.stream_index, source.pos);
+  const auto position = m_blurayPacketPositions.find(source.stream_index);
+  if (position == m_blurayPacketPositions.end())
+    return;
+
+  const auto after = std::upper_bound(
+      m_blurayClips.begin(), m_blurayClips.end(), position->second,
+      [](int64_t pos, const ClipSpan& span) { return pos < span.pos; });
+  if (after == m_blurayClips.begin())
+    return;
+  const ClipSpan& clip = *std::prev(after);
+  if (!clip.valid)
+    return;
+
+  const auto& bluray = static_cast<const CDVDInputStreamBluray&>(*m_pInput);
+  int64_t anchor = clip.start;
+  if (bluray.IsNavigationPlayback())
+  {
+    const ClipSpan& first = m_blurayClips.front();
+    if (!first.valid)
+      return;
+
+    const int64_t sample = source.pts == AV_NOPTS_VALUE ? source.dts : source.pts;
+    if (!m_blurayNavigationIn && sample != AV_NOPTS_VALUE && &clip == &first)
+      m_blurayNavigationIn = sample - KODI::BLURAY::MpegTimeDelta(sample, first.in);
+    if (!m_blurayNavigationIn || &clip == &first || clip.playlist != first.playlist)
+      return;
+    // Keep the clock of the retained demuxer. Java and HDMV use the clip clock
+    // for graphical overlays, so their timestamps are not translated here.
+    anchor = *m_blurayNavigationIn + clip.start - first.start;
+  }
+  const auto toPresentation = [&](int64_t timestamp) -> double
+  {
+    if (timestamp == AV_NOPTS_VALUE)
+      return DVD_NOPTS_VALUE;
+    const int64_t ticks = KODI::BLURAY::PresentationTime(timestamp, clip.in, anchor);
+    return bluray.IsNavigationPlayback() ? ConvertTimestamp(ticks, 90000, 1)
+                                        : DVD_SEC_TO_TIME(static_cast<double>(ticks) / 90000);
+  };
+  // The packet properties used to pair BL, EL and RPU stay on the source clock.
+  packet.pts = toPresentation(source.pts);
+  packet.dts = toPresentation(source.dts);
+}
+
+void CDVDDemuxFFmpeg::FlushInputSeek()
+{
+  Flush();
+  if (m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY) && m_ioContext && !m_ioContext->seekable)
+  {
+    // Let MPEG-TS discard any partial PES before reading the new source position.
+    m_ioContext->pos = 0;
+    m_blurayClips.clear();
+    m_blurayBytes = 0;
+    m_blurayNavigationIn.reset();
+  }
+}
+#endif
+
 DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
 {
   DemuxPacket* pPacket = NULL;
@@ -1301,6 +1396,10 @@ DemuxPacket* CDVDDemuxFFmpeg::ReadInternal(bool keep)
               ConvertTimestamp(m_pkt.pkt.pts, stream->time_base.den, stream->time_base.num);
           pPacket->dts =
               ConvertTimestamp(m_pkt.pkt.dts, stream->time_base.den, stream->time_base.num);
+#ifdef HAVE_LIBBLURAY
+          if (m_pInput->IsStreamType(DVDSTREAM_TYPE_BLURAY))
+            TranslateBlurayTimestamps(*pPacket, *stream);
+#endif
           pPacket->duration = DVD_SEC_TO_TIME((double)m_pkt.pkt.duration * stream->time_base.num /
                                               stream->time_base.den);
 
@@ -1455,7 +1554,11 @@ bool CDVDDemuxFFmpeg::SeekTime(double time, bool backwards, double* startpts)
     if (startpts)
       *startpts = DVD_NOPTS_VALUE;
 
+#ifdef HAVE_LIBBLURAY
+    FlushInputSeek();
+#else
     Flush();
+#endif
 
     return true;
   }
@@ -1782,6 +1885,9 @@ double CDVDDemuxFFmpeg::SelectAspect(AVStream* st, bool& forced)
 
 void CDVDDemuxFFmpeg::CreateStreams(unsigned int program)
 {
+#ifdef HAVE_LIBBLURAY
+  m_blurayPacketPositions.clear();
+#endif
 #ifdef HAVE_DVBRIDGE
   InitBlurayDovi(program);
 #endif
@@ -2661,7 +2767,11 @@ bool CDVDDemuxFFmpeg::SeekChapter(int chapter, double* startpts)
           DVD_SEC_TO_TIME(std::chrono::duration<double>(ich->GetChapterPos(chapter)).count());
     }
 
+#ifdef HAVE_LIBBLURAY
+    FlushInputSeek();
+#else
     Flush();
+#endif
     return true;
   }
 

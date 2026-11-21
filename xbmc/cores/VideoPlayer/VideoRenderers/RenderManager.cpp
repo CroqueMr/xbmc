@@ -10,6 +10,8 @@
 
 /* to use the same as player */
 #include "../VideoPlayer/DVDClock.h"
+#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlay.h"
+#include "cores/VideoPlayer/DVDCodecs/Overlay/DVDOverlayImage.h"
 #include "RenderFactory.h"
 #include "RenderFlags.h"
 #include "ServiceBroker.h"
@@ -440,7 +442,8 @@ bool CRenderManager::PrepareHDR10AILookahead(std::unique_lock<CCriticalSection>&
       cutoff = end + tolerance * refresh - lead;
     }
     const double remaining = std::max(0.0,
-        cutoff - playing - (cb1Async ? std::min(0.0, m_displayLatency) : m_displayLatency));
+        cutoff - playing - (cb1Async ? std::min(0.0, m_displayLatency.load())
+                                    : m_displayLatency.load()));
     const double speed = m_dvdClock.GetClockSpeed();
     // Charge starvation only after the admitted presentation cutoff.
     const double delay = std::isfinite(speed) && speed > 0 ?
@@ -604,6 +607,12 @@ void CRenderManager::ResetHDR10AIQueue()
 
 void CRenderManager::FrameMove()
 {
+  if (m_discMenuOnly)
+  {
+    m_playerPort->UpdateGuiRender(true);
+    m_playerPort->UpdateVideoRender(false);
+  }
+
   bool firstFrame = false;
   UpdateResolution();
 
@@ -630,9 +639,11 @@ void CRenderManager::FrameMove()
   {
     std::unique_lock lock2(m_presentlock);
 #ifdef HAVE_DVBRIDGE
+    m_pRenderer->UpdateVideoRenderLayer();
     {
       auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
-      m_cb1OutputPending = window && window->HasPendingCB1VideoPresentation();
+      m_cb1OutputPending = m_pRenderer->VideoRenderLayerPending() ||
+                           (window && window->HasPendingCB1VideoPresentation());
       if (m_cb1PresentPending && (!window || !window->CB1FramePending()))
       {
         m_cb1PresentPending = false;
@@ -664,7 +675,7 @@ void CRenderManager::FrameMove()
 
     if (m_queued.empty()
 #ifdef HAVE_DVBRIDGE
-        && !m_cb1PresentPending
+        && !m_cb1PresentPending && !m_pRenderer->VideoRenderLayerPending()
 #endif
 #ifdef CB1_HAS_HDR10_AI
         && !(m_presentstep == PRESENT_FRAME && m_pRenderer->HDR10AIFramePending())
@@ -680,7 +691,7 @@ void CRenderManager::FrameMove()
 
     if (m_presentstep == PRESENT_READY
 #ifdef HAVE_DVBRIDGE
-        && !m_cb1PresentPending
+        && !m_cb1PresentPending && !m_pRenderer->VideoRenderLayerPending()
 #endif
         )
       PrepareNextRender();
@@ -804,6 +815,7 @@ void CRenderManager::UnInit()
   CancelPendingConfigure();
 
   m_overlays.UnInit();
+  m_discMenuBufferInvalidated = true;
   m_debugRenderer.Dispose();
 
   m_captureBlit.reset();
@@ -838,6 +850,7 @@ bool CRenderManager::Flush(bool wait, bool saveBuffers)
     if (m_pRenderer)
     {
       m_overlays.Flush();
+      m_discMenuBufferInvalidated = true;
       m_debugRenderer.Flush();
 #ifdef CB1_HAS_HDR10_AI
       // Reset display timing even when its decoded pictures survive.
@@ -928,6 +941,15 @@ void CRenderManager::DeleteRenderer()
     m_aiQueuePreparationStale = false;
   }
 #endif
+}
+
+bool CRenderManager::CompositeVideoCapture(KODI::RENDERING::CAPTURE::CaptureResult& result)
+{
+  std::unique_lock lock(m_statelock);
+  if (m_renderState != STATE_CONFIGURED || !m_pRenderer)
+    return true;
+
+  return m_pRenderer->CompositeVideoCapture(result);
 }
 
 void CRenderManager::ServiceVideoCaptures()
@@ -1052,9 +1074,73 @@ RESOLUTION CRenderManager::GetResolution()
   return res;
 }
 
+void CRenderManager::SetDiscMenuOnly(bool enabled)
+{
+  if (m_discMenuOnly.exchange(enabled) != enabled)
+    OVERLAY::MarkDirty();
+}
+
+void CRenderManager::SetDiscMenuPage(std::shared_ptr<CDVDOverlayGroup> page)
+{
+  {
+    std::unique_lock lock(m_discMenuLock);
+    m_discMenuPage = std::move(page);
+  }
+  if (m_discMenuOnly)
+    OVERLAY::MarkDirty();
+}
+
 void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 {
-  CSingleExit exitLock(CServiceBroker::GetWinSystem()->GetGfxContext());
+  auto& graphics = CServiceBroker::GetWinSystem()->GetGfxContext();
+  CSingleExit exitLock(graphics);
+
+  constexpr int menuBuffer = MAX_RENDER_BUFFERS;
+  if (m_discMenuOnly)
+  {
+    if (!gui)
+    {
+      m_overlays.RenderHDROverlays(menuBuffer);
+      return;
+    }
+
+    std::shared_ptr<CDVDOverlayGroup> page;
+    {
+      std::unique_lock lock(m_discMenuLock);
+      page = m_discMenuPage;
+    }
+    if (m_discMenuBufferInvalidated.exchange(false) || page != m_renderedDiscMenuPage)
+    {
+      m_overlays.Release(menuBuffer);
+      if (page)
+      {
+        for (const auto& overlay : page->m_overlays)
+          m_overlays.AddOverlay(overlay, 0, menuBuffer);
+      }
+      m_renderedDiscMenuPage = page;
+    }
+
+    graphics.Clear(0xff000000);
+    CRect view = graphics.GetViewWindow();
+    CRect source = view;
+    if (page && !page->m_overlays.empty() &&
+        page->m_overlays.front()->IsOverlayType(DVDOVERLAY_TYPE_IMAGE))
+    {
+      const auto& image = static_cast<const CDVDOverlayImage&>(*page->m_overlays.front());
+      if (image.source_width > 0 && image.source_height > 0)
+        source.SetRect(0, 0, image.source_width, image.source_height);
+    }
+    m_overlays.SetVideoRect(source, view, view);
+    m_overlays.PrepareOverlays(menuBuffer);
+    m_overlays.Render(menuBuffer);
+    return;
+  }
+
+  if (gui && m_renderedDiscMenuPage)
+  {
+    m_overlays.Release(menuBuffer);
+    m_renderedDiscMenuPage.reset();
+  }
 
   {
     std::unique_lock lock(m_statelock);
@@ -1095,6 +1181,10 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
     presented = true;
   }
+
+#ifdef HAVE_DVBRIDGE
+  presented = presented && !m_pRenderer->VideoRenderLayerPending();
+#endif
 
   // the just-presented region is video-only: OSD, GUI and subtitles come later
   if (presented)
@@ -1167,11 +1257,20 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   {
     std::unique_lock lock(m_presentlock);
 #ifdef HAVE_DVBRIDGE
-    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
-        window && window->CB1FramePending())
+    if (m_pRenderer->VideoRenderLayerPending())
     {
-      m_cb1PresentPending = true;
+      m_cb1OutputPending = true;
       return;
+    }
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+            CServiceBroker::GetWinSystem()))
+    {
+      m_cb1OutputPending = window->HasPendingCB1VideoPresentation();
+      if (window->CB1FramePending())
+      {
+        m_cb1PresentPending = true;
+        return;
+      }
     }
 #endif
 #ifdef CB1_HAS_HDR10_AI
@@ -1202,6 +1301,8 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
 bool CRenderManager::IsGuiLayer()
 {
+  if (m_discMenuOnly)
+    return true;
   {
     std::unique_lock lock(m_statelock);
 
@@ -1758,6 +1859,11 @@ void CRenderManager::PrepareNextRender()
     m_discard.push_back(m_presentsource);
     m_presentsource = idx;
     m_queued.pop_front();
+    if (m_discMenuOnly)
+    {
+      SetDiscMenuOnly(false);
+      m_playerPort->UpdateVideoRender(m_pRenderer->VideoBypassesFramebuffer());
+    }
 #ifdef HAVE_DVBRIDGE
     if (cb1Async)
       m_clockSync.m_cb1Latency.Selected(m_Queue[idx].pts, DVBRIDGE::MonotonicNowNs());
@@ -1775,6 +1881,11 @@ void CRenderManager::PrepareNextRender()
     m_presentsourcePast = m_presentsource;
     m_presentsource = m_queued.front();
     m_queued.pop_front();
+    if (m_discMenuOnly)
+    {
+      SetDiscMenuOnly(false);
+      m_playerPort->UpdateVideoRender(m_pRenderer->VideoBypassesFramebuffer());
+    }
 #ifdef HAVE_DVBRIDGE
     if (cb1Async)
       m_clockSync.m_cb1Latency.Selected(m_Queue[m_presentsource].pts, DVBRIDGE::MonotonicNowNs());
@@ -1806,7 +1917,7 @@ bool CRenderManager::HasPendingVideoPresentation()
 {
   std::unique_lock lock(m_presentlock);
 #ifdef HAVE_DVBRIDGE
-  if (m_cb1PresentPending || m_cb1OutputPending)
+  if (m_cb1OutputPending)
     return true;
 #endif
   return !m_queued.empty() || m_presentstep != PRESENT_IDLE;

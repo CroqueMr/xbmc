@@ -90,6 +90,8 @@ public:
   virtual bool NeedBuffer(int idx) { return false; }
 #ifdef HAVE_DVBRIDGE
   virtual void SetDVBridgeFELSuccessor(int index) { }
+  virtual void UpdateVideoRenderLayer() {}
+  virtual bool VideoRenderLayerPending() const { return false; }
 #endif
   virtual bool IsGuiLayer() { return true; }
   //! True when video never reaches the framebuffer: a DRM plane, an Android
@@ -103,6 +105,11 @@ public:
                                  KODI::RENDERING::CAPTURE::CaptureResult& result)
   {
     return false;
+  }
+  //! Composite externally rendered video into a finished framebuffer capture.
+  virtual bool CompositeVideoCapture(KODI::RENDERING::CAPTURE::CaptureResult& result)
+  {
+    return true;
   }
   // Render info, can be called before configure
   virtual CRenderInfo GetRenderInfo() { return CRenderInfo(); }
