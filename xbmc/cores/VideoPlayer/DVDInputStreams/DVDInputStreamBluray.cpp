@@ -445,6 +445,9 @@ bool CDVDInputStreamBluray::Open()
 #if defined(BD_HDMV_END_HOLD)
     bd_hdmv_set_end_hold(m_bd, 1);
 #endif
+#if defined(BD_HDMV_GRAPHICS_HOLD)
+    bd_hdmv_set_graphics_hold(m_bd, 1);
+#endif
     if(bd_play(m_bd) <= 0)
     {
       CLog::Log(LOGERROR, "CDVDInputStreamBluray::Open - failed play disk {}",
@@ -602,6 +605,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
   /* playback control */
 
   case BD_EVENT_SEEK:
+    m_hdmvPresentedTime = UINT64_MAX;
     m_hdmvEndPending = false;
     m_hdmvEndReleased = false;
     CLog::Log(LOGDEBUG, "CDVDInputStreamBluray - BD_EVENT_SEEK");
@@ -671,6 +675,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
 
   case BD_EVENT_TITLE:
   {
+    m_hdmvPresentedTime = UINT64_MAX;
     m_hdmvProgramEnded = false;
     m_hdmvEndPending = false;
     m_hdmvEndReleased = false;
@@ -696,6 +701,7 @@ void CDVDInputStreamBluray::ProcessEvent() {
     break;
   }
   case BD_EVENT_PLAYLIST:
+    m_hdmvPresentedTime = UINT64_MAX;
     m_hdmvProgramEnded = false;
     m_hdmvEndPending = false;
     m_hdmvEndReleased = false;
@@ -1912,6 +1918,17 @@ void CDVDInputStreamBluray::SetSubtitleVisible(bool visible)
 {
   if (CanSelectStream() && m_pgStreamNumber && m_pgStreamNumber <= m_clip->pg_stream_count)
     bd_select_stream(m_bd, BLURAY_PG_TEXTST_STREAM, m_pgStreamNumber, visible);
+}
+
+void CDVDInputStreamBluray::SetHdmvPresentedTime(uint64_t time)
+{
+#if defined(BD_HDMV_GRAPHICS_HOLD)
+  if (m_bd && m_navmode && m_title && !m_title->bdj && m_hdmvPresentedTime != time)
+  {
+    m_hdmvPresentedTime = time;
+    bd_hdmv_presented(m_bd, m_bdjClockEpoch, static_cast<int64_t>(time));
+  }
+#endif
 }
 
 void CDVDInputStreamBluray::ReleaseHdmvEnd()

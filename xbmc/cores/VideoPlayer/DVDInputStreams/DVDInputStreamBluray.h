@@ -104,6 +104,7 @@ public:
   bool HdmvEndPending() const { return m_hdmvEndPending; }
   bool WaitingForHdmvProgram() const { return m_hdmvEndPending || m_hdmvEndReleased; }
   void ReleaseHdmvEnd();
+  void SetHdmvPresentedTime(uint64_t time);
   bool OnTopMenu();
   bool OnPopupMenu();
   void OnBack() override
@@ -171,7 +172,7 @@ public:
   void CaptureBdjClockEpoch()
   {
 #if defined(BD_BDJ_PLAYBACK_CLOCK_EPOCH)
-    if (IsBdjTitle())
+    if (m_bd && m_navmode)
       m_bdjClockEpoch = bd_bdj_get_clock_epoch(m_bd);
 #endif
   }
@@ -307,6 +308,7 @@ protected:
   uint32_t m_angle = 0;
   std::atomic_bool m_menu{false};
   bool m_isInMainMenu = false;
+  uint64_t m_hdmvPresentedTime{UINT64_MAX};
   bool m_hdmvEndPending{false};
   bool m_hdmvEndReleased{false};
   bool m_hdmvProgramEnded{false};

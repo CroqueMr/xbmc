@@ -1769,7 +1769,9 @@ void CVideoPlayer::ProcessBdjPresentation()
     // The demux position and DTS describe the same packet. Use them to put
     // the rendered PTS on the playlist timeline, even when the reader is ahead.
     const double time = DVD_MSEC_TO_TIME(m_CurrentVideo.dispTime) + pts - m_CurrentVideo.dts;
-    bluray.SetBdjPlaybackTime(static_cast<uint64_t>(std::max(0.0, time) * 90000.0 / DVD_TIME_BASE));
+    const auto presented = static_cast<uint64_t>(std::max(0.0, time) * 90000.0 / DVD_TIME_BASE);
+    bluray.SetBdjPlaybackTime(presented);
+    bluray.SetHdmvPresentedTime(presented);
   }
 #endif
   while (!m_bdjPresentationEvents.empty())
