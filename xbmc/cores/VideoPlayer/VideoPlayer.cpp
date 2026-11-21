@@ -1214,10 +1214,12 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   // open video stream
   valid   = false;
 
-  PredicateVideoFilter vf(m_processInfo->GetVideoSettings().m_VideoStream);
+  const int preferredVideo = m_processInfo->GetVideoSettings().m_VideoStream;
+  PredicateVideoFilter vf(preferredVideo);
   for (const auto& stream : m_SelectionStreams.Get(StreamType::VIDEO, vf))
   {
-    if (m_pDemuxer && IsBluraySecondary(m_pDemuxer->GetStream(stream.demuxerId, stream.id)))
+    if (stream.type_index != preferredVideo && m_pDemuxer &&
+        IsBluraySecondary(m_pDemuxer->GetStream(stream.demuxerId, stream.id)))
       continue;
 
     if (OpenStream(m_CurrentVideo, stream.demuxerId, stream.id, stream.source, reset))
@@ -1238,10 +1240,12 @@ void CVideoPlayer::OpenDefaultStreams(bool reset)
   valid = false;
   if (!m_playerOptions.videoOnly)
   {
-    PredicateAudioFilter af(m_processInfo->GetVideoSettings().m_AudioStream, m_playerOptions.preferStereo);
+    const int preferredAudio = m_processInfo->GetVideoSettings().m_AudioStream;
+    PredicateAudioFilter af(preferredAudio, m_playerOptions.preferStereo);
     for (const auto& stream : m_SelectionStreams.Get(StreamType::AUDIO, af))
     {
-      if (m_pDemuxer && IsBluraySecondary(m_pDemuxer->GetStream(stream.demuxerId, stream.id)))
+      if (stream.type_index != preferredAudio && m_pDemuxer &&
+          IsBluraySecondary(m_pDemuxer->GetStream(stream.demuxerId, stream.id)))
         continue;
 
       if(OpenStream(m_CurrentAudio, stream.demuxerId, stream.id, stream.source, reset))
