@@ -134,6 +134,9 @@ void CEGLFence::WaitSyncCPU()
     return;
 
   if (m_eglClientWaitSyncKHR(m_display, m_kmsFence, 0, EGL_FOREVER_KHR) != EGL_FALSE)
+  {
     m_eglDestroySyncKHR(m_display, m_kmsFence);
+    m_kmsFence = EGL_NO_SYNC_KHR;
+  }
 }
 #endif
