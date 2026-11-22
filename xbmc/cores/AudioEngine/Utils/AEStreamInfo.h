@@ -66,6 +66,7 @@ public:
   }
   void SetCoreOnly(bool value) { m_coreOnly = value; }
   void SetTrueHDOnly(bool value) { m_trueHdOnly = value; }
+  void SetDTSHDMA(bool value) { m_dtsHDMA = value; }
   unsigned int IsValid() const { return m_hasSync; }
   unsigned int GetSampleRate() const { return m_info.m_sampleRate; }
   unsigned int GetChannels() const { return m_info.m_channels; }
@@ -95,6 +96,7 @@ private:
 
   unsigned int m_skipCount = 0;
   unsigned int m_coreSize = 0;         /* core size for dtsHD */
+  bool m_dtsHDMA = false; /* stream is dtsHD MA for this parser's lifetime */
   unsigned int m_dtsBlocks = 0;
   unsigned int m_fsize = 0;
   int m_substreams = 0;       /* used for TrueHD  */
