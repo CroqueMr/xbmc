@@ -32,6 +32,7 @@
 #include "guilib/GUIFont.h"
 #include "guilib/GUITextLayout.h"
 #include "guilib/GUIFontManager.h"
+#include "utils/TimeUtils.h"
 #include "windowing/WinSystem.h"
 #include "windowing/GraphicContext.h"
 #include <algorithm>
@@ -108,9 +109,16 @@ void CGUIDialogPlayerProcessInfo::OnInitWindow()
   SetProperty("DV.GPUAvailable", false);
   SetProperty("DV.GPURender", "N/A");
   if (enhanced)
+  {
     RefreshInfo();
+    m_nextRefresh = CTimeUtils::GetFrameTime() + 500;
+  }
 #endif
   CGUIDialog::OnInitWindow();
+#ifdef HAVE_DVBRIDGE
+  if (enhanced)
+    UpdatePanelHeight();
+#endif
 }
 
 void CGUIDialogPlayerProcessInfo::OnDeinitWindow(int nextWindowID)
@@ -614,29 +622,34 @@ void CGUIDialogPlayerProcessInfo::Process(unsigned int currentTime, CDirtyRegion
   CGUIDialog::Process(currentTime, dirtyregions);
 #ifdef HAVE_DVBRIDGE
   if (refresh)
-  {
-    // Measure native grouplists after hidden rows have collapsed.
-    for (int layout = 0; layout < 2; ++layout)
-    {
-      auto* panel = GetControl(9600 + layout);
-      auto* surface = GetControl(9610 + layout);
-      if (!panel || !surface)
-        continue;
-      float content = 0.0f;
-      for (int column = 0; column < 3; ++column)
-        if (const auto* list = dynamic_cast<const CGUIControlGroupList*>(
-                GetControl(9620 + layout * 10 + column)))
-          content = std::max(content, list->GetTotalSize());
-      if (content <= 0.0f)
-        continue;
-      const float height = 108.0f + content + 16.0f;
-      panel->SetHeight(height);
-      panel->SetPosition(panel->GetXPosition(), GetCoordsRes().iHeight - 24.0f - height);
-      surface->SetHeight(height + 40.0f);
-    }
-  }
+    UpdatePanelHeight();
 #endif
 }
+
+#ifdef HAVE_DVBRIDGE
+void CGUIDialogPlayerProcessInfo::UpdatePanelHeight()
+{
+  // Initial visibility is already resolved on open, before the first frame.
+  for (int layout = 0; layout < 2; ++layout)
+  {
+    auto* panel = GetControl(9600 + layout);
+    auto* surface = GetControl(9610 + layout);
+    if (!panel || !surface)
+      continue;
+    float content = 0.0f;
+    for (int column = 0; column < 3; ++column)
+      if (const auto* list = dynamic_cast<const CGUIControlGroupList*>(
+              GetControl(9620 + layout * 10 + column)))
+        content = std::max(content, list->GetTotalSize());
+    if (content <= 0.0f)
+      continue;
+    const float height = 108.0f + content + 16.0f;
+    panel->SetHeight(height);
+    panel->SetPosition(panel->GetXPosition(), GetCoordsRes().iHeight - 24.0f - height);
+    surface->SetHeight(height + 40.0f);
+  }
+}
+#endif
 
 bool CGUIDialogPlayerProcessInfo::OnAction(const CAction &action)
 {
