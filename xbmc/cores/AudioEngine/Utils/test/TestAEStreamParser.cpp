@@ -95,6 +95,7 @@ std::vector<CAEStreamInfo::DataType> Parse(std::vector<uint8_t> stream,
     const size_t available = std::min(chunk, stream.size() - pos);
     const int used =
         parser.AddData(stream.data() + pos, static_cast<unsigned int>(available), &out, &outSize);
+    delete[] out;
     if (outSize > 0)
       types.push_back(parser.GetDataType());
     if (used <= 0 && outSize == 0)
