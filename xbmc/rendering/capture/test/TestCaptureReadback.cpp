@@ -6,6 +6,7 @@
  *  See LICENSES/README.md for more information.
  */
 
+#include "cores/VideoPlayer/VideoRenderers/DVBridgeScreenshot.h"
 #include "rendering/capture/CaptureConvert.h"
 #include "rendering/capture/CapturePixels.h"
 #include "rendering/capture/CaptureTypes.h"
@@ -71,4 +72,22 @@ TEST(TestCaptureReadback, PackedX2BGR10ChannelOrder)
   EXPECT_GT(buffer[4], 250); // B
   EXPECT_LT(buffer[5], 4); // G
   EXPECT_LT(buffer[6], 4); // R
+}
+
+TEST(TestCaptureReadback, MasterCarrierUsesTwelveBitSignalUnits)
+{
+  // Shared neutral chroma at code 2048, with luma at codes 512 and 3072.
+  const uint8_t carrier[] = {128, 32, 0, 255, 128, 192, 0, 255};
+  const float decode[] = {1, 0, 0, 0, 1, 1, 0, -0.5f, 1, 0, 1, -0.5f};
+  const float linear[] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  uint16_t rgb[8]{};
+
+  ASSERT_TRUE(DVBRIDGE::DecodeReferenceScreenshot(carrier, 2, 1, decode, linear, rgb));
+  for (unsigned int channel = 0; channel < 3; ++channel)
+  {
+    EXPECT_EQ(rgb[channel], 8192);
+    EXPECT_EQ(rgb[4 + channel], 49151);
+  }
+  EXPECT_EQ(rgb[3], 65535);
+  EXPECT_EQ(rgb[7], 65535);
 }
