@@ -444,14 +444,14 @@ void CGUIDialogSelect::OnInitWindow()
     constexpr int listTop = 104;
     constexpr int footerGap = 10;
     constexpr int footerHeight = 32;
-    constexpr int footerPadding = 12;
+    constexpr int footerBottom = 24;
     constexpr int padding = 24;
     constexpr int rowHeight = 38;
     constexpr int margin = 40;
     const bool hasFooter = std::any_of(m_vecList->begin(), m_vecList->end(),
                                        [](const auto& item) { return !item->GetLabel2().empty(); });
-    const int spacing = listTop + (hasFooter ? footerGap + footerHeight + footerPadding : padding);
-    const int bottomMargin = hasFooter ? 56 : margin;
+    const int spacing = listTop + padding;
+    const int bottomMargin = hasFooter ? footerBottom + footerHeight + footerGap : margin;
     const int maxRows =
         std::max(1, (GetCoordsRes().iHeight - margin - bottomMargin - spacing) / rowHeight);
     const float rowsHeight = rowHeight * std::clamp(m_vecList->Size(), 1, maxRows);
@@ -464,8 +464,6 @@ void CGUIDialogSelect::OnInitWindow()
     if (auto* background = GetControl(9101)) background->SetHeight(height);
     for (int id : {CONTROL_SIMPLE_LIST, CONTROL_DETAILED_LIST})
       if (auto* list = GetControl(id)) list->SetHeight(rowsHeight);
-    if (auto* footer = GetControl(9103))
-      footer->SetPosition(footer->GetXPosition(), listTop + footerGap + rowsHeight);
   }
 #endif
   m_viewControl.SetItems(*m_vecList);
