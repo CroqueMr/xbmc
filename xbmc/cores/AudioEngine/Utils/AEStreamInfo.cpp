@@ -444,10 +444,16 @@ void NeutralizeDolbyDialnorm(uint8_t* frame, unsigned int size, bool knownJoc)
     if ((streamType != 0 && streamType != 2) || substream ||
         (rateCode == 3 && code == 3))
       return;
+    const unsigned int blocks = rateCode == 3 ? 6 : AC3BlkCod[code];
     bool joc = false;
     if (!ReadEac3Joc(bits, mode, (frame[4] & 1) != 0, rateCode,
-                     rateCode == 3 ? 6 : AC3BlkCod[code], streamType == 2, joc) ||
-        joc)
+                     blocks, streamType == 2, joc) || joc)
+      return;
+
+    // Skip fields and auxiliary data can carry protected EMDF even without JOC.
+    // Recalculating CRC2 cannot repair protection that covers the original dialnorm.
+    if (!bits.Skip(blocks == 6 ? 10 : 8) || bits.Read(1) || !bits.Valid() ||
+        (frame[size - 3] & 0x02)) // skipflde and auxdatae, ETSI TS 102 366 Annex E
       return;
   }
 
