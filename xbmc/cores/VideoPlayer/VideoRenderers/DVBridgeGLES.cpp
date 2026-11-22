@@ -2554,6 +2554,48 @@ bool CDVBridgeGLES::UsesMasterSourceCarrier(dvbridge_mode mode, bool masterIPT,
   return av_dovi_get_color(parsed)->signal_color_space == 2;
 }
 
+bool CDVBridgeGLES::ReadPlayerLedScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
+{
+  if (!m_playerLedPicture || m_playerLedPicture->params.w != m_scanout->params.w ||
+      m_playerLedPicture->params.h != m_scanout->params.h)
+    return false;
+
+  const auto gpu = m_gl->gpu;
+  GLint readFramebuffer, drawFramebuffer;
+  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFramebuffer);
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFramebuffer);
+
+  pl_tex_params params{};
+  params.w = m_playerLedPicture->params.w;
+  params.h = m_playerLedPicture->params.h;
+  params.format = m_playerLedPicture->params.format;
+  params.renderable = true;
+  pl_tex pq = pl_tex_create(gpu, &params);
+  KODI::RENDERING::CAPTURE::ReadbackBuffer pixels;
+  bool read = false;
+  // The fitted picture includes the GUI in display-linear RGB. Preserve its
+  // row order for capture.
+  if (pq && dvbridge_resolve_player_led_rgb10(m_renderer, &m_playerLedPolicy,
+                                             m_playerLedPicture, pq, false))
+  {
+    GLuint framebuffer = 0;
+    pl_opengl_unwrap(gpu, pq, nullptr, nullptr, &framebuffer);
+    if (framebuffer)
+    {
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
+      read = KODI::RENDERING::CAPTURE::ReadFramebufferRegion(0, 0, params.w, params.h, 16, false,
+                                                            pixels);
+    }
+  }
+  pl_tex_destroy(gpu, &pq);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebuffer);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, drawFramebuffer);
+  if (!read)
+    return false;
+  out = std::move(pixels);
+  return true;
+}
+
 bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out, bool videoOnly)
 {
   using namespace KODI::RENDERING::CAPTURE;
@@ -2579,6 +2621,8 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
     return false;
   }
   if (!m_scanout) return failed("no-scanout");
+  if (m_playerLed)
+    return (!videoOnly && ReadPlayerLedScreenshot(out)) || failed("player-led-readback");
   if ((master || sdr) && !m_direct) return failed("direct-target");
   const auto framebuffer=master || sdr ? m_scanoutFramebuffer : GetPQFramebuffer(!videoOnly);
   if (!master && !sdr && !framebuffer) return failed("direct-target");
@@ -2657,8 +2701,7 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
     pixels.stride=-int(pixels.width*8);
     pixels.format=AV_PIX_FMT_RGBA64LE;
   }
-  // The LLDV intermediate is still display-linear.
-  pixels.colorEncodingVerified = sdr || master || (m_hdr10 && !m_playerLed);
+  pixels.colorEncodingVerified = sdr || master || m_hdr10;
   out=std::move(pixels);
   return true;
 }
