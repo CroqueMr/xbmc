@@ -108,11 +108,7 @@ public:
                                                          int preference,
                                                          bool sourceRateTooHigh) const;
   bool LldvSupportsPlaybackTiming(double fps, bool requireCurrentMode = false) const;
-  bool DVModeSwitchDeferred()
-  {
-    return !m_dvRollbackFailed && m_dvShutdownFence && m_dvContext &&
-        m_dvContext->Poll() != DVBRIDGE_DV_FAILED;
-  }
+  bool ConsumeDVModeSwitchDeferral();
   void ObserveDVImport(DVBRIDGE::SourceBinding binding, dvbridge_geometry geometry, bool usable);
   DVBRIDGE::OutputSelection SelectedDVOutput(const VideoPicture* picture) const;
   DVBRIDGE::OutputReason ConsumeDVPlaybackFailure(DVBRIDGE::SourceBinding binding);
@@ -282,6 +278,7 @@ private:
   double m_preparedSourcePts{};
   double m_cb1RenderPts{}, m_preparedRenderPts{};
   bool m_dvShutdownFence{};
+  bool m_dvModeSwitchDeferred{};
   bool m_dvRejectedSurface{}, m_dvRollbackFailed{};
   bool PollRejectedDVSurface();
   bool PrepareOrdinaryDVOutput(const VideoPicture* picture);

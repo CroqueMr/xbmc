@@ -240,6 +240,7 @@ bool CWinSystemGbmGLESContext::PrepareNvidiaModeRestore(const RESOLUTION_INFO& r
   {
     if (!m_dvContext || m_dvContext->Quarantined()) return false;
     glFinish();
+    m_dvModeSwitchDeferred = false;
     if (!RetireDVContext()) return false;
   }
   const auto previous = m_DRM->GetCurrentMode();
@@ -248,6 +249,13 @@ bool CWinSystemGbmGLESContext::PrepareNvidiaModeRestore(const RESOLUTION_INFO& r
   m_DRM->SetMode(previous);
   m_DRM->SetVideoMode(previous,nullptr);
   return false;
+}
+
+bool CWinSystemGbmGLESContext::ConsumeDVModeSwitchDeferral()
+{
+  const bool deferred = m_dvModeSwitchDeferred;
+  m_dvModeSwitchDeferred = false;
+  return deferred && !m_dvRollbackFailed;
 }
 #endif
 
@@ -1092,7 +1100,12 @@ void CWinSystemGbmGLESContext::TrackCB1VideoPage(bool pending)
 
 bool CWinSystemGbmGLESContext::CompleteDVBridgePage(int timeoutMs)
 {
-  if (!CWinSystemGbm::CompleteDVBridgePage(timeoutMs)) return false;
+  if (!CWinSystemGbm::CompleteDVBridgePage(timeoutMs))
+  {
+    auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+    m_dvModeSwitchDeferred = drm && drm->CanWaitForCB1Page();
+    return false;
+  }
   if (m_cb1PageSource.Valid())
   {
     m_cb1DisplayedSource = m_cb1PageSource;
@@ -4229,7 +4242,10 @@ bool CWinSystemGbmGLESContext::RetireDVContext()
     m_dvShutdownFence = true;
     if (!m_dvContext->FenceLastUse()) return false;
   }
-  if (m_dvContext->Poll() != DVBRIDGE_DV_IDLE || !m_dvContext->Close()) return false;
+  const auto status = m_dvContext->Poll();
+  if (status == DVBRIDGE_DV_BUSY)
+    m_dvModeSwitchDeferred = true;
+  if (status != DVBRIDGE_DV_IDLE || !m_dvContext->Close()) return false;
   // Retain the per-video setting snapshot across graphics-context recreation.
   m_dvShutdownFence = false;
   return true;

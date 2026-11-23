@@ -232,7 +232,18 @@ protected:
   mutable CCriticalSection m_statelock;
   CCriticalSection m_presentlock;
   CCriticalSection m_datalock;
-  bool m_bTriggerUpdateResolution = false;
+  void RequestResolutionUpdate();
+  enum class ResolutionUpdate
+  {
+    IDLE,
+    REQUESTED,
+    RUNNING,
+    DEFERRED
+  };
+  std::atomic<ResolutionUpdate> m_resolutionUpdate{ResolutionUpdate::IDLE};
+#ifdef HAVE_DVBRIDGE
+  std::optional<XbmcThreads::EndTime<>> m_dvModeSwitchDeadline;
+#endif
   std::atomic_bool m_nativeDVRate{false};
   bool m_bRenderGUI = true;
   bool m_renderedDebugOverlay = false;

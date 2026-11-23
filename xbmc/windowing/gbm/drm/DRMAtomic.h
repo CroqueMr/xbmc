@@ -64,6 +64,7 @@ public:
                              bool* lldvTestRejected = nullptr);
   bool FlipPageWithHDR10Metadata(struct gbm_bo* bo, uint32_t blob);
   bool HasPendingCB1Page() const { return m_cb1Pending; }
+  bool CanWaitForCB1Page() const { return m_cb1Pending && !m_cb1Uncertain; }
   bool HasPendingRequest() const { return m_need_modeset || (m_req && !m_req->Empty()); }
   bool CompleteCB1Page(int timeoutMs = 0);
   uint64_t CB1PresentationTime() const { return m_cb1CompletedNs; }
