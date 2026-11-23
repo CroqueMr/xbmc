@@ -918,15 +918,21 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         const auto previous = cache.GetVideoProcessingInfo();
         const int fallback = !drm->HDR10PlusActive() && GetEotf() == KODI::UTILS::Eotf::PQ
                                  ? nativeHDR10PlusFallback : 0;
+        const auto outputType = drm->HDR10PlusActive() ? VideoOutputType::HDR10Plus :
+            GetEotf() == KODI::UTILS::Eotf::PQ ? VideoOutputType::HDR10 :
+            GetEotf() == KODI::UTILS::Eotf::HLG ? VideoOutputType::HLG : VideoOutputType::SDR;
+        const int gamut = outputType == VideoOutputType::SDR && IsNativeSDRVideo()
+                              ? (NativeSDRBT2020Committed() ? DVBRIDGE_GAMUT_BT2020
+                                                             : DVBRIDGE_GAMUT_BT709)
+                              : 0;
         if (generation!=previousGeneration || now>=next || previous.output.flags ||
             previous.nativeHDR10PlusFallbackLabel != fallback ||
-            (previous.outputType == VideoOutputType::HDR10Plus) != drm->HDR10PlusActive())
+            previous.outputType != outputType || previous.output.gamut != gamut)
         {
           auto info=DVBRIDGE::NativeProcessingInfo(DVBRIDGE::StreamTelemetry::Read());
-          info.output={}; info.outputType.reset();
-          info.outputType = drm->HDR10PlusActive() ? VideoOutputType::HDR10Plus :
-              GetEotf() == KODI::UTILS::Eotf::PQ ? VideoOutputType::HDR10 :
-              GetEotf() == KODI::UTILS::Eotf::HLG ? VideoOutputType::HLG : VideoOutputType::SDR;
+          info.output = {};
+          info.output.gamut = gamut;
+          info.outputType = outputType;
           info.nativeHDR10PlusFallbackLabel = fallback;
           if (cache.SetVideoProcessingInfo(info.informationGeneration,info))
           {
