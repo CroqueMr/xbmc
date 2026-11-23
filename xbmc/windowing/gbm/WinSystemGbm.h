@@ -140,6 +140,8 @@ public:
 
 protected:
 #ifdef HAVE_DVBRIDGE
+  bool NativeSDRBT2020Committed() const { return m_nativeSDRSubmitted; }
+
   struct DVOutputTiming
   {
     int index;
