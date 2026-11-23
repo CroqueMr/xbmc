@@ -10,6 +10,7 @@
 
 #include "GBMDPMSSupport.h"
 #include "OptionalsReg.h"
+#include "SDROutputGamut.h"
 #include "ServiceBroker.h"
 #include "VideoSyncGbm.h"
 
@@ -1363,7 +1364,14 @@ void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture, bool native
                          videoPicture->hdrType == StreamHdrType::HDR_TYPE_NONE &&
                          videoPicture->color_transfer != AVCOL_TRC_SMPTE2084 &&
                          videoPicture->color_transfer != AVCOL_TRC_ARIB_STD_B67;
-  m_nativeSDRSource = nativeSDR && videoPicture->color_primaries == AVCOL_PRI_BT2020;
+  auto gamut = SDROutputGamut::Auto;
+#ifdef HAVE_DVBRIDGE
+  gamut = static_cast<SDROutputGamut>(
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt("dvbridge.sdrgamutvalue"));
+#endif
+  m_nativeSDRVideo = nativeSDR;
+  m_nativeSDRSource = nativeSDR &&
+      WantsSDRBT2020(gamut, videoPicture->color_primaries == AVCOL_PRI_BT2020);
   m_nativeSDRRejected = false;
   if (!m_nativeSDRSource)
     m_nativeSDRActive = false;
@@ -1408,6 +1416,8 @@ std::optional<uint64_t> CWinSystemGbm::NativeSDRBT2020Colorspace() const
   if (!connector || !connector->IsConnected() || !connector->GetType().starts_with("HDMI") ||
       !connector->SupportsProperty("Colorspace") ||
       connector->IsPropertyImmutable("Colorspace").value_or(false) || !m_info)
+    return {};
+  if (const uint64_t bpc = GetEffectiveMaxBpc(); bpc != 0 && bpc < 10)
     return {};
 
   const auto target = IsYuvRequested() ? KODI::UTILS::Colorimetry::BT2020_YCC :
@@ -1938,14 +1948,17 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
   return accepted;
 }
 
-CWinSystemGbm::SDRBT2020Support CWinSystemGbm::GetSDRBT2020Support() const
+CWinSystemGbm::SDRBT2020Support CWinSystemGbm::GetSDRBT2020Support(bool nativeFormat) const
 {
-  // CB1's existing SDR scanout stages RGB via CaptureColorPreferences.
   auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
-  if (!connector || !connector->GetType().starts_with("HDMI") ||
-      !connector->GetPropertyEnumValue("Colorspace", "BT2020_RGB"))
+  const auto target = nativeFormat && IsYuvRequested() ? KODI::UTILS::Colorimetry::BT2020_YCC :
+                                                        KODI::UTILS::Colorimetry::BT2020_RGB;
+  if (!connector || !connector->IsConnected() || !connector->GetType().starts_with("HDMI") ||
+      !connector->GetPropertyEnumValue("Colorspace", ColorimetryMap.at(target)))
     return SDRBT2020Support::Driver;
-  if (!m_info || !m_info->SupportsColorimetry(KODI::UTILS::Colorimetry::BT2020_RGB))
+  if (const uint64_t bpc = GetEffectiveMaxBpc(); bpc != 0 && bpc < 10)
+    return SDRBT2020Support::Driver;
+  if (!m_info || !m_info->SupportsColorimetry(target))
     return SDRBT2020Support::Display;
   return SDRBT2020Support::Available;
 }

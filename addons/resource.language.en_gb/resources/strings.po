@@ -26788,7 +26788,7 @@ msgid " - SDR output gamut"
 msgstr ""
 
 msgctxt "#41271"
-msgid "Select the colour gamut used by SDR Rendering. BT.709 is compatible with standard SDR displays."
+msgid "Choose the colour gamut for SDR video playback. Auto preserves supported native SDR and uses BT.709 for SDR conversion."
 msgstr ""
 
 msgctxt "#41272"

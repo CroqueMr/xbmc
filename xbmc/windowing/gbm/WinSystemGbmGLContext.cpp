@@ -7,6 +7,7 @@
  */
 
 #include "WinSystemGbmGLContext.h"
+#include "SDROutputGamut.h"
 
 #include "OptionalsReg.h"
 #include "ServiceBroker.h"
@@ -242,7 +243,10 @@ bool CWinSystemGbmGLContext::SetGuiCompositing(int colorTransfer)
   }
 
   if (m_compositeShader)
-    m_compositeShader->SetSDRBT2020(colorTransfer == AVCOL_TRC_BT2020_10);
+  {
+    const auto [scale, black] = SDROutputRange(UseLimitedColor(), GetOutputBitDepth());
+    m_compositeShader->SetSDRBT2020(colorTransfer == AVCOL_TRC_BT2020_10, scale, black);
+  }
   return m_guiCompositing;
 }
 

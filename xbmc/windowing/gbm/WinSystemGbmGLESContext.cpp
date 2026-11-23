@@ -7,6 +7,7 @@
  */
 
 #include "WinSystemGbmGLESContext.h"
+#include "SDROutputGamut.h"
 #include "ServiceBroker.h"
 #include "utils/DVBridgeDiagnosticLog.h"
 #include "cores/DataCacheCore.h"
@@ -1562,6 +1563,12 @@ void CWinSystemGbmGLESContext::CompositeGui()
   if (!m_guiWillRender && m_DRM && m_DRM->GetVideoPlane() != nullptr &&
       m_DRM->GetGuiPlane() != nullptr)
     return;
+
+  if (m_guiColorTransfer == AVCOL_TRC_BT2020_10)
+  {
+    const auto [scale, black] = SDROutputRange(UseLimitedColor(), GetOutputBitDepth());
+    m_compositeShader->SetOutputRange(scale, black);
+  }
 
 #ifdef HAVE_DVBRIDGE
   GLint previousFramebuffer = 0;

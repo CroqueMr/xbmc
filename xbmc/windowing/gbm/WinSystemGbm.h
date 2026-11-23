@@ -111,6 +111,7 @@ public:
     return m_nativeSDRActive ? KODI::UTILS::Colorimetry::BT2020_YCC : m_colorimetry;
   }
   bool UsesNativeSDRBT2020() const override { return m_nativeSDRActive; }
+  bool IsNativeSDRVideo() const { return m_nativeSDRVideo; }
   bool BeginFrameGuiComposite(bool guiWillRender) override;
   KODI::UTILS::Eotf GetEotf() const override { return m_eotf; }
   bool SetHDR(const VideoPicture* videoPicture) override;
@@ -118,7 +119,7 @@ public:
   CHDRCapabilities GetDisplayHDRCapabilities() const override;
 #ifdef HAVE_DVBRIDGE
   enum class SDRBT2020Support { Available, Display, Driver };
-  SDRBT2020Support GetSDRBT2020Support() const;
+  SDRBT2020Support GetSDRBT2020Support(bool nativeFormat = false) const;
   DVBRIDGE::LldvConnectorStatus GetLldvConnectorStatus(bool snapshot = false) const;
   bool FlipPlayerLedPage(CDVBridgeState& state, const DVBRIDGE::LldvTransport& packed,
                          bool async = false, gbm_bo* carrier = nullptr,
@@ -276,6 +277,7 @@ private:
   std::string m_colorFormatFailedMode;
   std::string m_currentModeId;
 
+  bool m_nativeSDRVideo{false};
   bool m_nativeSDRSource{false};
   bool m_nativeSDRCompositor{false};
   std::atomic<bool> m_nativeSDRActive{false};
