@@ -134,6 +134,9 @@ bool CDVBridgeState::CaptureTransport(CDRMAtomic& drm, uint64_t ownVsif, bool le
       {connector,"HDR_OUTPUT_METADATA",0,true,true},
       {connector,"DVBRIDGE_HDR10_DEEP_COLOR",0,false,false},
       {connector,"max bpc",8,true,false},
+      // R620 exposes explicit link overrides on the same connector.
+      {connector,"NV_CONNECTOR_COLOR_FORMAT",0,false,false,"RGB"},
+      {connector,"NV_CONNECTOR_OUTPUT_BPC",0,false,false,"auto"},
       {connector,"dithering mode",0,true,false,"off"},
       {connector,"Colorspace",0,true,false,"Default"},
       {crtc,"NV_CRTC_REGAMMA_TF",0,false,false,"Default"},
