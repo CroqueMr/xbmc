@@ -24,6 +24,7 @@ void CGuiCompositeShaderGL::OnCompiledAndLinked()
   m_hProj = glGetUniformLocation(ProgramHandle(), "u_proj");
   m_hSdrPeak = glGetUniformLocation(ProgramHandle(), "u_sdrPeak");
   m_hSDRBT2020 = glGetUniformLocation(ProgramHandle(), "u_sdrBT2020");
+  m_hSDRRange = glGetUniformLocation(ProgramHandle(), "u_sdrRange");
 
   glUseProgram(ProgramHandle());
   glUniform1i(m_hSamp, 0);
@@ -37,5 +38,6 @@ bool CGuiCompositeShaderGL::OnEnabled()
 
   glUniform1f(m_hSdrPeak, m_sdrPeak);
   glUniform1i(m_hSDRBT2020, m_sdrBT2020);
+  glUniform2f(m_hSDRRange, m_sdrScale, m_sdrBlack);
   return true;
 }

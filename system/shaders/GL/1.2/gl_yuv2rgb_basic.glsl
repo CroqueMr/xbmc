@@ -127,5 +127,8 @@ vec4 process()
   rgb.rgb = pow(rgb.rgb, vec3(m_gammaDstInv));
 #endif
 
+#if defined(KODI_SDR_OUTPUT_CONVERSION)
+  rgb.rgb = encodeSDROutput(rgb.rgb);
+#endif
   return rgb;
 }

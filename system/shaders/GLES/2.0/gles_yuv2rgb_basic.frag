@@ -178,6 +178,10 @@ void main()
 #if defined(KODI_CLAMP_OUTPUT)
   rgb = clamp(rgb, 0.0, 1.0);
 #endif
+
+#if defined(KODI_SDR_OUTPUT_CONVERSION)
+  rgb.rgb = encodeSDROutput(rgb.rgb);
+#endif
   gl_FragColor = rgb;
 }
 

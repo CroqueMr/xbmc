@@ -76,7 +76,7 @@ void main()
     if (u_sdrBT2020) linear = bt709_to_bt2020 * linear;
     highp vec3 result = pow(max(linear, vec3(0.0)), vec3(-1.0 / u_ootfGamma));
 #if defined(KODI_LIMITED_RANGE)
-    result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
+    if (!u_unpremultiplyGui) result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
 #endif
     gl_FragColor = vec4(result * u_outputRange.x + u_outputRange.y, gui.a);
     return;

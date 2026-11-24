@@ -54,20 +54,12 @@
         </setting>
         <setting id="dvbridge.sdrgamut" type="action" label="41270" help="41271">
           <requirement>HAVE_DVBRIDGE</requirement><level>0</level>
-          <dependencies>
-            <dependency type="visible"><or>
-              <condition setting="dvbridge.outputmode">6</condition>
-              <condition setting="dvbridge.hdr10source">4</condition>
-              <condition setting="dvbridge.hdr10plussource">4</condition>
-              <condition setting="dvbridge.hlgsource">2</condition>
-            </or></dependency>
-          </dependencies>
           <control type="button" format="action" />
         </setting>
         <setting id="dvbridge.sdrgamutvalue" type="integer" label="41270">
           <requirement>HAVE_DVBRIDGE</requirement><level>3</level><visible>false</visible>
           <default>0</default>
-          <constraints><options><option label="41272">0</option><option label="41273">1</option></options></constraints>
+          <constraints><options><option label="40984">0</option><option label="41272">2</option><option label="41273">1</option></options></constraints>
           <control type="list" format="string" />
         </setting>
         <setting id="dvbridge.sdrpeak" type="number" label="41138" help="41134">

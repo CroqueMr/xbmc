@@ -401,12 +401,13 @@ int SDRBT2020Unavailable()
   const auto* gbm = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbm*>(CServiceBroker::GetWinSystem());
   if (gbm)
   {
-    switch (gbm->GetSDRBT2020Support())
-    {
-      case KODI::WINDOWING::GBM::CWinSystemGbm::SDRBT2020Support::Available: return 0;
-      case KODI::WINDOWING::GBM::CWinSystemGbm::SDRBT2020Support::Display: return 41274;
-      case KODI::WINDOWING::GBM::CWinSystemGbm::SDRBT2020Support::Driver: break;
-    }
+    using Support = KODI::WINDOWING::GBM::CWinSystemGbm::SDRBT2020Support;
+    const auto native = gbm->GetSDRBT2020Support(true);
+    const auto converted = gbm->GetSDRBT2020Support();
+    if (native == Support::Available || converted == Support::Available)
+      return 0;
+    if (native == Support::Display || converted == Support::Display)
+      return 41274;
   }
 #endif
   return 41275;
@@ -424,6 +425,8 @@ void ShowSDRGamutMenu()
   dialog->Reset();
   dialog->SetHeading(strings.Get(41270));
   dialog->SetUseDetails(true);
+  static constexpr int values[] = {0, 2, 1};
+  dialog->Add(CFileItem(strings.Get(40984)));
   dialog->Add(CFileItem(strings.Get(41272)));
   const auto label = strings.Get(41273);
   CFileItem wide(reason ? "[COLOR grey]" + label + "[/COLOR]" : label);
@@ -431,11 +434,13 @@ void ShowSDRGamutMenu()
   if (reason)
     wide.SetLabel2(strings.Get(reason));
   dialog->Add(wide);
-  dialog->SetSelected(reason ? 0 : settings->GetInt("dvbridge.sdrgamutvalue"));
+  const int value = settings->GetInt("dvbridge.sdrgamutvalue");
+  dialog->SetSelected(value == 1 ? 2 : value == 2 ? 1 : 0);
   dialog->Open();
   const int selected = dialog->GetSelectedItem();
-  if (dialog->IsConfirmed() && (selected == 0 || (selected == 1 && !SDRBT2020Unavailable())) &&
-      settings->SetInt("dvbridge.sdrgamutvalue", selected))
+  if (dialog->IsConfirmed() && selected >= 0 && selected < static_cast<int>(std::size(values)) &&
+      (values[selected] != 1 || !SDRBT2020Unavailable()) &&
+      settings->SetInt("dvbridge.sdrgamutvalue", values[selected]))
     settings->Save();
 }
 
@@ -587,8 +592,9 @@ std::string CDVPlaybackModes::LldvPreferenceLabel()
 std::string CDVPlaybackModes::SDRGamutLabel()
 {
   const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const int gamut = settings->GetInt("dvbridge.sdrgamutvalue");
   return CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(
-      settings->GetInt("dvbridge.sdrgamutvalue")==1 && !SDRBT2020Unavailable() ? 41273 : 41272);
+      gamut == 1 ? (!SDRBT2020Unavailable() ? 41273 : 41272) : gamut == 2 ? 41272 : 40984);
 }
 
 void CDVPlaybackModes::OnSettingAction(const std::shared_ptr<const CSetting>& setting)

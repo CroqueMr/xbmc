@@ -444,6 +444,15 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         (data.output.iptTransport ? "TV-Led / IPT-PQc2 tunnel" : "TV-Led / YCbCr tunnel") :
         active & CDVPlaybackInfo::HDR10PLUS ? "PQ / BT.2020 / HDR10+" :
         hdr10 ? "PQ / BT.2020" : "");
+    const char* sdrGamut = "";
+    if (data.outputType == VideoOutputType::SDR)
+    {
+      if (data.output.gamut == DVBRIDGE_GAMUT_BT709)
+        sdrGamut = "BT.709";
+      else if (data.output.gamut == DVBRIDGE_GAMUT_BT2020)
+        sdrGamut = "BT.2020";
+    }
+    SetProperty("DV.SDROutputGamut", sdrGamut);
     SetProperty("DV.Committed", active && data.output.stream ? StringUtils::Format("{} / {} / {}",
         data.output.stream,data.output.picture,data.output.revision) : "");
     // Next-picture preparation is not an output-mode transition.

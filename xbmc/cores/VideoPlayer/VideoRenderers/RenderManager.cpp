@@ -131,7 +131,7 @@ bool CRenderManager::Configure(const VideoPicture& picture, float fps, unsigned 
                   m_fps, fps);
         m_fps = fps;
         m_pRenderer->SetFps(fps);
-        m_bTriggerUpdateResolution = true;
+        RequestResolutionUpdate();
         // Clear stale vsync/late-frame state from the old framerate; CheckEnableClockSync() will recalibrate on the next FrameMove on the main thread.
         m_clockSync.Reset();
         m_dvdClock.SetVsyncAdjust(0);
@@ -314,7 +314,7 @@ bool CRenderManager::Configure()
       m_free.push_back(i);
 
     m_bRenderGUI = true;
-    m_bTriggerUpdateResolution = true;
+    RequestResolutionUpdate();
     m_presentstep = PRESENT_IDLE;
     m_presentpts = DVD_NOPTS_VALUE;
     m_lateframes = -1;
@@ -653,7 +653,7 @@ void CRenderManager::FrameMove()
 #endif
 #ifdef CB1_HAS_HDR10_AI
     // Release the first real presentation before preparing a speculative next head.
-    if (!m_aiGuiReady && m_aiFullscreenRequested && m_aiStartPts != DVD_NOPTS_VALUE && !m_bTriggerUpdateResolution &&
+    if (!m_aiGuiReady && m_aiFullscreenRequested && m_aiStartPts != DVD_NOPTS_VALUE && m_resolutionUpdate == ResolutionUpdate::IDLE &&
         m_pRenderer->HDR10AIFrameCommitted() && (!m_aiFullscreenWanted ||
         CServiceBroker::GetGUI()->GetWindowManager().IsWindowActive(WINDOW_FULLSCREEN_VIDEO)))
     {
@@ -1405,45 +1405,78 @@ void CRenderManager::ResetPictureInfo()
   m_picture.Reset();
   m_fps = 0.0f;
   m_nativeDVRate = false;
-  m_bTriggerUpdateResolution = false;
+  m_resolutionUpdate = ResolutionUpdate::IDLE;
 }
 
 void CRenderManager::UpdateResolution()
 {
-  if (m_bTriggerUpdateResolution)
+  auto request = m_resolutionUpdate.load();
+  if (request != ResolutionUpdate::REQUESTED && request != ResolutionUpdate::DEFERRED)
+    return;
+
+  auto& graphics = CServiceBroker::GetWinSystem()->GetGfxContext();
+  if (!graphics.IsFullScreenVideo() || !graphics.IsFullScreenRoot() ||
+      !m_resolutionUpdate.compare_exchange_strong(request, ResolutionUpdate::RUNNING))
+    return;
+
+  auto next = ResolutionUpdate::IDLE;
+  if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(
+          CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF &&
+      m_fps > 0.0f)
   {
-    if (CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo() && CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenRoot())
+    const RESOLUTION res =
+        ChoosePlaybackResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
+                                 !m_picture.stereoMode.empty(), m_nativeDVRate, false, &m_picture);
+#ifdef HAVE_DVBRIDGE
+    if (request == ResolutionUpdate::REQUESTED)
+      m_dvModeSwitchDeadline.reset();
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        CServiceBroker::GetWinSystem());
+    if (window)
+      window->ConsumeDVModeSwitchDeferral();
+    // Carry the stream's intent when this later request performs the modeset.
+    const auto previous = DVBRIDGE::guiModeChangeResolution;
+    DVBRIDGE::guiModeChangeResolution = m_nativeDVRate ? static_cast<int>(res) : -1;
+#endif
+    graphics.SetVideoResolution(res, false);
+#ifdef HAVE_DVBRIDGE
+    DVBRIDGE::guiModeChangeResolution = previous;
+    // A new stream or a stop can arrive while the window system is processing the request.
+    if (m_resolutionUpdate != ResolutionUpdate::RUNNING)
+      return;
+    if (window)
     {
-      if (CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) != ADJUST_REFRESHRATE_OFF && m_fps > 0.0f)
+      const bool deferred = window->ConsumeDVModeSwitchDeferral();
+      if (graphics.GetVideoResolution() != res && deferred)
       {
-        const RESOLUTION res =
-            ChoosePlaybackResolution(m_fps, m_picture.iWidth, m_picture.iHeight,
-                                     !m_picture.stereoMode.empty(), m_nativeDVRate, false, &m_picture);
-#ifdef HAVE_DVBRIDGE
-        // Carry the stream's intent when this later request performs the modeset.
-        const auto previous = DVBRIDGE::guiModeChangeResolution;
-        DVBRIDGE::guiModeChangeResolution = m_nativeDVRate ? static_cast<int>(res) : -1;
-#endif
-        CServiceBroker::GetWinSystem()->GetGfxContext().SetVideoResolution(res, false);
-#ifdef HAVE_DVBRIDGE
-        DVBRIDGE::guiModeChangeResolution = previous;
-        if (m_nativeDVRate)
-          if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
-          {
-            // A deferred retirement has not attempted the selected modeset yet.
-            if (window->GetGfxContext().GetVideoResolution() != res &&
-                window->DVModeSwitchDeferred()) return;
-            m_nativeDVRate = window->CompleteDVModeSwitch(m_picture);
-          }
-#endif
-        UpdateLatencyTweak();
-        if (m_pRenderer)
-          m_pRenderer->Update();
+        if (!m_dvModeSwitchDeadline)
+          m_dvModeSwitchDeadline.emplace(2s);
+        if (!m_dvModeSwitchDeadline->IsTimePast())
+          next = ResolutionUpdate::DEFERRED;
+        else
+          CLog::Log(LOGWARNING, "CB1: mode switch timed out waiting for DV output retirement");
       }
-      m_bTriggerUpdateResolution = false;
-      m_playerPort->VideoParamsChange();
+      if (next == ResolutionUpdate::IDLE && m_nativeDVRate)
+        m_nativeDVRate = window->CompleteDVModeSwitch(m_picture);
+    }
+#endif
+    if (next == ResolutionUpdate::IDLE)
+    {
+      UpdateLatencyTweak();
+      if (m_pRenderer)
+        m_pRenderer->Update();
     }
   }
+
+  auto running = ResolutionUpdate::RUNNING;
+  if (m_resolutionUpdate.compare_exchange_strong(running, next) &&
+      next == ResolutionUpdate::IDLE)
+    m_playerPort->VideoParamsChange();
+}
+
+void CRenderManager::RequestResolutionUpdate()
+{
+  m_resolutionUpdate = ResolutionUpdate::REQUESTED;
 }
 
 void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, std::string &stereomode,
@@ -1459,7 +1492,7 @@ void CRenderManager::TriggerUpdateResolution(float fps, int width, int height, s
     m_picture.iHeight = height;
     m_picture.stereoMode = stereomode;
   }
-  m_bTriggerUpdateResolution = true;
+  RequestResolutionUpdate();
 }
 
 void CRenderManager::ToggleDebug()

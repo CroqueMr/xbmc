@@ -1329,7 +1329,8 @@ void CLinuxRendererGLES::LoadShaders(int field)
 
           EShaderFormat shaderFormat = GetShaderFormat();
           const auto dstPrimaries =
-              m_passthroughHDR || m_shaderSDRBT2020 ? m_srcPrimaries : AVCOL_PRI_BT709;
+              m_passthroughHDR ? m_srcPrimaries :
+              m_shaderSDRBT2020 ? AVCOL_PRI_BT2020 : AVCOL_PRI_BT709;
           m_toneMapMethod = m_videoSettings.m_ToneMapMethod;
 
           // Try single-pass filter shader for FAST scalers on GLES 3.1+
@@ -1844,6 +1845,8 @@ bool CLinuxRendererGLES::RenderShaderUpscaler(int index, int preset)
   output.repr = pl_color_repr_rgb;
   output.repr.levels = m_fullRange ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
   output.color = image.color;
+  if (!hdr && CServiceBroker::GetWinSystem()->UsesNativeSDRBT2020())
+    output.color.primaries = PL_COLOR_PRIM_BT_2020;
   output.crop = {dst.x1, dst.y1, dst.x2, dst.y2};
   const GLboolean scissorEnabled = glIsEnabled(GL_SCISSOR_TEST);
   GLint scissor[4];
@@ -3226,9 +3229,9 @@ void CLinuxRendererGLES::CheckVideoParameters(int index)
     if (toneMap != m_toneMap)
     {
       VideoPicture tmp{};
-      tmp.color_space = toneMap ? AVCOL_SPC_UNSPECIFIED : buf.m_srcColSpace;
-      tmp.color_transfer = buf.m_srcColTransfer;
-      tmp.color_primaries = buf.m_srcPrimaries;
+      tmp.color_space = toneMap ? AVCOL_SPC_BT709 : buf.m_srcColSpace;
+      tmp.color_transfer = toneMap ? AVCOL_TRC_BT709 : buf.m_srcColTransfer;
+      tmp.color_primaries = toneMap ? AVCOL_PRI_BT709 : buf.m_srcPrimaries;
       tmp.iWidth = m_sourceWidth;
       tmp.iHeight = m_sourceHeight;
       // Keep Adaptive on the format already selected for this source depth.

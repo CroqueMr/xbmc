@@ -26784,11 +26784,11 @@ msgid "Normal keeps CB1 warnings, errors and key playback and display events. En
 msgstr ""
 
 msgctxt "#41270"
-msgid " - SDR output gamut"
+msgid "SDR output gamut"
 msgstr ""
 
 msgctxt "#41271"
-msgid "Select the colour gamut used by SDR Rendering. BT.709 is compatible with standard SDR displays."
+msgid "Choose the colour gamut for SDR video playback. Auto preserves supported native SDR and uses BT.709 for SDR conversion."
 msgstr ""
 
 msgctxt "#41272"
@@ -26800,11 +26800,11 @@ msgid "BT.2020"
 msgstr ""
 
 msgctxt "#41274"
-msgid "The display does not advertise BT.2020 RGB."
+msgid "The display does not advertise the selected BT.2020 format."
 msgstr ""
 
 msgctxt "#41275"
-msgid "The active HDMI driver cannot signal BT.2020 RGB."
+msgid "BT.2020 is unavailable for the current HDMI output."
 msgstr ""
 
 msgctxt "#41276"
