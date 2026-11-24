@@ -4949,6 +4949,7 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
   if(player == nullptr)
     return false;
 
+  const bool handoff = m_bdjAudioHandoff;
   if(m_CurrentAudio.id < 0 ||
      m_CurrentAudio.hint != hint)
   {
@@ -4971,8 +4972,9 @@ bool CVideoPlayer::OpenAudioStream(CDVDStreamInfo& hint, bool reset)
 
   m_HasAudio = true;
 
-  static_cast<IDVDStreamPlayerAudio*>(player)->SendMessage(
-      std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_REQUEST_STATE), 1);
+  // During a PCM handoff the queued codec change must precede the state report.
+  // A priority request could report the outgoing decoder as still synchronized.
+  player->SendMessage(std::make_shared<CDVDMsg>(CDVDMsg::PLAYER_REQUEST_STATE), handoff ? 0 : 1);
 
   return true;
 }
