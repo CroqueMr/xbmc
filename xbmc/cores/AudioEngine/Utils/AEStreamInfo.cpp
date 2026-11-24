@@ -444,10 +444,16 @@ void NeutralizeDolbyDialnorm(uint8_t* frame, unsigned int size, bool knownJoc)
     if ((streamType != 0 && streamType != 2) || substream ||
         (rateCode == 3 && code == 3))
       return;
+    const unsigned int blocks = rateCode == 3 ? 6 : AC3BlkCod[code];
     bool joc = false;
     if (!ReadEac3Joc(bits, mode, (frame[4] & 1) != 0, rateCode,
-                     rateCode == 3 ? 6 : AC3BlkCod[code], streamType == 2, joc) ||
-        joc)
+                     blocks, streamType == 2, joc) || joc)
+      return;
+
+    // Skip fields and auxiliary data can carry protected EMDF even without JOC.
+    // Recalculating CRC2 cannot repair protection that covers the original dialnorm.
+    if (!bits.Skip(blocks == 6 ? 10 : 8) || bits.Read(1) || !bits.Valid() ||
+        (frame[size - 3] & 0x02)) // skipflde and auxdatae, ETSI TS 102 366 Annex E
       return;
   }
 
@@ -1056,15 +1062,31 @@ unsigned int CAEStreamParser::SyncDTS(uint8_t* data, unsigned int size)
       else
         header_size = (((data[m_fsize + 5] & 0x1f) << 3) | ((data[m_fsize + 6] & 0xe0) >> 5)) + 1;
 
+      if (size - skip < m_fsize + header_size + 4)
+      {
+        m_syncFunc = &CAEStreamParser::SyncDTS;
+        m_needBytes = m_fsize + header_size + 4;
+        m_fsize = 0;
+
+        return skip;
+      }
+
       hd_sync = data[m_fsize + header_size] << 24 | data[m_fsize + header_size + 1] << 16 |
                 data[m_fsize + header_size + 2] << 8 | data[m_fsize + header_size + 3];
 
       // set the type according to core or not
       if (m_coreOnly)
         dataType = CAEStreamInfo::STREAM_TYPE_DTSHD_CORE;
-      else if (hd_sync == DTS_PREAMBLE_XLL)
+      // At its peak bit rate an MA stream lets XLL frames straddle substream frames, so the word
+      // after the header is then XLL payload, not a sync word. That payload is low-entropy and
+      // regularly contains 0x5a5a5a5a, the XCH sync. Taking it as an HRA stream switches the
+      // packer to a 2048 period whose burst the frame does not fit. One parser serves one stream
+      // (Reset() only flushes), so once the stream is known to be MA - from the codec, which has
+      // it from the demuxer's profile, or from an XLL sync seen here - it stays MA.
+      else if (hd_sync == DTS_PREAMBLE_XLL || m_dtsHDMA)
       {
         dataType = CAEStreamInfo::STREAM_TYPE_DTSHD_MA;
+        m_dtsHDMA = true;
         m_skipCount = 0;
       }
       else if (hd_sync == DTS_PREAMBLE_XCH || hd_sync == DTS_PREAMBLE_XXCH ||
@@ -1084,12 +1106,19 @@ unsigned int CAEStreamParser::SyncDTS(uint8_t* data, unsigned int size)
           dataType = m_info.m_type;
         }
       }
-      else
+      else if (m_info.m_type != CAEStreamInfo::STREAM_TYPE_NULL)
         dataType = m_info.m_type;
+      else
+        continue;
 
       m_coreSize = m_fsize;
       m_fsize += hd_size;
     }
+    // While acquiring, a core frame counts only if the next frame starts where it ends. A flush
+    // can leave a core cut from its extension, and taking that for a plain DTS stream switches
+    // the output format and back again.
+    else if (!m_hasSync && hd_sync != header)
+      continue;
 
     unsigned int sampleRate = DTSSampleRates[sfreq];
     if (!m_hasSync || skip || dataType != m_info.m_type || sampleRate != m_info.m_sampleRate ||

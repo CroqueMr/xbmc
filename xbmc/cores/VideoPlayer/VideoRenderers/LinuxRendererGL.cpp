@@ -1014,7 +1014,8 @@ void CLinuxRendererGL::LoadShaders(int field)
     // create regular progressive scan shader
     // if single pass, create GLSLOutput helper and pass it to YUV2RGB shader
     EShaderFormat shaderFormat = GetShaderFormat();
-    const auto dstPrimaries = m_passthroughHDR || m_shaderSDRBT2020 ? m_srcPrimaries : AVCOL_PRI_BT709;
+    const auto dstPrimaries = m_passthroughHDR ? m_srcPrimaries :
+                               m_shaderSDRBT2020 ? AVCOL_PRI_BT2020 : AVCOL_PRI_BT709;
     std::shared_ptr<GLSLOutput> out;
     m_toneMapMethod = m_videoSettings.m_ToneMapMethod;
     if (m_renderQuality == RQ_SINGLEPASS)
@@ -2794,9 +2795,9 @@ void CLinuxRendererGL::DeleteCLUT()
 void CLinuxRendererGL::SetBufferColorimetry(const CPictureBuffer& buf, bool toneMap)
 {
   VideoPicture tmp{};
-  tmp.color_space = toneMap ? AVCOL_SPC_UNSPECIFIED : buf.m_srcColSpace;
-  tmp.color_transfer = buf.m_srcColTransfer;
-  tmp.color_primaries = buf.m_srcPrimaries;
+  tmp.color_space = toneMap ? AVCOL_SPC_BT709 : buf.m_srcColSpace;
+  tmp.color_transfer = toneMap ? AVCOL_TRC_BT709 : buf.m_srcColTransfer;
+  tmp.color_primaries = toneMap ? AVCOL_PRI_BT709 : buf.m_srcPrimaries;
   tmp.iWidth = m_sourceWidth;
   tmp.iHeight = m_sourceHeight;
   tmp.colorBits = buf.m_srcBits;

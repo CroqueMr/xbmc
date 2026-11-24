@@ -7,6 +7,7 @@
  */
 
 #include "WinSystemGbmGLESContext.h"
+#include "SDROutputGamut.h"
 #include "ServiceBroker.h"
 #include "utils/DVBridgeDiagnosticLog.h"
 #include "cores/DataCacheCore.h"
@@ -239,6 +240,7 @@ bool CWinSystemGbmGLESContext::PrepareNvidiaModeRestore(const RESOLUTION_INFO& r
   {
     if (!m_dvContext || m_dvContext->Quarantined()) return false;
     glFinish();
+    m_dvModeSwitchDeferred = false;
     if (!RetireDVContext()) return false;
   }
   const auto previous = m_DRM->GetCurrentMode();
@@ -247,6 +249,13 @@ bool CWinSystemGbmGLESContext::PrepareNvidiaModeRestore(const RESOLUTION_INFO& r
   m_DRM->SetMode(previous);
   m_DRM->SetVideoMode(previous,nullptr);
   return false;
+}
+
+bool CWinSystemGbmGLESContext::ConsumeDVModeSwitchDeferral()
+{
+  const bool deferred = m_dvModeSwitchDeferred;
+  m_dvModeSwitchDeferred = false;
+  return deferred && !m_dvRollbackFailed;
 }
 #endif
 
@@ -909,15 +918,21 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         const auto previous = cache.GetVideoProcessingInfo();
         const int fallback = !drm->HDR10PlusActive() && GetEotf() == KODI::UTILS::Eotf::PQ
                                  ? nativeHDR10PlusFallback : 0;
+        const auto outputType = drm->HDR10PlusActive() ? VideoOutputType::HDR10Plus :
+            GetEotf() == KODI::UTILS::Eotf::PQ ? VideoOutputType::HDR10 :
+            GetEotf() == KODI::UTILS::Eotf::HLG ? VideoOutputType::HLG : VideoOutputType::SDR;
+        const int gamut = outputType == VideoOutputType::SDR && IsNativeSDRVideo()
+                              ? (NativeSDRBT2020Committed() ? DVBRIDGE_GAMUT_BT2020
+                                                             : DVBRIDGE_GAMUT_BT709)
+                              : 0;
         if (generation!=previousGeneration || now>=next || previous.output.flags ||
             previous.nativeHDR10PlusFallbackLabel != fallback ||
-            (previous.outputType == VideoOutputType::HDR10Plus) != drm->HDR10PlusActive())
+            previous.outputType != outputType || previous.output.gamut != gamut)
         {
           auto info=DVBRIDGE::NativeProcessingInfo(DVBRIDGE::StreamTelemetry::Read());
-          info.output={}; info.outputType.reset();
-          info.outputType = drm->HDR10PlusActive() ? VideoOutputType::HDR10Plus :
-              GetEotf() == KODI::UTILS::Eotf::PQ ? VideoOutputType::HDR10 :
-              GetEotf() == KODI::UTILS::Eotf::HLG ? VideoOutputType::HLG : VideoOutputType::SDR;
+          info.output = {};
+          info.output.gamut = gamut;
+          info.outputType = outputType;
           info.nativeHDR10PlusFallbackLabel = fallback;
           if (cache.SetVideoProcessingInfo(info.informationGeneration,info))
           {
@@ -1091,7 +1106,12 @@ void CWinSystemGbmGLESContext::TrackCB1VideoPage(bool pending)
 
 bool CWinSystemGbmGLESContext::CompleteDVBridgePage(int timeoutMs)
 {
-  if (!CWinSystemGbm::CompleteDVBridgePage(timeoutMs)) return false;
+  if (!CWinSystemGbm::CompleteDVBridgePage(timeoutMs))
+  {
+    auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
+    m_dvModeSwitchDeferred = drm && drm->CanWaitForCB1Page();
+    return false;
+  }
   if (m_cb1PageSource.Valid())
   {
     m_cb1DisplayedSource = m_cb1PageSource;
@@ -1562,6 +1582,12 @@ void CWinSystemGbmGLESContext::CompositeGui()
   if (!m_guiWillRender && m_DRM && m_DRM->GetVideoPlane() != nullptr &&
       m_DRM->GetGuiPlane() != nullptr)
     return;
+
+  if (m_guiColorTransfer == AVCOL_TRC_BT2020_10)
+  {
+    const auto [scale, black] = SDROutputRange(UseLimitedColor(), GetOutputBitDepth());
+    m_compositeShader->SetOutputRange(scale, black);
+  }
 
 #ifdef HAVE_DVBRIDGE
   GLint previousFramebuffer = 0;
@@ -4237,7 +4263,10 @@ bool CWinSystemGbmGLESContext::RetireDVContext()
     m_dvShutdownFence = true;
     if (!m_dvContext->FenceLastUse()) return false;
   }
-  if (m_dvContext->Poll() != DVBRIDGE_DV_IDLE || !m_dvContext->Close()) return false;
+  const auto status = m_dvContext->Poll();
+  if (status == DVBRIDGE_DV_BUSY)
+    m_dvModeSwitchDeferred = true;
+  if (status != DVBRIDGE_DV_IDLE || !m_dvContext->Close()) return false;
   // Retain the per-video setting snapshot across graphics-context recreation.
   m_dvShutdownFence = false;
   return true;

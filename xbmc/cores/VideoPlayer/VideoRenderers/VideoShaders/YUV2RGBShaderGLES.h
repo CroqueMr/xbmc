@@ -94,6 +94,8 @@ class BaseYUV2RGBGLSLShader : public CGLSLShaderProgram
     GLint m_hStep{-1};
     GLint m_hGammaSrc{-1};
     GLint m_hGammaDstInv{-1};
+    GLint m_hSDRRange{-1};
+    bool m_sdrOutputConversion{false};
     GLint m_hPrimMat{-1};
     GLint m_hToneP1{-1};
     GLint m_hCoefsDst{-1};

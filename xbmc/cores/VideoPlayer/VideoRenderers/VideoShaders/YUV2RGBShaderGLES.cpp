@@ -17,6 +17,10 @@
 #include "utils/GLUtils.h"
 #include "utils/log.h"
 #include "windowing/WinSystem.h"
+#include "windowing/gbm/SDROutputGamut.h"
+#ifdef HAVE_GBM
+#include "windowing/gbm/WinSystemGbm.h"
+#endif
 
 #include <sstream>
 #include <string>
@@ -70,6 +74,29 @@ BaseYUV2RGBGLSLShader::BaseYUV2RGBGLSLShader(EShaderFormat format,
     CLog::Log(LOGERROR, "GLES: BaseYUV2RGBGLSLShader - unsupported format {}",
               fmt::formatter<EShaderFormat>::ToString(m_format));
 
+  if (const auto* window = CServiceBroker::GetWinSystem();
+      dstPrimaries == AVCOL_PRI_BT2020 && window && window->UsesNativeSDRBT2020())
+  {
+    m_sdrOutputConversion = true;
+    m_defines += "#define KODI_SDR_OUTPUT_CONVERSION\n";
+    if (toneMap)
+    {
+      // Keep Kodi's current tone mapper in BT.709, then map its SDR result.
+      m_defines += "#define KODI_SDR_WIDE_TONEMAP\n";
+      dstPrimaries = AVCOL_PRI_BT709;
+    }
+  }
+
+#ifdef HAVE_GBM
+  if (const auto* gbm = dynamic_cast<const KODI::WINDOWING::GBM::CWinSystemGbm*>(
+          CServiceBroker::GetWinSystem());
+      gbm && gbm->IsNativeSDRVideo() && srcPrimaries == AVCOL_PRI_BT2020 &&
+      dstPrimaries == AVCOL_PRI_BT709 && !toneMap)
+  {
+    m_sdrOutputConversion = true;
+    m_defines += "#define KODI_SDR_OUTPUT_CONVERSION\n";
+  }
+#endif
   if (dstPrimaries != srcPrimaries)
   {
     m_colorConversion = true;
@@ -130,6 +157,7 @@ void BaseYUV2RGBGLSLShader::OnCompiledAndLinked()
   m_hPrimMat = glGetUniformLocation(ProgramHandle(), "m_primMat");
   m_hGammaSrc = glGetUniformLocation(ProgramHandle(), "m_gammaSrc");
   m_hGammaDstInv = glGetUniformLocation(ProgramHandle(), "m_gammaDstInv");
+  m_hSDRRange = glGetUniformLocation(ProgramHandle(), "m_sdrRange");
   m_hCoefsDst = glGetUniformLocation(ProgramHandle(), "m_coefsDst");
   m_hToneP1 = glGetUniformLocation(ProgramHandle(), "m_toneP1");
   m_hLuminance = glGetUniformLocation(ProgramHandle(), "m_luminance");
@@ -155,7 +183,13 @@ bool BaseYUV2RGBGLSLShader::OnEnabled()
 
   m_convMatrix.SetDestinationContrast(m_contrast)
       .SetDestinationBlack(m_black)
-      .SetDestinationLimitedRange(!m_convertFullRange);
+      .SetDestinationLimitedRange(!m_convertFullRange && !m_sdrOutputConversion);
+  if (m_sdrOutputConversion)
+  {
+    const auto [scale, black] = KODI::WINDOWING::GBM::SDROutputRange(
+        !m_convertFullRange, CServiceBroker::GetWinSystem()->GetOutputBitDepth());
+    glUniform2f(m_hSDRRange, scale, black);
+  }
 
   Matrix4 yuvMat = m_convMatrix.GetYuvMat();
   glUniformMatrix4fv(m_hYuvMat, 1, GL_FALSE, yuvMat.ToRaw());
@@ -167,8 +201,10 @@ bool BaseYUV2RGBGLSLShader::OnEnabled()
   {
     Matrix3 primMat = m_convMatrix.GetPrimMat();
     glUniformMatrix3fv(m_hPrimMat, 1, GL_FALSE, primMat.ToRaw());
-    glUniform1f(m_hGammaSrc, m_convMatrix.GetGammaSrc());
-    glUniform1f(m_hGammaDstInv, 1 / m_convMatrix.GetGammaDst());
+    // Use the same display-referred SDR transfer as the OSD and libplacebo.
+    const bool nativeSDR = m_sdrOutputConversion && !m_toneMapping;
+    glUniform1f(m_hGammaSrc, nativeSDR ? 2.4f : m_convMatrix.GetGammaSrc());
+    glUniform1f(m_hGammaDstInv, 1.0f / (nativeSDR ? 2.4f : m_convMatrix.GetGammaDst()));
   }
 
   if (m_toneMapping)
@@ -300,6 +336,7 @@ YUV2RGBProgressiveShader::YUV2RGBProgressiveShader(EShaderFormat format,
 {
   PixelShader()->LoadSource("gles_yuv2rgb_basic.frag", m_defines);
   PixelShader()->InsertSource("gles_tonemap.frag", "void main()");
+  PixelShader()->InsertSource("gles_sdr_output.frag", "void main()");
   PixelShader()->InsertSource("gles_dither_uniforms.frag", "void main()");
   PixelShader()->InsertSource("gles_dither_body.frag", "gl_FragColor");
 }
@@ -319,6 +356,7 @@ YUV2RGBBobShader::YUV2RGBBobShader(EShaderFormat format,
 {
   PixelShader()->LoadSource("gles_yuv2rgb_bob.frag", m_defines);
   PixelShader()->InsertSource("gles_tonemap.frag", "void main()");
+  PixelShader()->InsertSource("gles_sdr_output.frag", "void main()");
   PixelShader()->InsertSource("gles_dither_uniforms.frag", "void main()");
   PixelShader()->InsertSource("gles_dither_body.frag", "gl_FragColor");
 }
@@ -361,6 +399,7 @@ YUV2RGBFilterShader::YUV2RGBFilterShader(EShaderFormat format,
   PixelShader()->LoadSource("gles310_yuv2rgb_filter.frag", m_defines);
   VertexShader()->LoadSource("gles310_yuv2rgb.vert");
   PixelShader()->InsertSource("gles_tonemap.frag", "void main()");
+  PixelShader()->InsertSource("gles_sdr_output.frag", "void main()");
   PixelShader()->InsertSource("gles_dither_uniforms.frag", "void main()");
   PixelShader()->InsertSource("gles_dither_body.frag", "fragColor = rgb");
 }

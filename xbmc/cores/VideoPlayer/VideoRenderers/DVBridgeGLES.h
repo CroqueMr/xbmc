@@ -289,6 +289,7 @@ public:
   bool Presented(bool success);
 
 private:
+  bool ReadPlayerLedScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out);
   bool PreparePlayerLed(const pl_frame& source, const CDVMetadataBuffer& metadata,
                         dvbridge_geometry geometry, const dvbridge_policy& policy,
                         double pts, double elPts);

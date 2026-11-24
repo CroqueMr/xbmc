@@ -26,6 +26,7 @@ extern "C"
 #include "dvbridge_placebo.h"
 #include "dvbridge_metadata_bounds.h"
 #include "dvbridge_cache.h"
+#include "cb1_master_ipt.h"
 #include "cb1_hdr10plus_dovi.h"
 #include "cb1_lldv_cpu.h"
 #include "cb1_hdr10_expert.h"
@@ -2546,12 +2547,53 @@ bool CDVBridgeGLES::UsesMasterSourceCarrier(dvbridge_mode mode, bool masterIPT,
     return false;
   if (!masterIPT)
     return true;
-  // Master keeps an authored IPT source in its native encoding. Converted YCC
-  // uses the output IPT matrices, which the source-metadata reader cannot decode.
+  // Authored IPT retains its source matrices. Converted YCC uses the output IPT matrices.
   if (!dvbridge_metadata_bounds(metadata.Data(), metadata.Size()))
     return false;
   const auto* parsed = reinterpret_cast<const AVDOVIMetadata*>(metadata.Data());
   return av_dovi_get_color(parsed)->signal_color_space == 2;
+}
+
+bool CDVBridgeGLES::ReadPlayerLedScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
+{
+  if (!m_playerLedPicture || m_playerLedPicture->params.w != m_scanout->params.w ||
+      m_playerLedPicture->params.h != m_scanout->params.h)
+    return false;
+
+  const auto gpu = m_gl->gpu;
+  GLint readFramebuffer, drawFramebuffer;
+  glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &readFramebuffer);
+  glGetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &drawFramebuffer);
+
+  pl_tex_params params{};
+  params.w = m_playerLedPicture->params.w;
+  params.h = m_playerLedPicture->params.h;
+  params.format = m_playerLedPicture->params.format;
+  params.renderable = true;
+  pl_tex pq = pl_tex_create(gpu, &params);
+  KODI::RENDERING::CAPTURE::ReadbackBuffer pixels;
+  bool read = false;
+  // The fitted picture includes the GUI in display-linear RGB. Preserve its
+  // row order for capture.
+  if (pq && dvbridge_resolve_player_led_rgb10(m_renderer, &m_playerLedPolicy,
+                                             m_playerLedPicture, pq, false))
+  {
+    GLuint framebuffer = 0;
+    pl_opengl_unwrap(gpu, pq, nullptr, nullptr, &framebuffer);
+    if (framebuffer)
+    {
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer);
+      read = KODI::RENDERING::CAPTURE::ReadFramebufferRegion(0, 0, params.w, params.h, 16, false,
+                                                            pixels);
+    }
+  }
+  pl_tex_destroy(gpu, &pq);
+  glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebuffer);
+  glBindFramebuffer(GL_DRAW_FRAMEBUFFER, drawFramebuffer);
+  if (!read)
+    return false;
+  out = std::move(pixels);
+  return true;
 }
 
 bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out, bool videoOnly)
@@ -2579,6 +2621,8 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
     return false;
   }
   if (!m_scanout) return failed("no-scanout");
+  if (m_playerLed)
+    return (!videoOnly && ReadPlayerLedScreenshot(out)) || failed("player-led-readback");
   if ((master || sdr) && !m_direct) return failed("direct-target");
   const auto framebuffer=master || sdr ? m_scanoutFramebuffer : GetPQFramebuffer(!videoOnly);
   if (!master && !sdr && !framebuffer) return failed("direct-target");
@@ -2621,16 +2665,34 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
     if (!dvbridge_map_color(&mapped,
         m_pendingMetadata.Data(),m_pendingMetadata.Size(),(m_pendingInfo&CDVPlaybackInfo::FEL)!=0))
       return failed("decode",int(pixels.format));
-    pl_color_repr_normalize(&mapped.repr);
-    const auto tr=pl_color_repr_decode(&mapped.repr,nullptr);
+    auto nonlinear = mapped.dovi.nonlinear;
+    auto rgbToLms = mapped.dovi.linear;
+    const float iptOffset[] = {0.0f, 0.5f, 0.5f};
+    const float* offset = mapped.dovi.nonlinear_offset;
+    if (!UsesMasterSourceCarrier())
+    {
+      offset = iptOffset;
+      for (unsigned int row = 0; row < 3; ++row)
+      {
+        for (unsigned int col = 0; col < 3; ++col)
+        {
+          nonlinear.m[row][col] = cb1_ipt_output_ycc[3 * row + col] / 8192.0f;
+          rgbToLms.m[row][col] = cb1_ipt_output_lms[3 * row + col] / 16384.0f;
+        }
+      }
+    }
     pl_matrix3x3 linear={{{3.06441879f,-2.16597676f,.10155818f},
         {-.65612108f,1.78554118f,-.12943749f},{.01736321f,-.04725154f,1.03004253f}}};
-    pl_matrix3x3_mul(&linear,&mapped.dovi.linear);
+    pl_matrix3x3_mul(&linear, &rgbToLms);
     float decode[12];
-    for (unsigned i=0;i<3;i++)
+    for (unsigned int row = 0; row < 3; ++row)
     {
-      for (unsigned j=0;j<3;j++) decode[4*i+j]=tr.mat.m[i][j];
-      decode[4*i+3]=tr.c[i];
+      decode[4 * row + 3] = 0.0f;
+      for (unsigned int col = 0; col < 3; ++col)
+      {
+        decode[4 * row + col] = nonlinear.m[row][col];
+        decode[4 * row + 3] -= nonlinear.m[row][col] * offset[col];
+      }
     }
     auto rgb=std::make_unique<uint8_t[]>(size_t(pixels.width)*pixels.height*8);
     if (!DVBRIDGE::DecodeReferenceScreenshot(pixels.pixels.get(),pixels.width,pixels.height,
@@ -2639,9 +2701,7 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
     pixels.stride=-int(pixels.width*8);
     pixels.format=AV_PIX_FMT_RGBA64LE;
   }
-  // The LLDV intermediate is display-linear and a converted IPT carrier
-  // cannot be decoded with the source matrices. Neither is verified PQ RGB.
-  pixels.colorEncodingVerified = sdr || (master ? UsesMasterSourceCarrier() : m_hdr10 && !m_playerLed);
+  pixels.colorEncodingVerified = sdr || master || m_hdr10;
   out=std::move(pixels);
   return true;
 }

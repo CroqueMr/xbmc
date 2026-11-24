@@ -123,5 +123,8 @@ vec4 process()
   rgb.rgb = sqrt(rgb.rgb);
 #endif
 
+#if defined(KODI_SDR_OUTPUT_CONVERSION)
+  rgb.rgb = encodeSDROutput(rgb.rgb);
+#endif
   return rgb;
 }

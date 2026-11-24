@@ -12,6 +12,7 @@ in vec2 v_tex;
 out vec4 fragColor;
 uniform sampler2D u_samp;
 uniform bool u_sdrBT2020;
+uniform vec2 u_sdrRange;
 uniform float u_sdrPeak; // SDR peak in normalized PQ (e.g. 100/10000 = 0.01)
 
 // ST2084 (PQ) constants
@@ -57,11 +58,11 @@ void main()
   vec3 result = u_sdrBT2020 ? pow(max(linear, vec3(0.0)), vec3(1.0 / 2.4)) :
                              forwardPQ(linear * u_sdrPeak);
 
-  // Limited-range encoding at the BO write boundary. Canonical normalized
-  // ratios (bit-depth-agnostic in float space; BO write quantizes to the
-  // active surface bit depth).
+  if (u_sdrBT2020)
+    result = result * u_sdrRange.x + u_sdrRange.y;
 #ifdef KODI_LIMITED_RANGE
-  result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
+  else
+    result = result * ((235.0 - 16.0) / 255.0) + (16.0 / 255.0);
 #endif
 
   fragColor = vec4(result, gui.a);
