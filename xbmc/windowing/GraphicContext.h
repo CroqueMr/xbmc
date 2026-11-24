@@ -16,6 +16,8 @@
 #include "utils/TransformMatrix.h" // for the members m_guiTransform etc.
 
 #include <atomic>
+#include <chrono>
+#include <optional>
 #include <stack>
 #include <string>
 #include <vector>
@@ -236,9 +238,17 @@ public:
 protected:
 
   void UpdateCameraPosition(const CPoint &camera, const float &factor);
-  bool SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate);
+  bool SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate, bool desktopRestore = false);
   void ApplyVideoResolution(RESOLUTION res);
   void UpdateInternalStateWithResolution(RESOLUTION res);
+  void RetryDesktopResolution(bool initial);
+
+  struct DesktopResolutionRequest
+  {
+    RESOLUTION resolution;
+    std::chrono::steady_clock::time_point deadline;
+  };
+  std::optional<DesktopResolutionRequest> m_desktopResolutionRequest;
 
   int m_iScreenHeight = 576;
   int m_iScreenWidth = 720;

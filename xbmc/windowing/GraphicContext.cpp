@@ -27,10 +27,28 @@
 #include "settings/lib/Setting.h"
 #include "utils/log.h"
 
+#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && defined(HAS_GLES)
+#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#endif
+
+#include <algorithm>
 #include <cassert>
 #include <mutex>
 
 using KODI::UTILS::COLOR::Color;
+
+namespace
+{
+bool ConsumeDesktopModeDeferral()
+{
+#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && defined(HAS_GLES)
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+          CServiceBroker::GetWinSystem()))
+    return window->ConsumeDVModeSwitchDeferral();
+#endif
+  return false;
+}
+} // namespace
 
 CGraphicContext::CGraphicContext() = default;
 CGraphicContext::~CGraphicContext() = default;
@@ -324,6 +342,8 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
   std::unique_lock lock(*this);
 
   m_bFullScreenVideo = bOnOff;
+  if (bOnOff && CServiceBroker::GetAppMessenger()->IsProcessThread())
+    m_desktopResolutionRequest.reset();
 
   if (m_bFullScreenRoot)
   {
@@ -353,11 +373,67 @@ void CGraphicContext::SetFullScreenVideo(bool bOnOff)
 
     if (allowResolutionChangeOnStop && !bTriggerUpdateRes)
     {
-      SetVideoResolution(targetResolutionOnStop, false);
+#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && defined(HAS_GLES)
+      if (CServiceBroker::GetAppMessenger()->IsProcessThread() && !appPlayer->IsPlaying() &&
+          dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+              CServiceBroker::GetWinSystem()))
+      {
+        const bool initial = !m_desktopResolutionRequest ||
+                             m_desktopResolutionRequest->resolution != targetResolutionOnStop;
+        if (initial)
+          m_desktopResolutionRequest = {
+              targetResolutionOnStop, std::chrono::steady_clock::now() + std::chrono::seconds(2)};
+        RetryDesktopResolution(initial);
+      }
+      else
+#endif
+        SetVideoResolution(targetResolutionOnStop, false);
     }
   }
   else
     SetVideoResolution(RES_WINDOW, false);
+}
+
+void CGraphicContext::RetryDesktopResolution(bool initial)
+{
+  if (!m_desktopResolutionRequest)
+    return;
+
+  std::unique_lock lock(*this);
+  const auto request = *m_desktopResolutionRequest;
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+  const RESOLUTION desktop =
+      std::max(RES_DESKTOP, CDisplaySettings::GetInstance().GetCurrentResolution());
+  if (!m_bFullScreenRoot || m_bFullScreenVideo || appPlayer->IsPlaying() ||
+      settings->GetInt(CSettings::SETTING_VIDEOPLAYER_ADJUSTREFRESHRATE) ==
+          ADJUST_REFRESHRATE_ON_START ||
+      desktop != request.resolution)
+  {
+    m_desktopResolutionRequest.reset();
+    return;
+  }
+
+  ConsumeDesktopModeDeferral();
+  const bool switched = SetVideoResolutionInternal(request.resolution, false, true);
+  if (!m_desktopResolutionRequest || m_desktopResolutionRequest->deadline != request.deadline)
+    return;
+  const bool deferred = ConsumeDesktopModeDeferral();
+
+  if (!switched && deferred)
+  {
+    // Resume the current request after the outstanding display work has completed.
+    if (std::chrono::steady_clock::now() < request.deadline)
+    {
+      if (initial)
+        CLog::Log(LOGINFO, "CB1: desktop mode deferred while waiting for DV output retirement");
+      return;
+    }
+    CLog::Log(LOGWARNING, "CB1: desktop mode timed out waiting for DV output retirement");
+  }
+  else if (switched && !initial)
+    CLog::Log(LOGINFO, "CB1: desktop mode restored after DV output retirement");
+  m_desktopResolutionRequest.reset();
 }
 
 bool CGraphicContext::IsFullScreenVideo() const
@@ -398,8 +474,10 @@ void CGraphicContext::SetVideoResolution(RESOLUTION res, bool forceUpdate)
   }
 }
 
-bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate)
+bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdate, bool desktopRestore)
 {
+  if (!desktopRestore)
+    m_desktopResolutionRequest.reset();
   RESOLUTION lastRes = m_Resolution;
 
   // If the user asked us to guess, go with desktop
@@ -494,6 +572,8 @@ bool CGraphicContext::SetVideoResolutionInternal(RESOLUTION res, bool forceUpdat
 
 void CGraphicContext::ApplyVideoResolution(RESOLUTION res)
 {
+  if (CServiceBroker::GetAppMessenger()->IsProcessThread())
+    m_desktopResolutionRequest.reset();
   if (!IsValidResolution(res))
   {
     CLog::LogF(LOGWARNING, "Asked to apply invalid resolution {}, falling back to RES_DESKTOP",
@@ -1036,6 +1116,7 @@ void CGraphicContext::Flip(bool rendered, bool videoLayer)
     }
     CServiceBroker::GetGUI()->GetWindowManager().SendMessage(GUI_MSG_NOTIFY_ALL, 0, 0, GUI_MSG_RENDERER_RESET);
   }
+  RetryDesktopResolution(false);
 }
 
 void CGraphicContext::GetAllowedResolutions(std::vector<RESOLUTION> &res)
