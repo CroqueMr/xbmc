@@ -616,7 +616,7 @@ bool CDRMUtils::OpenDrm(bool needConnector)
             version->version_major,version->version_minor,version->version_patchlevel);
 #endif
       if (strcmp(version->name, "amdgpu") == 0)
-        m_drm_quirks |= QUIRK_NEEDSPRIMARY;
+        m_drm_quirks |= QUIRK_NEEDSPRIMARY | QUIRK_AMD_HDR10_HDMI_AUTO_FORMAT;
       else if (strcmp(version->name, "nvidia-drm") == 0)
         m_drm_quirks |= QUIRK_NVIDIA_EGL_GBM;
       drmFreeVersion(version);
