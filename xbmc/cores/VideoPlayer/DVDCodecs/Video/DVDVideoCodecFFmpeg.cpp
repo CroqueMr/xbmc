@@ -1069,8 +1069,14 @@ CDVDVideoCodec::VCReturn CDVDVideoCodecFFmpeg::GetPicture(VideoPicture* pVideoPi
         if (paired != VC_NONE)
           return paired;
       }
-      if (result == VC_EOF && !m_dvPending.empty())
-        break;
+      if (result == VC_EOF)
+      {
+        const bool recovering = dvbridge_fel_recovering(m_dvFel.get());
+        if (recovering && !m_hints.preferHybridHDR10Plus)
+          CLog::Log(LOGERROR, "DV FEL: no shared random-access picture before end of stream");
+        if (recovering || !m_dvPending.empty())
+          break;
+      }
       if (result == VC_PICTURE && (m_codecControlFlags & DVD_CODEC_CTRL_DRAIN))
         continue; // Retire internal preroll until a real picture or native EOF.
       return result == VC_PICTURE ? VC_BUFFER : result;
