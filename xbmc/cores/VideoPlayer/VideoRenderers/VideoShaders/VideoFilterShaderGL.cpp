@@ -15,6 +15,7 @@
 #include "rendering/RenderSystem.h"
 #include "utils/GLUtils.h"
 #include "utils/log.h"
+#include "windowing/WinSystem.h"
 
 #include <math.h>
 #include <string>
@@ -22,6 +23,17 @@
 #define TEXTARGET GL_TEXTURE_1D
 
 using namespace Shaders::GL;
+
+namespace
+{
+// A floating-point output keeps what a fixed-point one clamps away: values outside [0, 1] (the
+// overshoot of a scaling kernel) and results that are no number.
+std::string OutputDefines()
+{
+  const auto* winSystem = CServiceBroker::GetWinSystem();
+  return winSystem && winSystem->HasFloatOutput() ? "#define KODI_CLAMP_OUTPUT\n" : "";
+}
+} // unnamed namespace
 
 //////////////////////////////////////////////////////////////////////
 // BaseVideoFilterShader - base class for video filter shaders
@@ -37,7 +49,7 @@ BaseVideoFilterShader::BaseVideoFilterShader()
 
   VertexShader()->LoadSource("gl_videofilter_vertex.glsl");
 
-  PixelShader()->LoadSource("gl_videofilter_frag.glsl");
+  PixelShader()->LoadSource("gl_videofilter_frag.glsl", OutputDefines());
 }
 
 BaseVideoFilterShader::~BaseVideoFilterShader()
@@ -57,7 +69,7 @@ ConvolutionFilterShader::ConvolutionFilterShader(ESCALINGMETHOD method,
   m_method = method;
 
   std::string shadername;
-  std::string defines;
+  std::string defines = OutputDefines();
 
   m_floattex = CGLExtensions::IsExtensionSupported(CGLExtensions::ARB_texture_float);
 
@@ -89,7 +101,7 @@ ConvolutionFilterShader::ConvolutionFilterShader(ESCALINGMETHOD method,
   }
 
   if (m_floattex)
-    defines = "#define HAS_FLOAT_TEXTURE\n";
+    defines += "#define HAS_FLOAT_TEXTURE\n";
 
   //don't compile in stretch support when it's not needed
   if (stretch)
@@ -266,6 +278,39 @@ void DefaultFilterShader::OnCompiledAndLinked()
 bool DefaultFilterShader::OnEnabled()
 {
   glUniform1i(m_hSourceTex, m_sourceTexUnit);
+  glUniform1f(m_hAlpha, m_alpha);
+  glUniformMatrix4fv(m_hProj, 1, GL_FALSE, m_proj);
+  glUniformMatrix4fv(m_hModel, 1, GL_FALSE, m_model);
+  VerifyGLState();
+  return true;
+}
+
+//////////////////////////////////////////////////////////////////////
+// FSR1FilterShader - FidelityFX Super Resolution 1, EASU or RCAS
+//////////////////////////////////////////////////////////////////////
+
+FSR1FilterShader::FSR1FilterShader(bool rcas)
+{
+  PixelShader()->LoadSource(rcas ? "gl_fsr1_rcas.glsl" : "gl_fsr1_easu.glsl", OutputDefines());
+}
+
+void FSR1FilterShader::OnCompiledAndLinked()
+{
+  m_hSourceTex = glGetUniformLocation(ProgramHandle(), "img");
+  m_hStepXY = glGetUniformLocation(ProgramHandle(), "stepxy");
+  m_hInputSize = glGetUniformLocation(ProgramHandle(), "input_size");
+  m_hProj = glGetUniformLocation(ProgramHandle(), "m_proj");
+  m_hModel = glGetUniformLocation(ProgramHandle(), "m_model");
+  m_hVertex = glGetAttribLocation(ProgramHandle(), "m_attrpos");
+  m_hCoord = glGetAttribLocation(ProgramHandle(), "m_attrcord");
+  m_hAlpha = glGetUniformLocation(ProgramHandle(), "m_alpha");
+}
+
+bool FSR1FilterShader::OnEnabled()
+{
+  glUniform1i(m_hSourceTex, m_sourceTexUnit);
+  glUniform2f(m_hStepXY, m_stepX, m_stepY);
+  glUniform2f(m_hInputSize, m_inputWidth, m_inputHeight);
   glUniform1f(m_hAlpha, m_alpha);
   glUniformMatrix4fv(m_hProj, 1, GL_FALSE, m_proj);
   glUniformMatrix4fv(m_hModel, 1, GL_FALSE, m_model);

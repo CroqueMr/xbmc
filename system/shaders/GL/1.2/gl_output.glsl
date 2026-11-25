@@ -54,5 +54,8 @@ void main()
   rgb             = floor(rgb * m_ditherquant + ditherval) / m_ditherquant;
 #endif
 
+#if defined(KODI_CLAMP_OUTPUT)
+  rgb             = clamp(rgb, 0.0, 1.0);
+#endif
   gl_FragColor    = rgb;
 }

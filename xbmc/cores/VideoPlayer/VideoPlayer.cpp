@@ -9,7 +9,7 @@
 #include "VideoPlayer.h"
 #include "utils/DVBridgeDiagnosticLog.h"
 #ifdef HAVE_DVBRIDGE
-#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#include "windowing/gbm/WinSystemGbmDVContext.h"
 #endif
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackNotification.h"
@@ -851,7 +851,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   // SendMsg runs immediately when playback is opened by the application thread.
   MESSAGING::ThreadMessageCallback refresh{
       [](void*) {
-        auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
             CServiceBroker::GetWinSystem());
         if (window)
         {
@@ -1584,7 +1584,7 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
 }
 
 #ifdef HAVE_DVBRIDGE
-static void SelectDVStartupOutput(const KODI::WINDOWING::GBM::CWinSystemGbmGLESContext* window)
+static void SelectDVStartupOutput(const KODI::WINDOWING::GBM::CWinSystemGbmDVContext* window)
 {
   const auto caps = window ? window->GetDVOutputCapabilities(nullptr, true) :
                              DVBRIDGE::OutputCapabilities{};
@@ -1598,7 +1598,7 @@ void CVideoPlayer::Prepare()
   m_errorDetail = 0;
 #ifdef HAVE_DVBRIDGE
   m_dvStartupPlaybackPending = true;
-  SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+  SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
       CServiceBroker::GetWinSystem()));
 #endif
   CFFmpegLog::SetLogLevel(1);
@@ -5050,7 +5050,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
       hint.stereo_mode.empty() &&
       (hint.dovi.dv_profile || hint.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION))
   {
-    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
         CServiceBroker::GetWinSystem());
     auto preferences = DVBRIDGE::FrameOutputSettings();
     if (window && !m_HasVideo && !pMenus && m_pInputStream && !m_pInputStream->IsRealtime() &&
@@ -5210,7 +5210,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
       if (lldvRateFallback && !m_bStop && m_activeOpen == m_requestedOpen.load())
       {
         // A different track may still open. Give it the original default and toast state.
-        SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
             CServiceBroker::GetWinSystem()));
         DVBRIDGE::PlaybackNotification::StartVideo();
       }

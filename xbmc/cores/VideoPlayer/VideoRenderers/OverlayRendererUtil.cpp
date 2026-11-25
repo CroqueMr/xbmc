@@ -18,7 +18,7 @@
 #include "windowing/GraphicContext.h"
 #include "windowing/WinSystem.h"
 #ifdef HAVE_DVBRIDGE
-#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#include "windowing/gbm/WinSystemGbmDVContext.h"
 #endif
 
 #include <algorithm>
@@ -377,7 +377,7 @@ bool ShouldConvertPQPaletteToSRGB(bool isHDROverlay)
   // composite, or a GUI layer that is output as an HDR signal.
   const CWinSystemBase* winSystem = CServiceBroker::GetWinSystem();
 #ifdef HAVE_DVBRIDGE
-  if (const auto* gbm = dynamic_cast<const KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(winSystem);
+  if (const auto* gbm = dynamic_cast<const KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(winSystem);
       gbm && gbm->IsDVBridgeScreenshotSDR())
     return true; // The SDR compositor expects sRGB overlays, including PQ bitmap palettes.
 #endif
@@ -392,7 +392,7 @@ unsigned BitmapPaletteOutputState()
 {
   bool cb1PQ = false;
 #ifdef HAVE_DVBRIDGE
-  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
           CServiceBroker::GetWinSystem()))
     cb1PQ = window->HasDVBridgeScreenshot();
 #endif

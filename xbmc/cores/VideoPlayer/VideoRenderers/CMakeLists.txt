@@ -51,9 +51,9 @@ endif()
 
 option(ENABLE_DVBRIDGE "Build experimental native DV bridge (requires patched dependencies)" OFF)
 if(ENABLE_DVBRIDGE)
-  if(NOT TARGET ${APP_NAME_LC}::OpenGLES OR NOT "gbm" IN_LIST CORE_PLATFORM_NAME_LC OR
-     NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    message(FATAL_ERROR "DVBridge requires the GBM/OpenGL ES platform")
+  if((NOT TARGET ${APP_NAME_LC}::OpenGLES AND NOT TARGET ${APP_NAME_LC}::OpenGl) OR
+     NOT "gbm" IN_LIST CORE_PLATFORM_NAME_LC OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    message(FATAL_ERROR "DVBridge requires the GBM platform with OpenGL or OpenGL ES")
   endif()
   add_subdirectory("${DVBRIDGE_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/dvbridge-core")
   file(READ "${DVBRIDGE_SOURCE_DIR}/pack_gles300.vert" DVBRIDGE_VERTEX_SOURCE)

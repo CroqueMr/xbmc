@@ -132,6 +132,13 @@ BaseYUV2RGBGLSLShader::BaseYUV2RGBGLSLShader(bool rect,
       m_defines += "#define KODI_TONE_MAPPING_HABLE\n";
   }
 
+  // A floating-point output keeps what a fixed-point one clamps away: values outside [0, 1], and
+  // results that are no number (0/0 in the tone mapping of a black pixel, which the shaders then
+  // leave out).
+  if (const auto* winSystem = CServiceBroker::GetWinSystem();
+      winSystem && winSystem->HasFloatOutput())
+    m_defines += "#define KODI_CLAMP_OUTPUT\n";
+
   VertexShader()->LoadSource("gl_yuv2rgb_vertex.glsl", m_defines);
 
   CLog::Log(LOGDEBUG, "GL: using shader format: {}",

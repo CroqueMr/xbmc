@@ -10,7 +10,7 @@
 #include "drm/DRMAtomic.h"
 #include "utils/EGLImage.h"
 
-#include <GLES3/gl3.h>
+#include "system_gl.h"
 #include <gbm.h>
 #include <unistd.h>
 

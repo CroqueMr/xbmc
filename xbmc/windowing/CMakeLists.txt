@@ -14,3 +14,7 @@ set(HEADERS GraphicContext.h
             VideoSync.h)
 
 core_add_library(windowing)
+
+if(ENABLE_DVBRIDGE)
+  target_link_libraries(${CORE_LIBRARY} PRIVATE dvbridge_core)
+endif()

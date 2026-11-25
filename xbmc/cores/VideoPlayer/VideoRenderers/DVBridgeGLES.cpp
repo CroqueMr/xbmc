@@ -3,7 +3,11 @@
 #include "UpscalerSettings.h"
 #include "ShaderUpscalerPresets.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlayerLedOutput.h"
+#if defined(HAS_GL)
+#include "VideoShaders/VideoFilterShaderGL.h"
+#else
 #include "VideoShaders/VideoFilterShaderGLES.h"
+#endif
 #include "utils/DVBridgeDiagnosticLog.h"
 #include "DVBridgeShaders.h"
 #include "DVBridgeScreenshot.h"
@@ -38,7 +42,13 @@ extern "C"
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
-#include <GLES3/gl3.h>
+#include "system_gl.h"
+
+#if defined(HAS_GL)
+namespace DVFilterShaders = Shaders::GL;
+#else
+namespace DVFilterShaders = Shaders::GLES;
+#endif
 #include <limits>
 #include <mutex>
 #include <string_view>
@@ -61,6 +71,16 @@ extern "C"
 
 namespace
 {
+// Kodi's ordinary drawing can leave GL errors pending (seen on desktop GL). libplacebo takes
+// any pending error as its own failure and marks its GPU failed, so clear them first.
+void ClearInheritedGLErrors()
+{
+#if defined(HAS_GL)
+  for (int i = 0; i < 64 && glGetError() != GL_NO_ERROR; ++i)
+    ;
+#endif
+}
+
 void BackendLog(void*, pl_log_level level, const char* message)
 {
   try
@@ -369,7 +389,7 @@ private:
     return true;
   }
 
-  bool Draw(Shaders::GLES::BaseVideoFilterShader& shader, GLuint source, GLuint target,
+  bool Draw(DVFilterShaders::BaseVideoFilterShader& shader, GLuint source, GLuint target,
             int width, int height, int inputWidth, int inputHeight, GLint filter,
             const GLfloat (&vertices)[20])
   {
@@ -394,7 +414,11 @@ private:
     glBindVertexArray(m_vao);
     glBindBuffer(GL_ARRAY_BUFFER, m_vertices);
     glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STREAM_DRAW);
+#if defined(HAS_GL)
+    const auto position = shader.GetVertexLoc(), coord = shader.GetCoordLoc();
+#else
     const auto position = shader.GetVertexLoc(), coord = shader.GetcoordLoc();
+#endif
     glVertexAttribPointer(position, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), nullptr);
     glVertexAttribPointer(coord, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat),
         reinterpret_cast<const void*>(3 * sizeof(GLfloat)));
@@ -440,13 +464,17 @@ private:
     const auto method = m_method == VS_SCALINGMETHOD_FSR1_RCAS ? VS_SCALINGMETHOD_FSR1 : m_method;
     if (!m_shader || m_compiledMethod != method)
     {
-      std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> shader;
+      std::unique_ptr<DVFilterShaders::BaseVideoFilterShader> shader;
       if (method == VS_SCALINGMETHOD_NEAREST || method == VS_SCALINGMETHOD_LINEAR)
-        shader = std::make_unique<Shaders::GLES::DefaultFilterShader>();
+        shader = std::make_unique<DVFilterShaders::DefaultFilterShader>();
       else if (method == VS_SCALINGMETHOD_FSR1)
-        shader = std::make_unique<Shaders::GLES::FSR1FilterShader>();
+        shader = std::make_unique<DVFilterShaders::FSR1FilterShader>();
       else
-        shader = std::make_unique<Shaders::GLES::ConvolutionFilterShader>(method, false);
+#if defined(HAS_GL)
+        shader = std::make_unique<DVFilterShaders::ConvolutionFilterShader>(method, false, false);
+#else
+        shader = std::make_unique<DVFilterShaders::ConvolutionFilterShader>(method, false);
+#endif
       if (!shader->CompileAndLink())
         return false;
       m_shader = std::move(shader);
@@ -477,13 +505,13 @@ private:
     const float bottom = 2 * target.crop.y1 / height - 1;
     const float u0 = image.crop.x0 / sw, u1 = image.crop.x1 / sw;
     if (method == VS_SCALINGMETHOD_FSR1)
-      static_cast<Shaders::GLES::FSR1FilterShader*>(m_shader.get())->SetInputSize(sw, sh);
+      static_cast<DVFilterShaders::FSR1FilterShader*>(m_shader.get())->SetInputSize(sw, sh);
 
     if (rcas)
     {
       if (!m_rcas)
       {
-        auto shader = std::make_unique<Shaders::GLES::FSR1FilterShader>(true);
+        auto shader = std::make_unique<DVFilterShaders::FSR1FilterShader>(true);
         if (!shader->CompileAndLink())
           return false;
         m_rcas = std::move(shader);
@@ -522,10 +550,10 @@ private:
   pl_renderer m_hookRenderer{};
   std::vector<const pl_hook*> m_hooks;
   ESCALINGMETHOD m_hookMethod{VS_SCALINGMETHOD_MAX};
-  std::unique_ptr<Shaders::GLES::FSR1FilterShader> m_rcas;
+  std::unique_ptr<DVFilterShaders::FSR1FilterShader> m_rcas;
   GLuint m_vao{}, m_vertices{}, m_sampler{};
   ESCALINGMETHOD m_method{VS_SCALINGMETHOD_LINEAR}, m_compiledMethod{VS_SCALINGMETHOD_MAX};
-  std::unique_ptr<Shaders::GLES::BaseVideoFilterShader> m_shader;
+  std::unique_ptr<DVFilterShaders::BaseVideoFilterShader> m_shader;
 };
 
 struct CDVBridgeGLES::Context::State
@@ -578,6 +606,7 @@ CDVBridgeGLES::Context::~Context()
 
 bool CDVBridgeGLES::Context::Initialize(bool allowSoftware)
 {
+  ClearInheritedGLErrors();
   if (m_state->gl) return !m_state->quarantined;
   if (NewContextBlocked()) return false;
   pl_opengl_params params{};
@@ -623,8 +652,17 @@ bool CDVBridgeGLES::Context::Initialize(bool allowSoftware)
   return m_state->owner != nullptr;
 }
 
+const char* CDVBridgeGLES::Context::AttachRefusal() const
+{
+  if (m_state->quarantined) return "context-quarantined";
+  if (!m_state->inFlight.empty()) return "context-in-flight";
+  if (m_state->gl && pl_gpu_is_failed(m_state->gl->gpu)) return "context-gpu-failed";
+  return "renderer-create";
+}
+
 dvbridge_renderer* CDVBridgeGLES::Context::Attach()
 {
+  ClearInheritedGLErrors();
   if (m_state->quarantined || !m_state->inFlight.empty()) return nullptr;
   auto* renderer = dvbridge_renderer_create_with_owner(m_state->owner);
   if (renderer)
@@ -638,6 +676,7 @@ dvbridge_renderer* CDVBridgeGLES::Context::Attach()
 
 void CDVBridgeGLES::Context::Detach(dvbridge_renderer* renderer)
 {
+  ClearInheritedGLErrors();
 #ifdef CB1_HAS_HDR10_AI
   ClearNextHDR10AI();
 #endif
@@ -748,6 +787,7 @@ void CDVBridgeGLES::Context::Retain(std::shared_ptr<void> base, std::shared_ptr<
 void CDVBridgeGLES::Context::SourceReadComplete() { m_state->foreign.clear(); }
 bool CDVBridgeGLES::Context::FenceLastUse()
 {
+  ClearInheritedGLErrors();
   if (m_state->quarantined) return false;
   auto fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE,0);
   glFlush();
@@ -782,6 +822,7 @@ HDR10AISource& CDVBridgeGLES::Context::HDR10AI()
 
 bool CDVBridgeGLES::Context::FenceHDR10AIUse()
 {
+  ClearInheritedGLErrors();
   if (m_state->quarantined) return false;
   const auto submission = HDR10AI().Metrics().gpu_submissions;
   if (!submission || submission == m_state->aiFencedSubmission) return true;
@@ -1651,6 +1692,7 @@ CDVBridgeGLES::CDVBridgeGLES(bool playerLed) : m_playerLed(playerLed)
 
 CDVBridgeGLES::~CDVBridgeGLES()
 {
+  ClearInheritedGLErrors();
   m_playerLedCpu.reset();
   cb1_hdr10plus_analysis_destroy(&m_hdr10plusAnalysis);
   ClearFELPrefetch();
@@ -1742,16 +1784,26 @@ bool CDVBridgeGLES::Initialize(bool allowSoftware, bool hdr10, std::shared_ptr<C
     return Failure("opengl-create");
   m_gl = m_context->GL(); m_log = m_context->Log();
   // GUI alpha blending takes place in the 32F PQ target, before transport packing.
+#if !defined(HAS_GL)
+  // Desktop OpenGL has both in core.
   if (!pl_opengl_has_ext(m_gl, "GL_EXT_float_blend") ||
       !pl_opengl_has_ext(m_gl, "GL_OES_texture_float_linear"))
     return Failure("float-blend-or-linear-unavailable");
+#endif
   m_renderer = m_context->Attach();
   m_packer = dvbridge_gl_packer_create(DVBRIDGE_VERTEX, DVBRIDGE_FRAGMENT);
-  return m_renderer && m_packer && RebindOutputSurface(hdr10, sdr, framebuffer);
+  if (!m_renderer)
+    return Failure(m_context->AttachRefusal());
+  if (!m_packer)
+    return Failure("packer-create");
+  if (!RebindOutputSurface(hdr10, sdr, framebuffer))
+    return Failure("scanout-wrap");
+  return true;
 }
 
 bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int framebuffer)
 {
+  ClearInheritedGLErrors();
   if (!m_gl || m_pending || m_prepared) return false;
   m_playerLedCpu.reset();
   pl_opengl_wrap_params output{};
@@ -1767,10 +1819,29 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int frame
   glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &read);
   output.framebuffer = framebuffer;
   glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+#if defined(HAS_GL)
+  // Core profiles dropped GL_RED_BITS and call the default colour buffer GL_BACK_LEFT.
+  const GLenum attachment = framebuffer ? GL_COLOR_ATTACHMENT0 : GL_BACK_LEFT;
+  glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, attachment,
+      GL_FRAMEBUFFER_ATTACHMENT_RED_SIZE, &red);
+  glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, attachment,
+      GL_FRAMEBUFFER_ATTACHMENT_GREEN_SIZE, &green);
+  glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, attachment,
+      GL_FRAMEBUFFER_ATTACHMENT_BLUE_SIZE, &blue);
+  GLint componentType{};
+  if (m_playerLed && red == 16)
+    glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, attachment,
+        GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &componentType);
+  glGetFramebufferAttachmentParameteriv(GL_FRAMEBUFFER, attachment,
+      GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
+  // Mesa gives desktop default framebuffers sRGB formats; writes stay linear until
+  // GL_FRAMEBUFFER_SRGB is enabled.
+  if (encoding == GL_SRGB && !glIsEnabled(GL_FRAMEBUFFER_SRGB))
+    encoding = GL_LINEAR;
+#else
   glGetIntegerv(GL_RED_BITS, &red);
   glGetIntegerv(GL_GREEN_BITS, &green);
   glGetIntegerv(GL_BLUE_BITS, &blue);
-  glGetIntegerv(GL_SAMPLES, &samples);
   glGetFramebufferAttachmentParameteriv(
       GL_FRAMEBUFFER, framebuffer ? GL_COLOR_ATTACHMENT0 : GL_BACK,
       GL_FRAMEBUFFER_ATTACHMENT_COLOR_ENCODING, &encoding);
@@ -1779,6 +1850,8 @@ bool CDVBridgeGLES::RebindOutputSurface(bool hdr10, bool sdr, unsigned int frame
     glGetFramebufferAttachmentParameteriv(
         GL_FRAMEBUFFER, framebuffer ? GL_COLOR_ATTACHMENT0 : GL_BACK,
         GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE, &componentType);
+#endif
+  glGetIntegerv(GL_SAMPLES, &samples);
   pl_tex candidate{};
   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
       ((sdr && hdr10 && red >= 8 && green >= 8 && blue >= 8 && red <= 16 && green <= 16 && blue <= 16) ||
@@ -1837,6 +1910,7 @@ bool CDVBridgeGLES::SetSDROutputRange(bool limited)
 
 void CDVBridgeGLES::Reset()
 {
+  ClearInheritedGLErrors();
   Summary("reset");
   Cancel();
   cb1_hdr10plus_analysis_clear_scene(m_hdr10plusAnalysis);
@@ -1855,6 +1929,7 @@ void CDVBridgeGLES::Reset()
 bool CDVBridgeGLES::Prepare(const Layer& base, const Layer* enhancement,
                           const CDVMetadataBuffer& metadata, dvbridge_geometry geometry, bool allowPacked)
 {
+  ClearInheritedGLErrors();
   m_prepared = m_packed = false;
   m_direct = false;
   if (!m_renderer)
@@ -2556,6 +2631,7 @@ bool CDVBridgeGLES::UsesMasterSourceCarrier(dvbridge_mode mode, bool masterIPT,
 
 bool CDVBridgeGLES::ReadPlayerLedScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out)
 {
+  ClearInheritedGLErrors();
   if (!m_playerLedPicture || m_playerLedPicture->params.w != m_scanout->params.w ||
       m_playerLedPicture->params.h != m_scanout->params.h)
     return false;
@@ -2661,6 +2737,17 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
   else if (master)
   {
     dvbridge_color mapped{};
+    if (pixels.format==AV_PIX_FMT_BGRA)
+    {
+      // Desktop GL reads the XRGB8888 scanout back as BGRA.
+      const size_t row=std::abs(pixels.stride);
+      for (unsigned y=0; y<pixels.height; ++y)
+      {
+        uint8_t* p=pixels.pixels.get()+y*row;
+        for (unsigned x=0; x<pixels.width; ++x, p+=4) std::swap(p[0],p[2]);
+      }
+      pixels.format=AV_PIX_FMT_RGBA;
+    }
     if (pixels.format!=AV_PIX_FMT_RGBA) return failed("unsupported-format",int(pixels.format));
     if (!dvbridge_map_color(&mapped,
         m_pendingMetadata.Data(),m_pendingMetadata.Size(),(m_pendingInfo&CDVPlaybackInfo::FEL)!=0))
@@ -2709,6 +2796,7 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
 bool CDVBridgeGLES::PrepareHardware(const Layer& base, const AVFrame* enhancement,
                                   const CDVMetadataBuffer& metadata, dvbridge_geometry geometry, bool allowPacked)
 {
+  ClearInheritedGLErrors();
   m_prepared = m_packed = false;
   if (!enhancement)
     return Prepare(base, nullptr, metadata, geometry, allowPacked);
