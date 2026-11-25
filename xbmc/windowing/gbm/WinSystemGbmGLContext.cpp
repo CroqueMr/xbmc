@@ -1380,6 +1380,8 @@ bool CWinSystemGbmGLContext::BeginGuiComposite(bool guiWillRender)
     // Video rendering and output recovery can leave the GL scissor disabled.
     const auto& context = GetGfxContext();
     glEnable(GL_SCISSOR_TEST);
+    // libplacebo also leaves no vertex array bound, and a core profile draws nothing without one.
+    glBindVertexArray(m_vertexArray);
     CRenderSystemGL::SetScissors(context.StereoCorrection(context.GetScissors()));
   }
   if (!m_guiCompositing)
@@ -1629,6 +1631,8 @@ void CWinSystemGbmGLContext::CompositeGui()
     glGetIntegerv(GL_VIEWPORT, previousViewport);
     glBindFramebuffer(GL_FRAMEBUFFER, target);
     glViewport(0, 0, m_nWidth, m_nHeight);
+    // The movie's libplacebo passes leave no vertex array bound
+    glBindVertexArray(m_vertexArray);
   }
 #endif
 
