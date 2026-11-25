@@ -5,6 +5,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <memory>
 
 struct gbm_bo;
@@ -13,6 +14,7 @@ struct gbm_device;
 namespace KODI::WINDOWING::GBM
 {
 class CDRMAtomic;
+class CDRMPlane;
 
 // Keep the render target stable while alternating two scanout buffers.
 class CPascalHDR10Scanout
@@ -34,7 +36,7 @@ private:
     unsigned int framebuffer{};
   };
 
-  bool Init(gbm_device* device, CDRMAtomic& drm);
+  bool Init(gbm_device* device, CDRMAtomic& drm, CDRMPlane& plane, uint32_t format);
   bool Probe() const;
   std::array<Buffer, 2> m_buffers;
   unsigned int m_source{};

@@ -62,12 +62,24 @@ bool Attach(GLuint& framebuffer, GLuint texture)
 std::unique_ptr<CPascalHDR10Scanout> CPascalHDR10Scanout::Create(
     gbm_device* device, CDRMAtomic& drm, int width, int height)
 {
-  auto scanout = std::make_unique<CPascalHDR10Scanout>();
-  scanout->m_width = width;
-  scanout->m_height = height;
-  if (!scanout->Init(device, drm))
+  auto* plane = drm.GetGuiPlane() ? drm.GetGuiPlane() : drm.GetVideoPlane();
+  if (!plane || !device || width < 2 || height < 2)
     return {};
-  return scanout;
+
+  // R580 can expose only the BGR-order 10-bit formats on the scanout plane.
+  for (const auto format :
+       {DRM_FORMAT_XRGB2101010, DRM_FORMAT_XBGR2101010, DRM_FORMAT_ABGR2101010})
+  {
+    if (!plane->SupportsFormat(format))
+      continue;
+
+    auto scanout = std::make_unique<CPascalHDR10Scanout>();
+    scanout->m_width = width;
+    scanout->m_height = height;
+    if (scanout->Init(device, drm, *plane, format))
+      return scanout;
+  }
+  return {};
 }
 
 CPascalHDR10Scanout::~CPascalHDR10Scanout()
@@ -81,14 +93,12 @@ CPascalHDR10Scanout::~CPascalHDR10Scanout()
   glDeleteTextures(1, &m_texture);
 }
 
-bool CPascalHDR10Scanout::Init(gbm_device* device, CDRMAtomic& drm)
+bool CPascalHDR10Scanout::Init(gbm_device* device,
+                              CDRMAtomic& drm,
+                              CDRMPlane& plane,
+                              uint32_t format)
 {
   const FramebufferBindings bindings;
-  auto* plane = drm.GetGuiPlane() ? drm.GetGuiPlane() : drm.GetVideoPlane();
-  constexpr uint32_t format = DRM_FORMAT_XRGB2101010;
-  if (!plane || !plane->SupportsFormat(format) || !device ||
-      m_width < 2 || m_height < 2)
-    return false;
 
   // CEGLImage owns the import until the texture has taken its reference.
   CEGLImage image(eglGetCurrentDisplay());
@@ -103,7 +113,7 @@ bool CPascalHDR10Scanout::Init(gbm_device* device, CDRMAtomic& drm)
 
     for (auto& buffer : m_buffers)
     {
-      auto& modifiers = plane->GetModifiersForFormat(format);
+      auto& modifiers = plane.GetModifiersForFormat(format);
       constexpr uint32_t usage = GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING;
       auto* bo = modifiers.empty() ? nullptr : gbm_bo_create_with_modifiers2(
           device, m_width, m_height, format, modifiers.data(), modifiers.size(), usage);
@@ -113,7 +123,7 @@ bool CPascalHDR10Scanout::Init(gbm_device* device, CDRMAtomic& drm)
         return false;
       buffer.bo = {bo, gbm_bo_destroy};
       const auto modifier = gbm_bo_get_modifier(bo);
-      if (!plane->SupportsFormatAndModifier(format, modifier) || gbm_bo_get_plane_count(bo) != 1)
+      if (!plane.SupportsFormatAndModifier(format, modifier) || gbm_bo_get_plane_count(bo) != 1)
         return false;
       const int fd = gbm_bo_get_fd(bo);
       if (fd < 0)
@@ -132,8 +142,9 @@ bool CPascalHDR10Scanout::Init(gbm_device* device, CDRMAtomic& drm)
       glGenTextures(1, &buffer.texture);
       glBindTexture(GL_TEXTURE_2D, buffer.texture);
       image.UploadImage(GL_TEXTURE_2D);
+      const bool uploaded = glGetError() == GL_NO_ERROR;
       image.DestroyImage();
-      if (!Attach(buffer.framebuffer, buffer.texture) || !drm.TestFramebuffer(bo))
+      if (!uploaded || !Attach(buffer.framebuffer, buffer.texture) || !drm.TestFramebuffer(bo))
         return false;
     }
     return Probe();
