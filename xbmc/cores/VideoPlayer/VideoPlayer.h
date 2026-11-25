@@ -420,6 +420,7 @@ protected:
   bool IsBlurayInput() const;
   bool IsBluraySecondary(const CDemuxStream* stream) const;
   bool WaitForBlurayPlaylist();
+  bool WaitingForBlurayStill() const;
   bool m_blurayDemuxDeferred{false};
   friend class CSelectionStreams;
 
@@ -539,6 +540,7 @@ protected:
 
   bool OpenInputStream();
   bool OpenDemuxStream();
+  bool SkipExpiredMenuStill();
   void CloseDemuxer();
   void ProcessBdjPresentation();
   void ResetBdjPresentation();

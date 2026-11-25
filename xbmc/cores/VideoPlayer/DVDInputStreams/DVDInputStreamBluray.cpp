@@ -938,6 +938,11 @@ bool CDVDInputStreamBluray::IsBdjTitle() const
   return m_navmode && m_title && m_title->bdj;
 }
 
+bool CDVDInputStreamBluray::WaitingForBdjStill() const
+{
+  return IsBdjTitle() && m_hold == HOLD_STILL && !m_bdjWaitingForPlaylist;
+}
+
 void CDVDInputStreamBluray::StampBdjPending()
 {
   if (!IsBdjTitle())
