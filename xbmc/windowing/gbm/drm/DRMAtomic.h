@@ -49,6 +49,9 @@ public:
   bool HDR10PlusActive() const { return m_hdr10plusActive; }
   bool TestFramebuffer(struct gbm_bo* bo);
   bool IsSelectedModeCommitted() const;
+  bool CanRecoverHDMI() const;
+  // Returns true once a recovery was attempted, even when KMS rejected it.
+  bool TryHDMIRecovery(bool manual);
   bool SetVideoMode(const RESOLUTION_INFO& res, struct gbm_bo* bo) override;
   bool SetActive(bool active) override;
   bool IsActive() const { return m_active; }
@@ -124,6 +127,7 @@ private:
   uint32_t m_dvSnapshotConnector{0};
 
   bool m_need_modeset{true};
+  bool m_hdmiReactivationPending{false};
   bool m_commitFellBack{false};
   bool m_colorRangeTransition{false};
   bool m_cb1Pending{}, m_cb1Uncertain{};

@@ -19,6 +19,7 @@
 #include "utils/Observer.h"
 #include "windowing/XBMC_events.h"
 
+#include <chrono>
 #include <map>
 #include <memory>
 #include <string>
@@ -236,6 +237,10 @@ public:
   // implementation of IActionListener
   bool OnAction(const CAction& action) override;
 
+#ifdef HAVE_DVBRIDGE
+  void ConfigureHDMIRecoveryShortcut();
+#endif
+
   void RegisterKeyboardDriverHandler(KODI::KEYBOARD::IKeyboardDriverHandler* handler);
   void UnregisterKeyboardDriverHandler(KODI::KEYBOARD::IKeyboardDriverHandler* handler);
 
@@ -269,6 +274,11 @@ private:
    * \return true on successfully handled event
    */
   bool HandleKey(const CKey& key);
+#ifdef HAVE_DVBRIDGE
+  bool HandleHDMIRecoveryShortcut(const CKey& key, int window, int action);
+  bool m_captureHDMIRecoveryShortcut{false};
+  std::chrono::steady_clock::time_point m_hdmiRemoteRepeatUntil{};
+#endif
 
   /*!
    * \brief Queue CEC key to be processed on the next call to Process()

@@ -39,6 +39,7 @@
 #include "DiscSettings.h"
 #include "SeekHandler.h"
 #include "ServiceBroker.h"
+#include "windowing/gbm/HDMIRecovery.h"
 #include "powermanagement/PowerTypes.h"
 #include "profiles/ProfileManager.h"
 #include "settings/DisplaySettings.h"
@@ -749,7 +750,8 @@ void CSettings::InitializeISettingCallbacks()
        CSettings::SETTING_VIDEOSCREEN_PREFEREDSTEREOSCOPICMODE,
        CSettings::SETTING_VIDEOSCREEN_3DLUT, CSettings::SETTING_VIDEOSCREEN_DISPLAYPROFILE,
        CSettings::SETTING_VIDEOSCREEN_BLANKDISPLAYS, CSettings::SETTING_VIDEOSCREEN_WHITELIST,
-       CSettings::SETTING_VIDEOSCREEN_10BITSURFACES});
+       CSettings::SETTING_VIDEOSCREEN_10BITSURFACES,
+       KODI::WINDOWING::GBM::CHDMIRecovery::SETTING_ASSIGN});
 
   GetSettingsManager()->RegisterCallback(&g_charsetConverter, {CSettings::SETTING_SUBTITLES_CHARSET,
                                                                CSettings::SETTING_LOCALE_CHARSET});

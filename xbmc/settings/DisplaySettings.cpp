@@ -9,6 +9,10 @@
 #include "DisplaySettings.h"
 
 #include "ServiceBroker.h"
+#ifdef HAVE_DVBRIDGE
+#include "input/InputManager.h"
+#include "windowing/gbm/HDMIRecovery.h"
+#endif
 #include "cores/VideoPlayer/VideoRenderers/ColorManager.h"
 #include "dialogs/GUIDialogFileBrowser.h"
 #include "guilib/GUIComponent.h"
@@ -242,6 +246,13 @@ void CDisplaySettings::OnSettingAction(const std::shared_ptr<const CSetting>& se
     return;
 
   const std::string &settingId = setting->GetId();
+#ifdef HAVE_DVBRIDGE
+  if (settingId == KODI::WINDOWING::GBM::CHDMIRecovery::SETTING_ASSIGN)
+  {
+    CServiceBroker::GetInputManager().ConfigureHDMIRecoveryShortcut();
+    return;
+  }
+#endif
   if (settingId == "videoscreen.cms3dlut")
   {
     std::string path = std::static_pointer_cast<const CSettingString>(setting)->GetValue();

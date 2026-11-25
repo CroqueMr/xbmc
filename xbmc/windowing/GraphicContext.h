@@ -76,6 +76,7 @@ public:
   void ToggleFullScreen();
   void SetFullScreenVideo(bool bOnOff);
   bool IsFullScreenVideo() const;
+  bool HasDeferredDesktopResolution() const { return m_desktopResolutionRequest.has_value(); }
   bool IsValidResolution(RESOLUTION res);
   void SetVideoResolution(RESOLUTION res, bool forceUpdate);
   void ApplyModeChange(RESOLUTION res);

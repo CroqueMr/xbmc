@@ -455,6 +455,11 @@ void CWinSystemGbmGLESContext::PresentRender(bool rendered, bool videoLayer)
   if (!m_bRenderCreated)
     return;
 
+#ifdef HAVE_DVBRIDGE
+  if (m_hdmiRecovery.Pending() &&
+      CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>()->IsPlaying())
+    m_hdmiRecovery.Cancel();
+#endif
   PresentFrame(rendered, videoLayer);
 #ifdef HAVE_DVBRIDGE
   RefreshHDR10LinkDepth();
@@ -490,6 +495,49 @@ void CWinSystemGbmGLESContext::PublishVideoSource(
   if (accepted && source)
     CServiceBroker::GetDataCacheCore().SetVideoSourceSideData(source->Generation(), source);
 }
+
+#ifdef HAVE_DVBRIDGE
+bool CWinSystemGbmGLESContext::RequestHDMIRecovery(bool manual)
+{
+  if (manual &&
+      CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>()->IsPlaying())
+    return false;
+
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const auto mode = static_cast<CHDMIRecovery::Mode>(settings->GetInt(CHDMIRecovery::SETTING_MODE));
+  const auto displayDelay = std::chrono::milliseconds(
+      std::max(0, settings->GetInt("videoscreen.delayrefreshchange")) * 100);
+  if (!m_hdmiRecovery.Arm(mode, manual, CHDMIRecovery::Clock::now(), displayDelay))
+    return false;
+
+  m_hdmiRecoveryGuiPresented = false;
+  CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  return true;
+}
+
+void CWinSystemGbmGLESContext::PollHDMIRecovery(bool videoLayer)
+{
+  if (!m_hdmiRecovery.Pending())
+    return;
+
+  const auto player = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+  auto* drm = dynamic_cast<CDRMAtomic*>(m_DRM.get());
+  const bool settled = drm && !player->HasPlayer() && !videoLayer && !m_videoLayerBridge &&
+                       !m_dispReset && !GetGfxContext().HasDeferredDesktopResolution() &&
+                       GetEotf() == KODI::UTILS::Eotf::TRADITIONAL_SDR &&
+                       m_modeHold.Holding() == CModeChangeHold::Kind::NONE &&
+                       ConnectorPreferencesAllowed() && !drm->IsSDRRestorePending();
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const auto mode = static_cast<CHDMIRecovery::Mode>(settings->GetInt(CHDMIRecovery::SETTING_MODE));
+  const bool ready = settled && m_hdmiRecoveryGuiPresented && drm->CanRecoverHDMI();
+  const auto request = m_hdmiRecovery.Poll(mode, ready, CHDMIRecovery::Clock::now());
+  if (settled && !m_hdmiRecoveryGuiPresented && m_hdmiRecovery.Pending())
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  if (request != CHDMIRecovery::Request::None &&
+      drm->TryHDMIRecovery(request == CHDMIRecovery::Request::Manual))
+    m_hdmiRecovery.AutomaticAttempted();
+}
+#endif
 
 void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 {
@@ -893,6 +941,10 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
 #endif
     const bool accepted = CWinSystemGbm::FlipPage(rendered, videoLayer, async, carrier);
 #ifdef HAVE_DVBRIDGE
+    if (m_hdmiRecovery.Pending() && rendered && accepted && !videoLayer &&
+        !m_DRM->LastCommitFellBack() &&
+        !CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>()->HasPlayer())
+      m_hdmiRecoveryGuiPresented = true;
     if (carrier && accepted) m_pascalHDRScanout->Presented();
     if (auto drm=std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
       CompleteCB1Mode(accepted,false);
@@ -949,7 +1001,9 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     KODI::TIME::Sleep(10ms);
   }
 
-
+#ifdef HAVE_DVBRIDGE
+  PollHDMIRecovery(videoLayer);
+#endif
 }
 
 #ifdef HAVE_DVBRIDGE

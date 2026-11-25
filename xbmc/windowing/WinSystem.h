@@ -131,6 +131,7 @@ public:
 
   virtual bool Minimize() { return false; }
   virtual bool Restore() { return false; }
+  virtual bool RequestHDMIRecovery(bool /* manual */) { return false; }
   virtual bool Hide() { return false; }
   virtual bool Show(bool raise = true) { return false; }
 

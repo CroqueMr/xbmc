@@ -9,6 +9,7 @@
 #include "DRMAtomic.h"
 
 #include "ServiceBroker.h"
+#include "windowing/gbm/HDMIRecovery.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPlayer.h"
 #include "guilib/GUIComponent.h"
@@ -390,7 +391,8 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
   if (CServiceBroker::GetLogging().CanLogComponent(LOGWINDOWING))
     m_req->LogAtomicRequest();
 
-  if ((strict || m_req->sdrRestore || m_colorRangeTransition) && m_propertyFailure)
+  if ((strict || m_req->sdrRestore || m_colorRangeTransition || m_hdmiReactivationPending) &&
+      m_propertyFailure)
   {
     return reject("properties", EINVAL);
   }
@@ -403,7 +405,7 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
     // libdrm returns a negative errno from the ioctl and -1 for some local failures.
     const int testError = ret == -1 ? errno : -ret;
     if (strict || m_req->sdrRestore || frameMetadata || m_colorRangeTransition ||
-        (m_mode->flags & DRM_MODE_FLAG_3D_MASK))
+        m_hdmiReactivationPending || (m_mode->flags & DRM_MODE_FLAG_3D_MASK))
     {
       if (lldvTestRejected && !m_req->sdrRestore)
         *lldvTestRejected = testError == EINVAL || testError == EOPNOTSUPP;
@@ -459,6 +461,8 @@ bool CDRMAtomic::DrmAtomicCommit(int fb_id, int flags, bool rendered, bool video
       DVBRIDGE::DiagnosticEssentialLog(LOGINFO, "DVBridge output recovered: failures={} recoveries={}",
           m_dvFailures.Count(), m_dvFailures.Recoveries());
   }
+  if (m_active && (flags & DRM_MODE_ATOMIC_ALLOW_MODESET))
+    m_hdmiReactivationPending = false;
   FinishRequest(true);
   return true;
 }
@@ -509,21 +513,117 @@ void CDRMAtomic::FinishRequest(bool accepted)
   m_signalDirty = false;
 }
 
+namespace
+{
+bool SameMode(const drmModeModeInfo& left, const drmModeModeInfo& right)
+{
+  return left.clock == right.clock && left.hdisplay == right.hdisplay &&
+         left.hsync_start == right.hsync_start && left.hsync_end == right.hsync_end &&
+         left.htotal == right.htotal && left.hskew == right.hskew &&
+         left.vdisplay == right.vdisplay && left.vsync_start == right.vsync_start &&
+         left.vsync_end == right.vsync_end && left.vtotal == right.vtotal &&
+         left.vscan == right.vscan && left.vrefresh == right.vrefresh && left.flags == right.flags;
+}
+} // namespace
+
 bool CDRMAtomic::IsSelectedModeCommitted() const
 {
   const auto* mode = m_connector &&
       m_connector->GetPropertyValue("DVBRIDGE_DV_STANDARD_LAB").value_or(0) ?
       GetDVTransportMode() : m_mode;
-  return mode && m_committedMode.clock == mode->clock &&
-      m_committedMode.hdisplay == mode->hdisplay &&
-      m_committedMode.hsync_start == mode->hsync_start &&
-      m_committedMode.hsync_end == mode->hsync_end &&
-      m_committedMode.htotal == mode->htotal && m_committedMode.hskew == mode->hskew &&
-      m_committedMode.vdisplay == mode->vdisplay &&
-      m_committedMode.vsync_start == mode->vsync_start &&
-      m_committedMode.vsync_end == mode->vsync_end &&
-      m_committedMode.vtotal == mode->vtotal && m_committedMode.vscan == mode->vscan &&
-      m_committedMode.vrefresh == mode->vrefresh && m_committedMode.flags == mode->flags;
+  return mode && SameMode(m_committedMode, *mode);
+}
+
+bool CDRMAtomic::CanRecoverHDMI() const
+{
+  return m_connector && m_crtc && m_active && !m_cb1Pending && !m_sdrRestorePending &&
+         !HasPendingRequest() && m_lastPageAccepted && !m_commitFellBack && IsSelectedModeCommitted();
+}
+
+bool CDRMAtomic::TryHDMIRecovery(bool manual)
+{
+  if (!CanRecoverHDMI())
+    return false;
+
+  const bool linkBad = m_connector->ReadPropertyValue("link-status") == DRM_MODE_LINK_STATUS_BAD;
+  const auto procedure = CHDMIRecovery::SelectProcedure(manual, linkBad);
+  if (procedure == CHDMIRecovery::Procedure::None)
+    return false;
+
+  const auto connectorId = m_connector->GetId();
+  const auto crtcId = m_crtc->GetId();
+  const std::unique_ptr<drmModeConnector, decltype(&drmModeFreeConnector)> connector(
+      drmModeGetConnectorCurrent(m_fd, connectorId), drmModeFreeConnector);
+  const auto* plane = m_gui_plane ? m_gui_plane : m_video_plane;
+  if (!connector || connector->connection != DRM_MODE_CONNECTED ||
+      (connector->connector_type != DRM_MODE_CONNECTOR_HDMIA &&
+       connector->connector_type != DRM_MODE_CONNECTOR_HDMIB) ||
+      m_connector->ReadPropertyValue("CRTC_ID") != crtcId ||
+      m_crtc->ReadPropertyValue("ACTIVE") != 1 ||
+      !m_crtc->ReadPropertyValue("MODE_ID").value_or(0) || !plane ||
+      plane->ReadPropertyValue("CRTC_ID") != crtcId || !plane->ReadPropertyValue("FB_ID").value_or(0))
+    return false;
+
+  const auto submit = [this, connectorId](CDRMAtomicRequest& request, const char* leg)
+  {
+    constexpr auto flags = DRM_MODE_ATOMIC_ALLOW_MODESET;
+    const int test = drmModeAtomicCommit(m_fd, request.Get(), flags | DRM_MODE_ATOMIC_TEST_ONLY,
+                                        nullptr);
+    const int result = test != 0 ? test : drmModeAtomicCommit(m_fd, request.Get(), flags, nullptr);
+    if (result != 0)
+    {
+      const int error = result == -1 ? errno : -result;
+      CLog::Log(LOGWARNING, "HDMI recovery: {} rejected during {} on connector {} (errno {})",
+                leg, test != 0 ? "test" : "commit", connectorId, error);
+      return false;
+    }
+
+    request.CacheProperties();
+    CLog::Log(LOGINFO, "HDMI recovery: {} accepted on connector {}", leg, connectorId);
+    return true;
+  };
+
+  if (procedure == CHDMIRecovery::Procedure::RestoreLink)
+  {
+    if (connector->count_modes == 0 ||
+        std::none_of(connector->modes, connector->modes + connector->count_modes,
+                     [this](const auto& mode) { return SameMode(mode, m_committedMode); }))
+      return false;
+
+    CDRMAtomicRequest recover;
+    if (recover.Get() && recover.AddProperty(m_connector, "link-status", DRM_MODE_LINK_STATUS_GOOD))
+      submit(recover, "link-status BAD to GOOD");
+    return true;
+  }
+
+  // ACTIVE-only commits retain the mode, planes and framebuffer in the kernel.
+  // Keep these requests out of the page-flip queue so OFF can never be replayed.
+  for (const auto& other : GetConnectors())
+  {
+    if (other.get() != m_connector && other->ReadPropertyValue("CRTC_ID") == crtcId)
+      return false;
+  }
+
+  CDRMAtomicRequest off;
+  CDRMAtomicRequest on;
+  if (!off.Get() || !on.Get() ||
+      !off.AddProperty(m_crtc, "ACTIVE", 0) || !on.AddProperty(m_crtc, "ACTIVE", 1))
+    return true;
+
+  const auto cycle = [&](CHDMIRecovery::PowerStep step)
+  {
+    if (step == CHDMIRecovery::PowerStep::Off)
+      return submit(off, "output off");
+    return submit(on, step == CHDMIRecovery::PowerStep::On ? "output on" : "output on retry");
+  };
+  if (!CHDMIRecovery::PowerCycle(cycle))
+  {
+    m_hdmiReactivationPending = true;
+    RequestModeset();
+    CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  }
+
+  return true;
 }
 
 CDRMAtomic::~CDRMAtomic()
@@ -799,6 +899,7 @@ bool CDRMAtomic::InitDrm()
 
 void CDRMAtomic::DestroyDrm()
 {
+  m_hdmiReactivationPending = false;
   SetSDRRestorePending(false);
   ResetCB1PresentationTime();
   m_hdr10plusPacket.reset();

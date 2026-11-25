@@ -8,6 +8,10 @@
 
 #pragma once
 
+#ifdef HAVE_DVBRIDGE
+#include "HDMIRecovery.h"
+#endif
+
 #include "WinSystemGbmEGLContext.h"
 #include "cores/VideoPlayer/VideoRenderers/FrameBufferObject.h"
 #include "rendering/gles/RenderSystemGLES.h"
@@ -66,6 +70,9 @@ public:
     return m_pascalHDRMode != PascalHDRMode::None ? 10 :
                                                   CWinSystemGbmEGLContext::GetOutputBitDepth();
   }
+#ifdef HAVE_DVBRIDGE
+  bool RequestHDMIRecovery(bool manual) override;
+#endif
   bool Hide() override;
   bool Show(bool raise = true) override;
   float GetDisplayLatency() override;
@@ -211,6 +218,9 @@ protected:
 private:
 #ifdef HAVE_DVBRIDGE
   CModeChangeHold m_modeHold;
+  CHDMIRecovery m_hdmiRecovery;
+  bool m_hdmiRecoveryGuiPresented{false};
+  void PollHDMIRecovery(bool videoLayer);
   CHeldModeAnnouncement m_modeAnnouncement;
   CDVPresentStall m_presentStall;
   bool CB1ModeCanJoin(const RESOLUTION_INFO& res) const;

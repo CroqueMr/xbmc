@@ -9,6 +9,7 @@
 #include "ApplicationBuiltins.h"
 
 #include "ServiceBroker.h"
+#include "windowing/WinSystem.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPowerHandling.h"
 #include "application/ApplicationVolumeHandling.h"
@@ -128,6 +129,14 @@ static int ToggleDebug(const std::vector<std::string>& params)
 /*! \brief Toggle DPMS state.
  *  \param params (ignored)
  */
+#ifdef HAVE_DVBRIDGE
+static int ResetHDMI(const std::vector<std::string>&)
+{
+  auto* window = CServiceBroker::GetWinSystem();
+  return window && window->RequestHDMIRecovery(true) ? 0 : -1;
+}
+#endif
+
 static int ToggleDPMS(const std::vector<std::string>& params)
 {
   auto& components = CServiceBroker::GetAppComponents();
@@ -216,6 +225,9 @@ CBuiltins::CommandMap CApplicationBuiltins::GetOperations() const
            {"notifyall", {"Notify all connected clients", 2, NotifyAll}},
            {"setvolume", {"Set the current volume", 1, SetVolume}},
            {"toggledebug", {"Enables/disables debug mode", 0, ToggleDebug}},
+#ifdef HAVE_DVBRIDGE
+           {"resethdmi", {"Recover the HDMI output after stopping playback", 0, ResetHDMI}},
+#endif
            {"toggledpms", {"Toggle DPMS mode manually", 0, ToggleDPMS}},
            {"wakeonlan", {"Sends the wake-up packet to the broadcast address for the specified MAC address", 1, WakeOnLAN}}
          };

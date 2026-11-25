@@ -27074,3 +27074,35 @@ msgstr ""
 msgctxt "#41506"
 msgid "This display requires LLDV. Select LLDV Reference."
 msgstr ""
+
+msgctxt "#41510"
+msgid "HDMI recovery"
+msgstr ""
+
+msgctxt "#41511"
+msgid "Reset HDMI after a detected link failure when playback is stopped, or use a shortcut to recover the picture."
+msgstr ""
+
+msgctxt "#41512"
+msgid "Manual"
+msgstr ""
+
+msgctxt "#41513"
+msgid "Automatic + Manual"
+msgstr ""
+
+msgctxt "#41514"
+msgid "Reset HDMI shortcut"
+msgstr ""
+
+msgctxt "#41515"
+msgid "Assign shortcut"
+msgstr ""
+
+msgctxt "#41516"
+msgid "Clear shortcut"
+msgstr ""
+
+msgctxt "#41517"
+msgid "Press an unused key on your keyboard or remote. Press Back to cancel."
+msgstr ""
