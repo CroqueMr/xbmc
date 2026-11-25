@@ -75,8 +75,10 @@ namespace
 // any pending error as its own failure and marks its GPU failed, so clear them first.
 void ClearInheritedGLErrors()
 {
+#if defined(HAS_GL)
   for (int i = 0; i < 64 && glGetError() != GL_NO_ERROR; ++i)
     ;
+#endif
 }
 
 void BackendLog(void*, pl_log_level level, const char* message)
