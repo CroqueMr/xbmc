@@ -797,7 +797,7 @@ void CRenderManager::PreInit()
   UpdateLatencyTweak();
 
   m_QueueSize   = 2;
-  m_QueueSkip   = 0;
+  m_QueueSkip.store(0, std::memory_order_relaxed);
   m_presentstep = PRESENT_IDLE;
 #ifdef HAVE_DVBRIDGE
   m_cb1PresentPending = m_cb1OutputPending = false;
@@ -1885,12 +1885,18 @@ void CRenderManager::PrepareNextRender()
     }
 
     // skip late frames
+    const auto queuedBeforeSelection = m_queued.size();
     while (m_queued.front() != idx)
     {
       if (m_presentsourcePast >= 0)
       {
         m_discard.push_back(m_presentsourcePast);
-        m_QueueSkip++;
+        const int skipped = m_QueueSkip.fetch_add(1, std::memory_order_relaxed) + 1;
+        CLog::LogFC(LOGDEBUG, LOGAVTIMING,
+                    "Render skip: discarded_pts_us={:.0f} selected_pts_us={:.0f} "
+                    "target_pts_us={:.0f} queued_before={} skip_total={}",
+                    m_Queue[m_presentsourcePast].pts, m_Queue[idx].pts, latePts,
+                    queuedBeforeSelection, skipped);
       }
       m_presentsourcePast = m_queued.front();
       m_queued.pop_front();

@@ -122,7 +122,7 @@ public:
   bool Supports(ERENDERFEATURE feature) const;
   bool Supports(ESCALINGMETHOD method) const;
 
-  int GetSkippedFrames()  { return m_QueueSkip; }
+  int GetSkippedFrames() { return m_QueueSkip.load(std::memory_order_relaxed); }
 
   bool Configure(const VideoPicture& picture, float fps, unsigned int orientation, int buffers = 0);
   bool AddVideoPicture(const VideoPicture& picture, volatile std::atomic_bool& bStop, EINTERLACEMETHOD deintMethod, bool wait);
@@ -285,7 +285,7 @@ protected:
   std::atomic_int m_videoDelay = {};
 
   int m_QueueSize = 2;
-  int m_QueueSkip = 0;
+  std::atomic<int> m_QueueSkip{0};
 
   struct SPresent
   {
