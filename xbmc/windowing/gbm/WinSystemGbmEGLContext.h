@@ -41,6 +41,10 @@ public:
   }
   int GetBufferAge() override { return m_eglContext.GetBufferAge(); }
   int GetOutputBitDepth() const override { return m_eglContext.GetConfigAttrib(EGL_RED_SIZE); }
+  uint32_t GetScanoutFourcc() const override
+  {
+    return static_cast<uint32_t>(m_eglContext.GetConfigAttrib(EGL_NATIVE_VISUAL_ID));
+  }
   bool HasFloatOutput() const override
   {
     return m_eglContext.GetConfigAttrib(EGL_NATIVE_VISUAL_ID) == DRM_FORMAT_ABGR16161616F;
