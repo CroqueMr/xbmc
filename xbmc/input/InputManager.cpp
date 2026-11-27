@@ -13,6 +13,17 @@
 #include "application/Application.h"
 #include "application/ApplicationComponents.h"
 #include "application/ApplicationPowerHandling.h"
+#ifdef HAVE_DVBRIDGE
+#include "dialogs/GUIDialogOK.h"
+#include "dialogs/GUIDialogSelect.h"
+#include "resources/LocalizeStrings.h"
+#include "resources/ResourcesComponent.h"
+#include "utils/Variant.h"
+#include "windowing/WinSystem.h"
+#include "windowing/gbm/HDMIRecovery.h"
+
+#include <limits>
+#endif
 #include "guilib/GUIAudioManager.h"
 #include "guilib/GUIComponent.h"
 #include "guilib/GUIControl.h"
@@ -549,6 +560,92 @@ bool CInputManager::OnKey(const CKey& key)
   return bHandled;
 }
 
+#ifdef HAVE_DVBRIDGE
+void CInputManager::ConfigureHDMIRecoveryShortcut()
+{
+  using KODI::WINDOWING::GBM::CHDMIRecovery;
+  auto& windows = CServiceBroker::GetGUI()->GetWindowManager();
+  auto* select = windows.GetWindow<CGUIDialogSelect>(WINDOW_DIALOG_SELECT);
+  auto* capture = windows.GetWindow<CGUIDialogOK>(WINDOW_DIALOG_OK);
+  if (!select || !capture)
+    return;
+
+  const auto& strings = CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
+  select->Reset();
+  select->SetHeading(CVariant(41514));
+  select->Add(strings.Get(41515));
+  select->Add(strings.Get(41516));
+  select->Open();
+  switch (select->GetSelectedItem())
+  {
+    case 0:
+      capture->SetHeading(CVariant(41514));
+      capture->SetText(CVariant(41517));
+      capture->SetAutoClose(10000);
+      m_captureHDMIRecoveryShortcut = true;
+      capture->Open();
+      capture->CancelAutoClose();
+      m_captureHDMIRecoveryShortcut = false;
+      break;
+    case 1:
+      CServiceBroker::GetSettingsComponent()->GetSettings()->SetInt(
+          CHDMIRecovery::SETTING_SHORTCUT, 0);
+      break;
+  }
+}
+
+bool CInputManager::HandleHDMIRecoveryShortcut(const CKey& key, int window, int action)
+{
+  using KODI::WINDOWING::GBM::CHDMIRecovery;
+  const auto code = key.GetButtonCode();
+  if (!code || (code & 0xffff) == KEY_INVALID || (code & 0xffff) == KEY_UNICODE ||
+      code > std::numeric_limits<int>::max() || key.GetFromEventServer())
+    return false;
+
+  const auto settings = CServiceBroker::GetSettingsComponent()->GetSettings();
+  const auto mode = static_cast<CHDMIRecovery::Mode>(
+      settings->GetInt(CHDMIRecovery::SETTING_MODE));
+  if (!CHDMIRecovery::AllowsManual(mode))
+    return false;
+
+  const auto now = std::chrono::steady_clock::now();
+  if (m_captureHDMIRecoveryShortcut && window == WINDOW_DIALOG_OK)
+  {
+    if (action == ACTION_NAV_BACK || action == ACTION_PREVIOUS_MENU || action == ACTION_SELECT_ITEM)
+      return false;
+    if ((!key.FromKeyboard() || !key.GetHeld()) &&
+        settings->SetInt(CHDMIRecovery::SETTING_SHORTCUT, static_cast<int>(code)))
+    {
+      m_captureHDMIRecoveryShortcut = false;
+      m_hdmiRemoteRepeatUntil = now + std::chrono::milliseconds(500);
+      CServiceBroker::GetGUI()->GetWindowManager().GetWindow(WINDOW_DIALOG_OK)->Close();
+    }
+    return true;
+  }
+
+  if (settings->GetInt(CHDMIRecovery::SETTING_SHORTCUT) != static_cast<int>(code))
+    return false;
+
+  if (key.FromKeyboard())
+  {
+    if (key.GetHeld())
+      return true;
+  }
+  else
+  {
+    // CEC can coalesce a short tap into a single event with a nonzero duration.
+    const bool repeating = now < m_hdmiRemoteRepeatUntil;
+    m_hdmiRemoteRepeatUntil = now + std::chrono::milliseconds(500);
+    if (repeating)
+      return true;
+  }
+
+  if (auto* windowSystem = CServiceBroker::GetWinSystem())
+    windowSystem->RequestHDMIRecovery(true);
+  return true;
+}
+#endif
+
 bool CInputManager::HandleKey(const CKey& key)
 {
   // Turn the mouse off, as we've just got a keypress from controller or remote
@@ -598,6 +695,11 @@ bool CInputManager::HandleKey(const CKey& key)
                m_Keyboard.GetKeyName(key.GetButtonCode()));
     return true;
   }
+
+#ifdef HAVE_DVBRIDGE
+  if (HandleHDMIRecoveryShortcut(key, iWin, action.GetID()))
+    return true;
+#endif
 
   if (iWin != WINDOW_FULLSCREEN_VIDEO && iWin != WINDOW_FULLSCREEN_GAME)
   {

@@ -653,6 +653,11 @@ bool CApplicationMessageHandling::OnMessage(const CGUIMessage& message)
 
     case GUI_MSG_PLAYBACK_STOPPED:
     {
+#ifdef HAVE_DVBRIDGE
+      if (auto* window = CServiceBroker::GetWinSystem();
+          window && VIDEO::IsVideo(m_app.CurrentFileItem()))
+        window->RequestHDMIRecovery(false);
+#endif
       CServiceBroker::GetPVRManager().OnPlaybackStopped(m_app.CurrentFileItem());
       CServiceBroker::GetFavouritesService().OnPlaybackStopped(m_app.CurrentFileItem());
 
@@ -708,12 +713,21 @@ bool CApplicationMessageHandling::OnMessage(const CGUIMessage& message)
 
       const CPlaycountIncrementedHandler playCountIncrementedHandler{m_app.CurrentFileItem()};
 
+#ifdef HAVE_DVBRIDGE
+      const bool endingVideo = VIDEO::IsVideo(m_app.CurrentFileItem());
+#endif
       m_app.ResetCurrentItem();
 
       if (!isEpgPlaylistItem)
       {
         if (!CServiceBroker::GetPlaylistPlayer().PlayNext(1, true))
+        {
           m_app.GetComponent<CApplicationPlayer>()->ClosePlayer();
+#ifdef HAVE_DVBRIDGE
+          if (auto* window = CServiceBroker::GetWinSystem(); window && endingVideo)
+            window->RequestHDMIRecovery(false);
+#endif
+        }
 
         m_app.PlaybackCleanup();
       }

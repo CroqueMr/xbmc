@@ -125,6 +125,7 @@ protected:
   int m_outFenceFd{-1};
 
   std::vector<std::unique_ptr<CDRMPlane>> m_planes;
+  const auto& GetConnectors() const { return m_connectors; }
 
 private:
   bool FindConnector();
