@@ -70,6 +70,7 @@ protected:
   bool RenderHook(int idx) override;
 #ifdef HAVE_DVBRIDGE
   bool RenderDVBridge(int idx) override;
+  bool HasShaderUpscalerP010(int index) const override;
   bool BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer) override;
   CDVBridgeGLES::FELSuccessor m_felSuccessor;
   bool DVBridgeOrientationSupported(unsigned int orientation) const;
