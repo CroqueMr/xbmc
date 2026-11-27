@@ -37,7 +37,7 @@ public:
   drmModeModeInfoPtr GetModeForIndex(int index) const { return &m_connector->modes[index]; }
 
   bool IsConnected() { return m_connector->connection == DRM_MODE_CONNECTED; }
-  bool CheckConnector();
+  bool CheckConnector(const drmModeModeInfo& mode);
 
   std::vector<uint8_t> GetEDID(bool refresh = false) const;
 

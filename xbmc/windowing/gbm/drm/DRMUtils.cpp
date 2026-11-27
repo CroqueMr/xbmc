@@ -120,11 +120,15 @@ CDRMUtils::~CDRMUtils()
   DestroyDrm();
 }
 
-bool CDRMUtils::SetMode(const RESOLUTION_INFO& res)
+bool CDRMUtils::CanSetMode(const RESOLUTION_INFO& res)
 {
-  if (!m_connector->CheckConnector())
-    return false;
+  const int index = std::atoi(res.strId.c_str());
+  return m_connector && index >= 0 && index < m_connector->GetModesCount() &&
+         m_connector->CheckConnector(*m_connector->GetModeForIndex(index));
+}
 
+void CDRMUtils::SelectMode(const RESOLUTION_INFO& res)
+{
 #ifdef HAVE_DVBRIDGE
   ReportDisplayRoute(m_fd, m_connector);
 #endif
@@ -134,7 +138,13 @@ bool CDRMUtils::SetMode(const RESOLUTION_INFO& res)
 
   CLog::LogF(LOGDEBUG, "Found crtc mode: {}x{}{} @ {} Hz", m_mode->hdisplay, m_mode->vdisplay,
              m_mode->flags & DRM_MODE_FLAG_INTERLACE ? "i" : "", m_mode->vrefresh);
+}
 
+bool CDRMUtils::SetMode(const RESOLUTION_INFO& res)
+{
+  if (!CanSetMode(res))
+    return false;
+  SelectMode(res);
   return true;
 }
 

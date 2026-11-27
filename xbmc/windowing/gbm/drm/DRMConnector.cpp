@@ -61,19 +61,50 @@ CDRMConnector::CDRMConnector(int fd, uint32_t connector)
                              std::to_string(m_connector->connector_id));
 }
 
-bool CDRMConnector::CheckConnector()
+bool CDRMConnector::CheckConnector(const drmModeModeInfo& mode)
 {
+  const uint32_t id = m_connector->connector_id;
+  // The original connector owns the mode IDs and selected-mode pointers.
+  // Read current status without forcing DDC on a healthy link.
+  std::unique_ptr<drmModeConnector, DrmModeConnectorDeleter> current(
+      drmModeGetConnectorCurrent(m_fd, id));
+  bool probed = false;
   unsigned retryCnt = 7;
-  while (!IsConnected() && retryCnt > 0)
+  while (current && current->connection != DRM_MODE_CONNECTED && retryCnt > 0)
   {
     CLog::LogF(LOGDEBUG, "connector is disconnected");
-    retryCnt--;
+    --retryCnt;
     KODI::TIME::Sleep(1s);
 
-    m_connector.reset(drmModeGetConnector(m_fd, m_connector->connector_id));
+    current.reset(drmModeGetConnectorCurrent(m_fd, id));
+    probed = current && current->connection != DRM_MODE_CONNECTED;
+    if (probed)
+      current.reset(drmModeGetConnector(m_fd, id));
   }
 
-  return m_connector->connection == DRM_MODE_CONNECTED;
+  const auto hasMode = [&mode](const drmModeConnector* connector) {
+    if (!connector || connector->connection != DRM_MODE_CONNECTED || connector->count_modes <= 0 ||
+        !connector->modes)
+      return false;
+
+    return std::any_of(connector->modes, connector->modes + connector->count_modes,
+                       [&mode](const drmModeModeInfo& candidate) {
+                         return candidate.clock == mode.clock && candidate.hdisplay == mode.hdisplay &&
+                                candidate.hsync_start == mode.hsync_start &&
+                                candidate.hsync_end == mode.hsync_end && candidate.htotal == mode.htotal &&
+                                candidate.hskew == mode.hskew && candidate.vdisplay == mode.vdisplay &&
+                                candidate.vsync_start == mode.vsync_start &&
+                                candidate.vsync_end == mode.vsync_end && candidate.vtotal == mode.vtotal &&
+                                candidate.vscan == mode.vscan && candidate.flags == mode.flags;
+                       });
+  };
+  if (hasMode(current.get()))
+    return true;
+
+  // HPD may restore connected status before a prior failed probe's mode list.
+  if (!probed && current && current->connection == DRM_MODE_CONNECTED)
+    current.reset(drmModeGetConnector(m_fd, id));
+  return hasMode(current.get());
 }
 
 std::string CDRMConnector::GetType()
