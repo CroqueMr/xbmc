@@ -3,6 +3,7 @@
 #include "DVBridgeState.h"
 #include "DRMAtomic.h"
 #include "DRMConnector.h"
+#include "windowing/gbm/SDROutputGamut.h"
 
 using namespace KODI::WINDOWING::GBM;
 
@@ -101,6 +102,7 @@ bool CDVBridgeState::CaptureTransport(CDRMAtomic& drm, uint64_t ownVsif, bool le
       {connector,"CB1_LLDV_FORMAT",0,playerLed,false},
       {connector,"DVBRIDGE_DV_STANDARD_LAB",1,!playerLed,false},
       {connector,"DVBRIDGE_HDR10_DEEP_COLOR",0,false,false},
+      {connector,SDR_BT2020_DEEP_COLOR,0,false,false},
       {connector,"HDR_OUTPUT_METADATA",0,false,true},
       {connector,"max bpc",8,true,false},
       {connector,"Broadcast RGB",0,true,false,"Full"},
@@ -133,6 +135,7 @@ bool CDVBridgeState::CaptureTransport(CDRMAtomic& drm, uint64_t ownVsif, bool le
       {connector,"CB1_LLDV_FORMAT",0,playerLed,false},
       {connector,"HDR_OUTPUT_METADATA",0,true,true},
       {connector,"DVBRIDGE_HDR10_DEEP_COLOR",0,false,false},
+      {connector,SDR_BT2020_DEEP_COLOR,0,false,false},
       {connector,"max bpc",8,true,false},
       // R620 exposes explicit link overrides on the same connector.
       {connector,"NV_CONNECTOR_COLOR_FORMAT",0,false,false,"RGB"},
@@ -206,8 +209,13 @@ bool CDVBridgeState::CaptureColorPreferences(CDRMAtomic& drm,
       !Read(drm,changes,connector,"color format",0,false,false,"RGB") ||
       !Read(drm,changes,connector,"max bpc",
             defaultMaxBpc.value_or(connector->GetPropertyValue("max bpc").value_or(0)),
-            false,false,nullptr))
+            false,false,nullptr) ||
+      !Read(drm,changes,connector,SDR_BT2020_DEEP_COLOR,0,false,false,nullptr))
     return false;
+  if (connector->GetPropertyValue(SDR_BT2020_DEEP_COLOR).value_or(0) && defaultMaxBpc)
+    for (auto& change : changes)
+      if (change.name == "max bpc")
+        change.before = *defaultMaxBpc;
   m_changes = std::move(changes);
   m_owner = &drm;
   return true;
@@ -223,9 +231,10 @@ std::optional<uint64_t> CDVBridgeState::Before(const char* name) const
 bool CDVBridgeState::Stage(CDRMAtomic& drm,
                           bool restore,
                           std::optional<uint64_t> broadcastRange,
-                          std::optional<uint64_t> colorFormat)
+                          std::optional<uint64_t> colorFormat,
+                          std::optional<uint64_t> wideSDRMaxBpc)
 {
-  return StageTransport(drm, restore, 0, broadcastRange, 8, colorFormat);
+  return StageTransport(drm, restore, 0, broadcastRange, 8, colorFormat, wideSDRMaxBpc);
 }
 
 bool CDVBridgeState::StagePlayerLed(CDRMAtomic& drm, uint64_t format, uint64_t bpc)
@@ -237,18 +246,33 @@ bool CDVBridgeState::StagePlayerLed(CDRMAtomic& drm, uint64_t format, uint64_t b
 bool CDVBridgeState::StageTransport(CDRMAtomic& drm, bool restore, uint64_t playerLedFormat,
                                    std::optional<uint64_t> broadcastRange,
                                    uint64_t playerLedBpc,
-                                   std::optional<uint64_t> colorFormat)
+                                   std::optional<uint64_t> colorFormat,
+                                   std::optional<uint64_t> wideSDRMaxBpc)
 {
   if (!Captured() || m_owner != &drm || m_changes.front().object != drm.GetConnector())
+    return false;
+  if (!restore && wideSDRMaxBpc &&
+      (!Before("max bpc") || !Before(SDR_BT2020_DEEP_COLOR)))
     return false;
   bool valid = true;
   for (const auto& change : m_changes)
   {
     uint64_t value = restore ? change.before : change.during;
+    // Preserve the prior wide-SDR ownership for admission, but never revive
+    // its frame-specific guard when restoring ordinary connector preferences.
+    if (restore && change.name == SDR_BT2020_DEEP_COLOR)
+      value = 0;
     if (!restore && broadcastRange && change.name == "Broadcast RGB")
       value = *broadcastRange;
     if (!restore && colorFormat && change.name == "color format")
       value = *colorFormat;
+    if (!restore && wideSDRMaxBpc)
+    {
+      if (change.name == "max bpc")
+        value = *wideSDRMaxBpc;
+      else if (change.name == SDR_BT2020_DEEP_COLOR)
+        value = 1;
+    }
     if (playerLedFormat && change.name == "CB1_LLDV_FORMAT")
       value = playerLedFormat;
     else if (playerLedFormat && change.name == "max bpc")

@@ -66,7 +66,7 @@ protected:
   bool HasLldvRgb16Scanout() const override;
   bool HasLldvRgb10Scanout() const override;
   void CheckFloatOutput(bool accepted);
-  bool m_floatOutputBlocked{};
+  bool m_floatOutputBlocked{}, m_nativeSDRDeepSurfaceBlocked{};
   bool m_lldvRgb16Visual{};
   std::vector<uint32_t> m_lldvRgb10Visuals;
   std::unique_ptr<VideoPicture> m_floatOutputPicture;

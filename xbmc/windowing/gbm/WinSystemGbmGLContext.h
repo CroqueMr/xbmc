@@ -294,6 +294,7 @@ private:
   // Render-thread ownership. Empty signal requires a fresh SDR property commit.
   std::optional<dvbridge_gamut> m_sdrSignal;
   bool m_sdrBT2020Rejected{};
+  std::pair<uint64_t, std::string> m_sdrBT2020OutputKey, m_pendingSDRBT2020OutputKey;
   std::optional<dvbridge_mode> m_dvConfiguredOutput;
   std::optional<dvbridge_mode> m_dvPriorConfiguredOutput;
   DVBRIDGE::OutputSelection m_dvSelection;
