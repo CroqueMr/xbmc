@@ -251,6 +251,13 @@ bool CRendererVAAPIGL::RenderHook(int idx)
 }
 
 #ifdef HAVE_DVBRIDGE
+bool CRendererVAAPIGL::HasShaderUpscalerP010(int index) const
+{
+  const auto* picture = dynamic_cast<const CVaapiRenderPicture*>(m_buffers[index].videoBuffer);
+  return m_isVAAPIBuffer && m_vaapiTextures[index] && picture && picture->valid &&
+         picture->procPic.videoSurface != VA_INVALID_ID && picture->procPic.fourcc == VA_FOURCC_P010;
+}
+
 bool CRendererVAAPIGL::DVBridgeOrientationSupported(unsigned int orientation) const
 {
   // Nonzero native presentation rotation uses the established unsupported path.

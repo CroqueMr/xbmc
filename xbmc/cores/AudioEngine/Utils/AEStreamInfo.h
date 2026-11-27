@@ -65,7 +65,11 @@ public:
     m_dtsDialnorm = dts;
   }
   void SetCoreOnly(bool value) { m_coreOnly = value; }
-  void SetTrueHDOnly(bool value) { m_trueHdOnly = value; }
+  /*!
+   \brief Only sync on streams of the same family (AC3/E-AC3, DTS, TrueHD) as type.
+   STREAM_TYPE_NULL (the default) accepts any family.
+   */
+  void SetExpectedType(CAEStreamInfo::DataType type) { m_expectedType = type; }
   void SetDTSHDMA(bool value) { m_dtsHDMA = value; }
   unsigned int IsValid() const { return m_hasSync; }
   unsigned int GetSampleRate() const { return m_info.m_sampleRate; }
@@ -89,7 +93,7 @@ private:
 
   CAEStreamInfo m_info;
   bool m_coreOnly = false;
-  bool m_trueHdOnly = false;
+  CAEStreamInfo::DataType m_expectedType = CAEStreamInfo::STREAM_TYPE_NULL;
   unsigned int m_needBytes = 0;
   ParseFunc m_syncFunc;
   bool m_hasSync = false;
@@ -110,6 +114,9 @@ private:
   void NeutralizeTrueHdDialnorm(uint8_t* data, unsigned int size);
   void GetPacket(uint8_t **buffer, unsigned int *bufferSize);
   unsigned int DetectType(uint8_t *data, unsigned int size);
+  bool AllowsAC3() const;
+  bool AllowsDTS() const;
+  bool AllowsTrueHD() const;
   bool TrySyncAC3(uint8_t *data, unsigned int size, bool resyncing, bool wantEAC3dependent);
   unsigned int SyncAC3(uint8_t *data, unsigned int size);
   unsigned int SyncDTS(uint8_t *data, unsigned int size);

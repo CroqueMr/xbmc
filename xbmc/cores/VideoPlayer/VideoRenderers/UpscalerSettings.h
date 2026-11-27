@@ -38,6 +38,31 @@ constexpr bool UsesShaderHooks(int method)
   return method == VS_SCALINGMETHOD_FSRCNNX || method == VS_SCALINGMETHOD_ANIME4K;
 }
 
+struct ShaderSourceLayout
+{
+  unsigned planes;
+  unsigned sampleDepth;
+  unsigned bitShift;
+};
+
+constexpr ShaderSourceLayout ShaderSource(bool hdr, int bits, bool planar, bool semiplanar,
+                                          bool planar10, bool p010)
+{
+  if (bits == 8 && !hdr)
+    return {planar ? 3u : semiplanar ? 2u : 0u, 8, 0};
+  if (bits != 10)
+    return {};
+  // The existing HDR path uses the legacy shader formats. SDR 10-bit needs
+  // explicit knowledge of how the source samples are stored.
+  if (hdr)
+    return {planar ? 3u : semiplanar ? 2u : 0u, 16, planar ? 0u : 6u};
+  if (planar10)
+    return {3, 16, 0};
+  if (semiplanar && p010)
+    return {2, 16, 6};
+  return {};
+}
+
 constexpr int Label(int method)
 {
   switch (method)
