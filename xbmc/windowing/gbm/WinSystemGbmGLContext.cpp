@@ -596,13 +596,43 @@ void CWinSystemGbmGLContext::PresentFrame(bool rendered, bool videoLayer)
   if (PresentPlayerLedFrame()) return;
   if (m_hdrConversion)
   {
-    if (!m_dvFrame || !StageCB1ConnectorPreferences(false)) return;
+    if (!m_dvFrame) return;
+    const auto failWideSDR = [this]() {
+      CLog::Log(LOGWARNING, "CB1 SDR: BT.2020 HDMI output rejected; rendering BT.709 instead");
+      m_sdrBT2020Rejected = true;
+      m_dvActivating = m_dvSuperseded = true;
+    };
+    if (!StageCB1ConnectorPreferences(false))
+    {
+      if (m_sdrConversion && m_dvSelection.policy.sdr.gamut == DVBRIDGE_GAMUT_BT2020 &&
+          SDRBT2020DeepColorSupported())
+      {
+        if (auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
+          drm->DiscardPendingColorRequest();
+        failWideSDR();
+        RejectDVOutputSurface();
+        DiscardDVBridgeFrame();
+      }
+      return;
+    }
     bool presented = false;
     CDVBridgeGLES::Submission submitted;
     const auto* output = m_sdrConversion && m_dvBridge ? m_dvBridge->HDR10Output() : nullptr;
     const auto gamut = output && output->container.primaries == PL_COLOR_PRIM_BT_2020 ?
         DVBRIDGE_GAMUT_BT2020 : DVBRIDGE_GAMUT_BT709;
-    const bool signalChange = output && m_sdrSignal != gamut;
+    bool depthChange = false;
+    if (output && SDRBT2020DeepColorSupported())
+    {
+      const auto* connector = m_DRM->GetConnector();
+      const bool wide = gamut == DVBRIDGE_GAMUT_BT2020;
+      const auto maximum = wide ? SDRBT2020MaxBpc() : std::nullopt;
+      depthChange = connector->GetPropertyValue(SDR_BT2020_DEEP_COLOR) !=
+                        std::optional<uint64_t>{wide ? 1u : 0u} ||
+                    (wide && connector->GetPropertyValue("max bpc") != maximum);
+      if (depthChange)
+        m_DRM->RequestModeset();
+    }
+    const bool signalChange = output && (m_sdrSignal != gamut || depthChange);
     bool signalRejected = false;
     if (m_dvFrame && m_dvBridge && m_dvBridge->ResolveHDR10(UseLimitedColor()))
     {
@@ -680,10 +710,7 @@ void CWinSystemGbmGLContext::PresentFrame(bool rendered, bool videoLayer)
     {
       if (signalRejected)
       {
-        CLog::Log(LOGWARNING, "CB1 SDR: BT.2020 HDMI output rejected; rendering BT.709 instead");
-        m_sdrBT2020Rejected = true;
-        m_dvActivating = true; // An in-place gamut change may have no pending EGL surface.
-        m_dvSuperseded = true; // Retire the rejected gamut without failing the SDR circuit.
+        failWideSDR(); // Retire the rejected gamut without failing the SDR circuit.
       }
       RejectDVOutputSurface();
     }
@@ -1822,7 +1849,10 @@ int CWinSystemGbmGLContext::VideoOutputBitDepth(const VideoPicture* picture) con
     return selection.lldvRgbScanoutBits;
   return selection.route == DVBRIDGE::OutputRoute::NativeDV ? 8 :
       selection.route == DVBRIDGE::OutputRoute::HDR10 ? 10 :
-      selection.route == DVBRIDGE::OutputRoute::SDR ? 8 :
+      selection.route == DVBRIDGE::OutputRoute::SDR ?
+          (selection.policy.sdr.gamut == DVBRIDGE_GAMUT_BT2020 &&
+           SDRBT2020DeepColorSupported() && !m_sdrBT2020Rejected &&
+           GetSDRBT2020Support() == SDRBT2020Support::Available ? 10 : 8) :
       CWinSystemGbmEGLContext::VideoOutputBitDepth(picture);
 }
 
@@ -2533,6 +2563,16 @@ bool CWinSystemGbmGLContext::PrepareHDR10AIQueue(const VideoPicture& picture,
 void CWinSystemGbmGLContext::ResetDVActivation(const VideoPicture* picture)
 {
   if (!picture) return;
+  if (SDRBT2020DeepColorSupported())
+  {
+    const auto key = SDRBT2020OutputKey();
+    if (m_sdrBT2020OutputKey != key)
+    {
+      m_sdrBT2020OutputKey = key;
+      m_sdrBT2020Rejected = false;
+      m_sdrSignal.reset();
+    }
+  }
   const auto binding = picture->doviSourceBinding.Valid() ?
       picture->doviSourceBinding : picture->doviMetadata.Binding();
   const auto revision = DVBRIDGE::FrameOutputSettings().revision;
@@ -2625,7 +2665,13 @@ void CWinSystemGbmGLContext::RefreshHDR10LinkDepth()
 
   // Native DV and LLDV temporarily own an 8-bit scanout. HDR10 setup stages
   // the saved connector depth when it releases that transport.
-  const auto restored = m_dvState.Before("max bpc");
+  auto restored = m_dvState.Before("max bpc");
+  // The temporary wide-SDR ceiling must not admit a different HDR circuit.
+  if (SDRBT2020DeepColorSupported() &&
+      (connector->GetPropertyValue(SDR_BT2020_DEEP_COLOR).value_or(0) ||
+       m_cb1ConnectorState.Captured()))
+    restored = m_cb1ConnectorState.Before("max bpc").value_or(
+        GetEffectiveMaxBpc(DefaultMaxBpc()));
   auto depth = GetEffectiveMaxBpc(restored);
   if (restored && *restored != 0)
     depth = std::min(depth, *restored);
@@ -2921,7 +2967,12 @@ bool CWinSystemGbmGLContext::ConnectorPreferencesAllowed() const
 bool CWinSystemGbmGLContext::CaptureCB1ConnectorPreferences()
 {
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
-  if (!drm || !m_cb1ConnectorState.CaptureColorPreferences(*drm, DefaultMaxBpc()))
+  if (!drm)
+    return false;
+  const auto* connector = drm->GetConnector();
+  const auto maximum = connector && connector->GetPropertyValue(SDR_BT2020_DEEP_COLOR).value_or(0) ?
+      std::optional{GetEffectiveMaxBpc(DefaultMaxBpc())} : DefaultMaxBpc();
+  if (!m_cb1ConnectorState.CaptureColorPreferences(*drm, maximum))
     return false;
   if (!m_cb1LimitedRange)
   {
@@ -2966,8 +3017,17 @@ bool CWinSystemGbmGLContext::StageCB1ConnectorPreferences(bool restore)
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   const auto colorFormat = m_hdrConversion && !m_sdrConversion ?
       m_hdr10AutoColorFormat : std::nullopt;
+  std::optional<uint64_t> wideSDRMaxBpc;
+  if (!restore && m_sdrConversion && m_dvSelection.policy.sdr.gamut == DVBRIDGE_GAMUT_BT2020 &&
+      SDRBT2020DeepColorSupported())
+  {
+    wideSDRMaxBpc = SDRBT2020MaxBpc();
+    if (!wideSDRMaxBpc)
+      return false;
+  }
   return drm && m_cb1ConnectorState.Stage(*drm, restore,
-      m_sdrConversion || colorFormat ? m_cb1LimitedBroadcastRange : std::nullopt, colorFormat);
+      m_sdrConversion || colorFormat ? m_cb1LimitedBroadcastRange : std::nullopt,
+      colorFormat, wideSDRMaxBpc);
 }
 
 bool CWinSystemGbmGLContext::StageTransportPreferences()
@@ -3023,7 +3083,9 @@ bool CWinSystemGbmGLContext::BeginDVBridge()
   if (!selected || m_nWidth != selected->hdisplay || m_nHeight != selected->vdisplay)
     return failure("output-format", "drawable-size");
   const int dvDrawableDepth = playerLed ? m_dvSelection.lldvRgbScanoutBits : 8;
-  if (sdr ? GetOutputBitDepth() < 8 : hdr10 ? GetOutputBitDepth() < 10 :
+  const int sdrDepth = sdr && m_dvSelection.policy.sdr.gamut == DVBRIDGE_GAMUT_BT2020 &&
+      SDRBT2020DeepColorSupported() ? 10 : 8;
+  if (sdr ? GetOutputBitDepth() < sdrDepth : hdr10 ? GetOutputBitDepth() < 10 :
       GetOutputBitDepth() != dvDrawableDepth)
     return failure("output-format", "drawable-depth");
   if (m_renderableType != EGL_OPENGL_BIT) return failure("output-format", "egl-renderable");
@@ -3124,6 +3186,10 @@ bool CWinSystemGbmGLContext::SetVideoOutput(const VideoPicture* picture)
       (!capabilities.processingKnown || (picture->strDVELType == "FEL" && !picture->doviEnhancement)))
     return true; // Configure must reach UploadTexture before source-dependent activation.
   m_dvSelection = SelectedDVOutput(picture);
+  if (m_dvSelection.route == DVBRIDGE::OutputRoute::SDR &&
+      m_dvSelection.policy.sdr.gamut == DVBRIDGE_GAMUT_BT2020 &&
+      (m_sdrBT2020Rejected || GetSDRBT2020Support() != SDRBT2020Support::Available))
+    m_dvSelection.policy.sdr.gamut = DVBRIDGE_GAMUT_BT709;
   if (!PollRejectedDVSurface()) return false;
   if (HasPendingDVOutputSurface() || m_dvOrdinaryFrame) return false;
   const bool transaction = DVBridgeRequested(picture) || m_hdrConversion || m_dvState.Captured();
@@ -3149,6 +3215,7 @@ bool CWinSystemGbmGLContext::SetVideoOutput(const VideoPicture* picture)
       m_dvPendingStream = picture ? (picture->doviSourceBinding.Valid() ?
           picture->doviSourceBinding.stream : picture->doviMetadata.Binding().stream) : 0;
       m_dvPendingPolicy = preferences.revision;
+      m_pendingSDRBT2020OutputKey = m_sdrBT2020OutputKey;
       if (m_dvBridge)
       {
         m_dvBridge->Cancel();
@@ -3178,6 +3245,12 @@ bool CWinSystemGbmGLContext::SetVideoOutput(const VideoPicture* picture)
     UseDVOutputSurfaceTransaction(false);
     if (!staged)
     {
+      if (m_dvRecoveryPending && m_dvSelection.route == DVBRIDGE::OutputRoute::SDR &&
+          m_dvSelection.policy.sdr.gamut == DVBRIDGE_GAMUT_BT2020 && SDRBT2020DeepColorSupported())
+      {
+        m_sdrBT2020Rejected = true;
+        m_dvSuperseded = true;
+      }
       if (!HasPendingDVOutputSurface())
         SelectPascalHDRMode(m_priorPascalHDRMode);
       return false;
@@ -3295,7 +3368,10 @@ bool CWinSystemGbmGLContext::PrepareDVOutputFrame(const VideoPicture& picture)
       (m_dvPendingStream != binding.stream || m_dvPendingPolicy != preferences.revision ||
        m_dvSelection.route != selection.route || m_dvSelection.policy.mode != selection.policy.mode ||
        m_dvSelection.lldvEdidGeneration != selection.lldvEdidGeneration ||
-       m_dvSelection.lldvRgbScanoutBits != selection.lldvRgbScanoutBits))
+       m_dvSelection.lldvRgbScanoutBits != selection.lldvRgbScanoutBits ||
+       (selection.route == DVBRIDGE::OutputRoute::SDR && SDRBT2020DeepColorSupported() &&
+        (m_dvSelection.policy.sdr.gamut != selection.policy.sdr.gamut ||
+         m_pendingSDRBT2020OutputKey != m_sdrBT2020OutputKey))))
   {
     // A pending drawable and renderer belong to their original target. Retire
     // and unwind that transaction before selecting any successor, even at the
@@ -3356,12 +3432,15 @@ bool CWinSystemGbmGLContext::PrepareDVOutputFrame(const VideoPicture& picture)
   }
   const bool matchedPlayerLedDepth = m_dvSelection.route != DVBRIDGE::OutputRoute::PlayerLed ||
       GetOutputBitDepth() == static_cast<int>(m_dvSelection.lldvRgbScanoutBits);
-  if (m_dvConfiguredOutput == m_dvSelection.policy.mode && !m_dvOutputRetiring && matchedPlayerLedDepth &&
+  const bool matchedSDRDepth = m_dvSelection.route != DVBRIDGE::OutputRoute::SDR ||
+      !SDRBT2020DeepColorSupported() ||
+      GetOutputBitDepth() == (m_dvSelection.policy.sdr.gamut == DVBRIDGE_GAMUT_BT2020 ? 10 : 8);
+  if (m_dvConfiguredOutput == m_dvSelection.policy.mode && !m_dvOutputRetiring && matchedPlayerLedDepth && matchedSDRDepth &&
       (m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla || m_dvState.Captured() || m_hdrConversion))
     return m_dvSelection.route != DVBRIDGE::OutputRoute::SDR ||
         SetGuiCompositing(AVCOL_TRC_GAMMA22);
   const bool requested = DVBridgeRequested(&picture);
-  if (requested && m_dvBridge && !HasPendingDVOutputSurface() && matchedPlayerLedDepth &&
+  if (requested && m_dvBridge && !HasPendingDVOutputSurface() && matchedPlayerLedDepth && matchedSDRDepth &&
       (m_dvSelection.route == DVBRIDGE::OutputRoute::PlayerLed) == m_dvBridge->PlayerLed() &&
       (m_dvState.Captured() || m_hdrConversion) &&
       (m_dvSelection.route == DVBRIDGE::OutputRoute::SDR) == m_sdrConversion &&
@@ -3384,7 +3463,17 @@ bool CWinSystemGbmGLContext::PrepareDVOutputFrame(const VideoPicture& picture)
     const bool ready = m_dvSelection.route == DVBRIDGE::OutputRoute::SDR ?
         ConfigureSDRConversion(picture) : m_dvSelection.route == DVBRIDGE::OutputRoute::HDR10 ?
         ConfigureHDR10Conversion(picture) : BeginDVBridge();
-    if (!ready) { RejectDVOutputSurface(); return false; }
+    if (!ready)
+    {
+      if (m_dvSelection.route == DVBRIDGE::OutputRoute::SDR &&
+          m_dvSelection.policy.sdr.gamut == DVBRIDGE_GAMUT_BT2020 && SDRBT2020DeepColorSupported())
+      {
+        m_sdrBT2020Rejected = true;
+        m_dvSuperseded = true;
+      }
+      RejectDVOutputSurface();
+      return false;
+    }
   }
   else if ((HasPendingDVOutputSurface() || m_dvOrdinaryFrame) &&
            !PrepareOrdinaryDVOutput(&picture)) return false;

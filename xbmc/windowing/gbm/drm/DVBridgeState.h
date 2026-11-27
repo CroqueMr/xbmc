@@ -20,7 +20,8 @@ public:
   bool Stage(CDRMAtomic&,
              bool restore,
              std::optional<uint64_t> broadcastRange = {},
-             std::optional<uint64_t> colorFormat = {});
+             std::optional<uint64_t> colorFormat = {},
+             std::optional<uint64_t> wideSDRMaxBpc = {});
   bool CapturePlayerLed(CDRMAtomic&);
   bool StagePlayerLed(CDRMAtomic&, uint64_t format, uint64_t bpc);
   void Restored() { m_changes.clear(); m_owner = nullptr; m_backend = Backend::NONE; }
@@ -43,7 +44,8 @@ private:
   bool StageTransport(CDRMAtomic&, bool restore, uint64_t playerLedFormat,
                       std::optional<uint64_t> broadcastRange = {},
                       uint64_t playerLedBpc = 8,
-                      std::optional<uint64_t> colorFormat = {});
+                      std::optional<uint64_t> colorFormat = {},
+                      std::optional<uint64_t> wideSDRMaxBpc = {});
   std::vector<Change> m_changes;
   CDRMAtomic* m_owner = nullptr;
   Backend m_backend = Backend::NONE;

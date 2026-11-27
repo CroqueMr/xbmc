@@ -434,6 +434,45 @@ uint64_t CWinSystemGbm::GetEffectiveMaxBpc(std::optional<uint64_t> restored) con
   return connector ? connector->GetPropertyValue(MAX_BPC).value_or(0) : 0;
 }
 
+bool CWinSystemGbm::SDRBT2020DeepColorSupported() const
+{
+  auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  return connector && connector->SupportsProperty(SDR_BT2020_DEEP_COLOR) &&
+         !connector->IsPropertyImmutable(SDR_BT2020_DEEP_COLOR).value_or(true);
+}
+
+std::optional<uint64_t> CWinSystemGbm::SDRBT2020MaxBpc() const
+{
+  const auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
+  if (!connector)
+    return {};
+  const bool strict = SDRBT2020DeepColorSupported();
+  const auto ceiling = strict ? GetEffectiveMaxBpc(m_defaultMaxBpc) : GetEffectiveMaxBpc();
+  const int setting = m_maxBpc;
+  if (setting > 0 && setting < static_cast<int>(MAX_BPC_VALUES.size()) &&
+      MAX_BPC_VALUES[setting] < 10)
+    return {};
+  if (strict && (!HasLldvRgb10Scanout() || !connector->GetPropertyValue(MAX_BPC)))
+    return {};
+  return SelectSDRBT2020MaxBpc(ceiling, setting == 0, strict,
+                              connector->GetRangePropertyLimits(MAX_BPC));
+}
+
+bool CWinSystemGbm::WantsNativeSDRBT2020(const VideoPicture* picture) const
+{
+  if (!picture || picture->hdrType != StreamHdrType::HDR_TYPE_NONE ||
+      picture->color_transfer == AVCOL_TRC_SMPTE2084 ||
+      picture->color_transfer == AVCOL_TRC_ARIB_STD_B67 ||
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool("videoscreen.cmsenabled"))
+    return false;
+  auto gamut = SDROutputGamut::Auto;
+#ifdef HAVE_DVBRIDGE
+  gamut = static_cast<SDROutputGamut>(
+      CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt("dvbridge.sdrgamutvalue"));
+#endif
+  return WantsSDRBT2020(gamut, picture->color_primaries == AVCOL_PRI_BT2020);
+}
+
 void CWinSystemGbm::ApplyColorFormatSetting(void* userptr)
 {
   auto winSystem = static_cast<CWinSystemGbm*>(userptr);
@@ -735,6 +774,9 @@ void CWinSystemGbm::ApplyMaxBpc()
 
   uint64_t value = 0;
   const int setting = m_maxBpc;
+  // Native wide SDR owns the temporary ceiling until a successor is presented.
+  if (SDRBT2020DeepColorSupported() && m_nativeSDRSubmitted)
+    return;
   const auto limits = connector->GetRangePropertyLimits(MAX_BPC);
   if (!m_maxBpcFallback && setting > 0 && setting < static_cast<int>(MAX_BPC_VALUES.size()))
     value = MAX_BPC_VALUES[setting];
@@ -1152,6 +1194,9 @@ bool CWinSystemGbm::FlipPage(bool rendered, bool videoLayer, bool async,
   bool wideTransition = false;
   if (!StageNativeSDRSignal(rendered, wideTransition))
   {
+    if (atomic) atomic->DiscardPendingColorRequest();
+    m_queuedColorspace.reset();
+    if (m_nativeSDRActive) m_nativeSDRRejected = true;
     if (auto gui = CServiceBroker::GetGUI()) gui->GetWindowManager().MarkDirty();
     return false;
   }
@@ -1364,14 +1409,8 @@ void CWinSystemGbm::SetColorimetry(const VideoPicture* videoPicture, bool native
                          videoPicture->hdrType == StreamHdrType::HDR_TYPE_NONE &&
                          videoPicture->color_transfer != AVCOL_TRC_SMPTE2084 &&
                          videoPicture->color_transfer != AVCOL_TRC_ARIB_STD_B67;
-  auto gamut = SDROutputGamut::Auto;
-#ifdef HAVE_DVBRIDGE
-  gamut = static_cast<SDROutputGamut>(
-      CServiceBroker::GetSettingsComponent()->GetSettings()->GetInt("dvbridge.sdrgamutvalue"));
-#endif
   m_nativeSDRVideo = nativeSDR;
-  m_nativeSDRSource = nativeSDR &&
-      WantsSDRBT2020(gamut, videoPicture->color_primaries == AVCOL_PRI_BT2020);
+  m_nativeSDRSource = nativeSDR && WantsNativeSDRBT2020(videoPicture);
   m_nativeSDRRejected = false;
   if (!m_nativeSDRSource)
     m_nativeSDRActive = false;
@@ -1417,7 +1456,7 @@ std::optional<uint64_t> CWinSystemGbm::NativeSDRBT2020Colorspace() const
       !connector->SupportsProperty("Colorspace") ||
       connector->IsPropertyImmutable("Colorspace").value_or(false) || !m_info)
     return {};
-  if (const uint64_t bpc = GetEffectiveMaxBpc(); bpc != 0 && bpc < 10)
+  if (!SDRBT2020MaxBpc())
     return {};
 
   const auto target = IsYuvRequested() ? KODI::UTILS::Colorimetry::BT2020_YCC :
@@ -1430,13 +1469,25 @@ std::optional<uint64_t> CWinSystemGbm::NativeSDRBT2020Colorspace() const
 bool CWinSystemGbm::BeginFrameGuiComposite(bool guiWillRender)
 {
   const bool wasNative = m_nativeSDRCompositor;
+#ifdef HAVE_DVBRIDGE
+  if (m_nativeSDRSource && SDRBT2020DeepColorSupported())
+  {
+    const auto key = SDRBT2020OutputKey();
+    if (key != m_nativeSDRBT2020OutputKey)
+    {
+      m_nativeSDRBT2020OutputKey = key;
+      m_nativeSDRRejected = false;
+    }
+  }
+#endif
   // Only the renderer that owns a single RGB scanout can compose both layers
   // into BT.2020. Keep the existing CMS and CB1 transport owners independent.
   const bool wide = m_nativeSDRSource && !m_nativeSDRRejected && ConnectorPreferencesAllowed() &&
                     m_DRM && m_DRM->GetVideoPlane() && !m_DRM->GetGuiPlane() &&
                     !CServiceBroker::GetSettingsComponent()->GetSettings()->GetBool(
                         "videoscreen.cmsenabled") &&
-                    NativeSDRBT2020Colorspace().has_value();
+                    NativeSDRBT2020Colorspace().has_value() &&
+                    (!SDRBT2020DeepColorSupported() || GetOutputBitDepth() >= 10);
   if (wide && (!m_nativeSDRCompositor || !IsHdrComposite()))
     m_nativeSDRCompositor = SetGuiCompositing(AVCOL_TRC_BT2020_10);
   else if (!wide && m_nativeSDRCompositor)
@@ -1501,11 +1552,31 @@ bool CWinSystemGbm::StageNativeSDRSignal(bool rendered, bool& wideTransition)
   }
 
   const bool tagChanged = m_queuedColorspace != committed;
-  wideTransition = wide && (tagChanged || !drm->IsSelectedModeCommitted());
+  bool depthChanged = false;
+  if (SDRBT2020DeepColorSupported())
+  {
+    const auto maximum = wide ? SDRBT2020MaxBpc() :
+                                std::optional{GetEffectiveMaxBpc(m_defaultMaxBpc)};
+    const auto current = connector->GetPropertyValue(MAX_BPC);
+    const auto guard = connector->GetPropertyValue(SDR_BT2020_DEEP_COLOR);
+    if (!maximum || !current || !guard)
+      return false;
+    const auto limits = connector->GetRangePropertyLimits(MAX_BPC);
+    if (!limits)
+      return false;
+    const uint64_t ceiling = std::clamp(*maximum, limits->first, limits->second);
+    depthChanged = ceiling != *current || *guard != static_cast<uint64_t>(wide);
+    if ((depthChanged || m_nativeSDRRejected) &&
+        (!drm->AddProperty(connector, MAX_BPC, ceiling) ||
+         !drm->AddProperty(connector, SDR_BT2020_DEEP_COLOR, wide ? 1 : 0)))
+      return false;
+    m_bpcRequest.queued = false;
+  }
+  wideTransition = wide && (tagChanged || depthChanged || !drm->IsSelectedModeCommitted());
   // Never attach a framebuffer in the new gamut to the old atomic request.
-  if (tagChanged || wideTransition)
+  if (tagChanged || depthChanged || wideTransition)
     drm->SetColorRangeTransition();
-  if (tagChanged)
+  if (tagChanged || depthChanged)
     drm->RequestModeset();
   return true;
 }
@@ -1948,15 +2019,22 @@ bool CWinSystemGbm::FlipPlayerLedPage(CDVBridgeState& state,
   return accepted;
 }
 
+std::pair<uint64_t, std::string> CWinSystemGbm::SDRBT2020OutputKey() const
+{
+  std::lock_guard lock(m_lldvEdidMutex);
+  return {m_lldvEdidGeneration, m_currentModeId};
+}
+
 CWinSystemGbm::SDRBT2020Support CWinSystemGbm::GetSDRBT2020Support(bool nativeFormat) const
 {
   auto* connector = m_DRM ? m_DRM->GetConnector() : nullptr;
   const auto target = nativeFormat && IsYuvRequested() ? KODI::UTILS::Colorimetry::BT2020_YCC :
                                                         KODI::UTILS::Colorimetry::BT2020_RGB;
   if (!connector || !connector->IsConnected() || !connector->GetType().starts_with("HDMI") ||
+      connector->IsPropertyImmutable("Colorspace").value_or(true) ||
       !connector->GetPropertyEnumValue("Colorspace", ColorimetryMap.at(target)))
     return SDRBT2020Support::Driver;
-  if (const uint64_t bpc = GetEffectiveMaxBpc(); bpc != 0 && bpc < 10)
+  if (!SDRBT2020MaxBpc())
     return SDRBT2020Support::Driver;
   if (!m_info || !m_info->SupportsColorimetry(target))
     return SDRBT2020Support::Display;

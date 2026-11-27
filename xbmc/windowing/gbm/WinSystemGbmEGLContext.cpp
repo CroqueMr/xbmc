@@ -342,6 +342,9 @@ std::vector<uint64_t> CWinSystemGbmEGLContext::OutputModifiers(uint32_t format)
 
 int CWinSystemGbmEGLContext::VideoOutputBitDepth(const VideoPicture* picture) const
 {
+  if (!m_nativeSDRDeepSurfaceBlocked && SDRBT2020DeepColorSupported() &&
+      WantsNativeSDRBT2020(picture) && NativeSDRBT2020Colorspace())
+    return std::max<int>(10, picture->colorBits);
   return picture ? picture->colorBits : 8;
 }
 
@@ -350,6 +353,7 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   if (!m_dvOutputSurface && !videoPicture)
   {
     m_floatOutputBlocked = false;
+    m_nativeSDRDeepSurfaceBlocked = false;
     m_floatOutputPicture.reset();
   }
   else if (!m_dvOutputSurface && videoPicture && FloatOutputUsable() &&
@@ -370,8 +374,17 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
       m_priorOutputModifier = m_priorOutputPlane->GetModifier();
     }
   }
-  const auto reject = [this,videoPicture]() {
+  const bool nativePromotion = !m_dvOutputSurface && videoPicture &&
+      videoPicture->colorBits < 10 && !m_nativeSDRDeepSurfaceBlocked &&
+      SDRBT2020DeepColorSupported() && WantsNativeSDRBT2020(videoPicture) &&
+      NativeSDRBT2020Colorspace();
+  const auto reject = [this,videoPicture,nativePromotion]() {
     if (m_dvOutputSurface) RejectDVOutputSurface();
+    else if (nativePromotion && !m_nativeSDRDeepSurfaceBlocked)
+    {
+      m_nativeSDRDeepSurfaceBlocked = true;
+      return SetVideoOutput(videoPicture);
+    }
     else if (HasFloatOutput() && !m_floatOutputBlocked)
     {
       m_floatOutputBlocked = true;
@@ -386,7 +399,7 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   // base so plane-role tracking sees the new format. EGL context survives
   // across the rebuild, no shader-rebuild. The next flip forces a modeset
   // when needed (amdgpu), on other drivers it is a fast flip."
-  const int bitDepth = !m_dvOutputSurface && m_floatOutputBlocked ?
+  int bitDepth = !m_dvOutputSurface && m_floatOutputBlocked ?
       8 : VideoOutputBitDepth(videoPicture);
 
   // Pick an EGL config matching the target bit depth, then rebuild
@@ -395,7 +408,14 @@ bool CWinSystemGbmEGLContext::SetVideoOutput(const VideoPicture* videoPicture)
   uint32_t currentFormat = m_eglContext.GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
 
   bool separateScanout = false;
-  if (!ChooseEGLConfig(m_renderableType, bitDepth))
+  bool chosen = ChooseEGLConfig(m_renderableType, bitDepth);
+  if (!chosen && nativePromotion)
+  {
+    m_nativeSDRDeepSurfaceBlocked = true;
+    bitDepth = videoPicture->colorBits;
+    chosen = ChooseEGLConfig(m_renderableType, bitDepth);
+  }
+  if (!chosen)
   {
     separateScanout = bitDepth >= 10 && !(m_dvOutputSurface && bitDepth == 16) &&
         PrepareHDR10Scanout(videoPicture);

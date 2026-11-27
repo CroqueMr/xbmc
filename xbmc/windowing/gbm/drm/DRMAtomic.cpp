@@ -224,7 +224,9 @@ bool CDRMAtomic::PrepareSDRRestore(int& flags)
       m_connector->GetPropertyValue("DVBRIDGE_DV_STANDARD_LAB").value_or(0);
   const auto inheritedPlayerLed = !m_committedMode.clock &&
       m_connector->GetPropertyValue("CB1_LLDV_FORMAT").value_or(0);
-  const bool inheritedTransport = inheritedStandard || inheritedPlayerLed;
+  const auto inheritedWideSDR = !m_committedMode.clock &&
+      m_connector->GetPropertyValue("CB1_SDR_BT2020_DEEP_COLOR").value_or(0);
+  const bool inheritedTransport = inheritedStandard || inheritedPlayerLed || inheritedWideSDR;
   if (!m_sdrRestorePending && !inheritedTransport) return true;
   const bool hasHDRMetadata = m_connector->SupportsProperty("HDR_OUTPUT_METADATA");
   if (!hasHDRMetadata && !inheritedTransport)
@@ -237,6 +239,7 @@ bool CDRMAtomic::PrepareSDRRestore(int& flags)
   flags |= DRM_MODE_ATOMIC_ALLOW_MODESET;
   if ((inheritedStandard && !AddProperty(m_connector, "DVBRIDGE_DV_STANDARD_LAB", 0)) ||
       (inheritedPlayerLed && !AddProperty(m_connector, "CB1_LLDV_FORMAT", 0)) ||
+      (inheritedWideSDR && !AddProperty(m_connector, "CB1_SDR_BT2020_DEEP_COLOR", 0)) ||
       (hasHDRMetadata && !AddProperty(m_connector, "HDR_OUTPUT_METADATA", 0))) return false;
   if (m_connector->SupportsProperty("DVBRIDGE_HDR10_DEEP_COLOR") &&
       !AddProperty(m_connector, "DVBRIDGE_HDR10_DEEP_COLOR", 0)) return false;

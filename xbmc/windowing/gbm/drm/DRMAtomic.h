@@ -66,6 +66,7 @@ public:
   bool HasPendingCB1Page() const { return m_cb1Pending; }
   bool CanWaitForCB1Page() const { return m_cb1Pending && !m_cb1Uncertain; }
   bool HasPendingRequest() const { return m_need_modeset || (m_req && !m_req->Empty()); }
+  void DiscardPendingColorRequest() { FinishRequest(false); }
   bool CompleteCB1Page(int timeoutMs = 0);
   uint64_t CB1PresentationTime() const { return m_cb1CompletedNs; }
   // Kodi presentation timestamp of the picture carried by the next asynchronous commit.

@@ -141,6 +141,7 @@ public:
 protected:
 #ifdef HAVE_DVBRIDGE
   bool NativeSDRBT2020Committed() const { return m_nativeSDRSubmitted; }
+  std::pair<uint64_t, std::string> SDRBT2020OutputKey() const;
 
   struct DVOutputTiming
   {
@@ -166,6 +167,10 @@ protected:
   std::optional<uint64_t> DefaultMaxBpc() const { return m_defaultMaxBpc; }
   //! The "max bpc" in effect: the choice, or what the connector has. 0 if unknown
   uint64_t GetEffectiveMaxBpc(std::optional<uint64_t> restored = {}) const;
+  bool SDRBT2020DeepColorSupported() const;
+  std::optional<uint64_t> SDRBT2020MaxBpc() const;
+  bool WantsNativeSDRBT2020(const VideoPicture* picture) const;
+  std::optional<uint64_t> NativeSDRBT2020Colorspace() const;
   bool RequeueOutputProperties();
   std::optional<uint64_t> m_queuedColorspace, m_queuedHdrMetadata;
   void OnLostDevice();
@@ -233,7 +238,6 @@ private:
   //! True if >8 bit video in the active HDMI mode does not fit as RGB, but does as YCbCr
   bool ContentNeedsSubsampling() const;
 
-  std::optional<uint64_t> NativeSDRBT2020Colorspace() const;
   bool StageNativeSDRSignal(bool rendered, bool& wideTransition);
 
   bool IsYuvRequested() const;
@@ -285,6 +289,9 @@ private:
   std::atomic<bool> m_nativeSDRActive{false};
   bool m_nativeSDRSubmitted{false};
   bool m_nativeSDRRejected{false};
+#ifdef HAVE_DVBRIDGE
+  std::pair<uint64_t, std::string> m_nativeSDRBT2020OutputKey;
+#endif
 
   //! Whether the "Colorspace" tag was last set for a YCbCr output
   bool m_scanoutYuv{false};
