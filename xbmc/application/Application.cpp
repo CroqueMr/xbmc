@@ -948,6 +948,10 @@ void CApplication::Render()
     m_skipGuiRender = false;
   const bool guiWillRender = appPower->GetRenderGUI() && !m_skipGuiRender;
   bool compositing = CServiceBroker::GetWinSystem()->BeginFrameGuiComposite(guiWillRender);
+  CServiceBroker::GetGUI()->GetWindowManager().GetWindowedVideoComposite().BeginFrame(
+      compositing && guiWillRender && appPlayer->IsRenderingVideo() &&
+      !appPlayer->IsRenderingVideoLayer() &&
+      !CServiceBroker::GetWinSystem()->GetGfxContext().IsFullScreenVideo());
 
   if (guiWillRender)
   {

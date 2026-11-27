@@ -1407,22 +1407,31 @@ void CGUIWindowManager::RenderPassDual() const
   }
 }
 
-void CGUIWindowManager::RenderEx() const
+void CGUIWindowManager::RenderEx()
 {
   CGUIWindow* pWindow = GetWindow(GetActiveWindow());
   if (pWindow)
     pWindow->RenderEx();
 
-  // We don't call RenderEx for now on dialogs since it is used
-  // to trigger non gui video rendering. We can activate it later at any time.
-  /*
-  vector<CGUIWindow *> &activeDialogs = m_activeDialogs;
-  for (iDialog it = activeDialogs.begin(); it != activeDialogs.end(); ++it)
+  // A composited video control, including one in a dialog, supplies the sole
+  // late movie presentation. Do not walk invisible or unrelated dialog controls.
+  if (const auto owner = m_windowedVideoComposite.TakeOwner())
   {
-    if ((*it)->IsDialogRunning())
-      (*it)->RenderEx();
+    auto& graphics = CServiceBroker::GetWinSystem()->GetGfxContext();
+    const CRect previousView = graphics.GetViewWindow();
+    const CRect previousScissors = graphics.GetScissors();
+    const auto setView = [&graphics](const CRect& rect) {
+      graphics.SetTransform(TransformMatrix(), 1.0, 1.0);
+      graphics.SetViewWindow(rect.x1, rect.y1, rect.x2, rect.y2);
+      graphics.RemoveTransform();
+    };
+    setView(owner->view);
+    graphics.SetScissors(owner->clip);
+    const auto appPlayer = CServiceBroker::GetAppComponents().GetComponent<CApplicationPlayer>();
+    appPlayer->Render(false, 255, false);
+    graphics.SetScissors(previousScissors);
+    setView(previousView);
   }
-  */
 }
 
 bool CGUIWindowManager::Render()
@@ -1447,7 +1456,7 @@ bool CGUIWindowManager::Render()
   bool hasRendered = false;
   // If we visualize the regions we will always render the entire viewport
   // If the buffer age is zero, the current content is undefined and has to be rendered
-  if (visualizeDirtyRegions || bufferAge == 0 ||
+  if (m_windowedVideoComposite.Active() || visualizeDirtyRegions || bufferAge == 0 ||
       CServiceBroker::GetSettingsComponent()->GetAdvancedSettings()->m_guiAlgorithmDirtyRegions ==
           DIRTYREGION_SOLVER_FILL_VIEWPORT_ALWAYS)
   {

@@ -733,6 +733,17 @@ void CRenderSystemGL::InitialiseShaders()
     CLog::Log(LOGERROR, "GUI Shader gl_shader_frag_default.glsl - compile and link failed");
   }
 
+  // The default solid shader fixes Z at the near plane. An aperture belongs
+  // at its video control's depth, just like the other GUI geometry.
+  m_pShader[ShaderMethodGL::SM_VIDEO_APERTURE] = std::make_unique<CGLShader>(
+      "gl_shader_vert.glsl", "gl_shader_frag_default.glsl", defines);
+  if (!m_pShader[ShaderMethodGL::SM_VIDEO_APERTURE]->CompileAndLink())
+  {
+    m_pShader[ShaderMethodGL::SM_VIDEO_APERTURE]->Free();
+    m_pShader[ShaderMethodGL::SM_VIDEO_APERTURE].reset();
+    CLog::Log(LOGERROR, "GUI video aperture shader - compile and link failed");
+  }
+
   m_pShader[ShaderMethodGL::SM_TEXTURE] =
       std::make_unique<CGLShader>("gl_shader_frag_texture.glsl", defines);
   if (!m_pShader[ShaderMethodGL::SM_TEXTURE]->CompileAndLink())
@@ -804,6 +815,10 @@ void CRenderSystemGL::ReleaseShaders()
   if (m_pShader[ShaderMethodGL::SM_DEFAULT])
     m_pShader[ShaderMethodGL::SM_DEFAULT]->Free();
   m_pShader[ShaderMethodGL::SM_DEFAULT].reset();
+
+  if (m_pShader[ShaderMethodGL::SM_VIDEO_APERTURE])
+    m_pShader[ShaderMethodGL::SM_VIDEO_APERTURE]->Free();
+  m_pShader[ShaderMethodGL::SM_VIDEO_APERTURE].reset();
 
   if (m_pShader[ShaderMethodGL::SM_TEXTURE])
     m_pShader[ShaderMethodGL::SM_TEXTURE]->Free();

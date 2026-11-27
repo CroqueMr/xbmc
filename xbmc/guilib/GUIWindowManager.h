@@ -10,6 +10,7 @@
 
 #include "DirtyRegionTracker.h"
 #include "GUIWindow.h"
+#include "WindowedVideoComposite.h"
 #include "IMsgTargetCallback.h"
 #include "IWindowManagerCallback.h"
 #include "guilib/WindowIDs.h"
@@ -114,7 +115,8 @@ public:
    */
   bool Render();
 
-  void RenderEx() const;
+  void RenderEx();
+  CWindowedVideoComposite& GetWindowedVideoComposite() { return m_windowedVideoComposite; }
 
   /*! \brief Do any post render activities.
    */
@@ -248,6 +250,7 @@ public:
   void DumpTextureUse();
 #endif
 private:
+  CWindowedVideoComposite m_windowedVideoComposite;
   void RenderPass() const;
   /*! \brief Render in one back to front pass.
    */

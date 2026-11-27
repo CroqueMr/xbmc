@@ -30,6 +30,7 @@ public:
                        const CRect* texCoords = nullptr,
                        const float depth = 1.0,
                        const bool blending = true);
+  static void DrawVideoAperture(const CRect& coords, uint8_t opacity, float depth);
 
   CGUITextureGL(float posX, float posY, float width, float height, const CTextureInfo& texture);
   ~CGUITextureGL() override = default;
@@ -42,6 +43,14 @@ protected:
   void End() override;
 
 private:
+  static void DrawQuadInternal(const CRect& rect,
+                               KODI::UTILS::COLOR::Color color,
+                               CTexture* texture,
+                               const CRect* texCoords,
+                               float depth,
+                               bool blending,
+                               bool aperture);
+
   CGUITextureGL(const CGUITextureGL& texture) = default;
 
   std::array<GLubyte, 4> m_col;

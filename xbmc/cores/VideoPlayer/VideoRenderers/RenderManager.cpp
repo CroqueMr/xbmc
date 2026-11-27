@@ -34,9 +34,10 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#ifdef CB1_HAS_HDR10_AI
 #include "guilib/GUIComponent.h"
+#include "guilib/GUITexture.h"
 #include "guilib/GUIWindowManager.h"
+#ifdef CB1_HAS_HDR10_AI
 #include "guilib/WindowIDs.h"
 #if defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
 #include "HwDecRender/RendererVAAPIGLES.h"
@@ -1110,6 +1111,10 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 {
   auto& graphics = CServiceBroker::GetWinSystem()->GetGfxContext();
   CSingleExit exitLock(graphics);
+  auto& windowedVideo = CServiceBroker::GetGUI()->GetWindowManager().GetWindowedVideoComposite();
+  // The visible control will present once after the active-window RenderEx walk.
+  if (!gui && windowedVideo.HasOwner())
+    return;
 
   constexpr int menuBuffer = MAX_RENDER_BUFFERS;
   if (m_discMenuOnly)
@@ -1229,6 +1234,14 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
     CRect src, dst, view;
     m_pRenderer->GetVideoRect(src, dst, view);
+    if (!m_pRenderer->IsGuiLayer())
+    {
+      if (const auto aperture = windowedVideo.Queue(dst))
+      {
+        const auto* control = windowedVideo.CurrentControl();
+        CGUITexture::DrawVideoAperture(*aperture, control->opacity, control->depth);
+      }
+    }
     m_overlays.SetVideoRect(src, dst, view);
     m_overlays.Render(m_presentsource);
 

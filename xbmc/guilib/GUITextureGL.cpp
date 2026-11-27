@@ -22,7 +22,8 @@
 
 void CGUITextureGL::Register()
 {
-  CGUITexture::Register(CGUITextureGL::CreateTexture, CGUITextureGL::DrawQuad);
+  CGUITexture::Register(CGUITextureGL::CreateTexture, CGUITextureGL::DrawQuad,
+                        CGUITextureGL::DrawVideoAperture);
 }
 
 CGUITexture* CGUITextureGL::CreateTexture(
@@ -273,6 +274,26 @@ void CGUITextureGL::DrawQuad(const CRect& rect,
                              const float depth,
                              const bool blending)
 {
+  DrawQuadInternal(rect, color, texture, texCoords, depth, blending, false);
+}
+
+void CGUITextureGL::DrawVideoAperture(const CRect& rect, uint8_t opacity, float depth)
+{
+  if (opacity == 255)
+    DrawQuadInternal(rect, 0x00000000, nullptr, nullptr, depth, false, true);
+  else
+    DrawQuadInternal(rect, static_cast<KODI::UTILS::COLOR::Color>(opacity) << 24,
+                     nullptr, nullptr, depth, true, true);
+}
+
+void CGUITextureGL::DrawQuadInternal(const CRect& rect,
+                             KODI::UTILS::COLOR::Color color,
+                             CTexture* texture,
+                             const CRect* texCoords,
+                             const float depth,
+                             const bool blending,
+                               const bool aperture)
+{
   CRenderSystemGL *renderSystem = dynamic_cast<CRenderSystemGL*>(CServiceBroker::GetRenderSystem());
   if (texture)
   {
@@ -280,7 +301,21 @@ void CGUITextureGL::DrawQuad(const CRect& rect,
     texture->BindToUnit(0);
   }
 
-  if (blending)
+  GLint priorBlend[4]{};
+  const bool wasBlending = aperture && glIsEnabled(GL_BLEND);
+  if (aperture && blending)
+  {
+    glGetIntegerv(GL_BLEND_SRC_RGB, &priorBlend[0]);
+    glGetIntegerv(GL_BLEND_DST_RGB, &priorBlend[1]);
+    glGetIntegerv(GL_BLEND_SRC_ALPHA, &priorBlend[2]);
+    glGetIntegerv(GL_BLEND_DST_ALPHA, &priorBlend[3]);
+    // Reveal the movie through the existing GUI coverage, without tinting it black.
+    const bool premultiplied = CServiceBroker::GetWinSystem()->UsesNativeSDRBT2020();
+    glBlendFuncSeparate(GL_ZERO, premultiplied ? GL_ONE_MINUS_SRC_ALPHA : GL_ONE,
+                        GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_BLEND);
+  }
+  else if (blending)
   {
     if (CServiceBroker::GetWinSystem()->UsesNativeSDRBT2020())
       glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -309,7 +344,8 @@ void CGUITextureGL::DrawQuad(const CRect& rect,
   if (texture)
     renderSystem->EnableShader(ShaderMethodGL::SM_TEXTURE);
   else
-    renderSystem->EnableShader(ShaderMethodGL::SM_DEFAULT);
+    renderSystem->EnableShader(aperture ? ShaderMethodGL::SM_VIDEO_APERTURE
+                                        : ShaderMethodGL::SM_DEFAULT);
 
   GLint posLoc = renderSystem->ShaderGetPos();
   GLint tex0Loc = renderSystem->ShaderGetCoord0();
@@ -387,4 +423,13 @@ void CGUITextureGL::DrawQuad(const CRect& rect,
   glDeleteBuffers(1, &indexVBO);
 
   renderSystem->DisableShader();
+  if (aperture)
+  {
+    if (blending)
+      glBlendFuncSeparate(priorBlend[0], priorBlend[1], priorBlend[2], priorBlend[3]);
+    if (wasBlending)
+      glEnable(GL_BLEND);
+    else
+      glDisable(GL_BLEND);
+  }
 }
