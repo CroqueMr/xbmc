@@ -282,6 +282,7 @@ protected:
   Shaders::GLES::BaseVideoFilterShader* m_pVideoFilterShader{nullptr};
   ESCALINGMETHOD m_scalingMethod{VS_SCALINGMETHOD_LINEAR};
   ESCALINGMETHOD m_scalingMethodGui{VS_SCALINGMETHOD_MAX};
+  mutable ESCALINGMETHOD m_warnedScalingMethod{VS_SCALINGMETHOD_MAX};
   bool m_fullRange;
   AVColorPrimaries m_srcPrimaries;
   bool m_toneMap = false;
