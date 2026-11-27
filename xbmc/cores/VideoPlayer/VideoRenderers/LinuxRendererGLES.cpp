@@ -1028,11 +1028,19 @@ ESCALINGMETHOD CLinuxRendererGLES::ResolveScalingMethod(ESCALINGMETHOD method) c
 {
   if(!Supports(method))
   {
-    CLog::Log(LOGWARNING,
-              "CLinuxRendererGLES::UpdateVideoFilter - chosen scaling method {}, is not supported "
-              "by renderer",
-              method);
+    if (m_warnedScalingMethod != method)
+    {
+      CLog::Log(LOGWARNING,
+                "CLinuxRendererGLES::ResolveScalingMethod - chosen scaling method {}, is not "
+                "supported by renderer",
+                method);
+      m_warnedScalingMethod = method;
+    }
     method = VS_SCALINGMETHOD_LINEAR;
+  }
+  else
+  {
+    m_warnedScalingMethod = VS_SCALINGMETHOD_MAX;
   }
 
   if (method == VS_SCALINGMETHOD_AUTO)
