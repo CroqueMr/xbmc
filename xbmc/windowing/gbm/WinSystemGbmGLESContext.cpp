@@ -330,6 +330,8 @@ bool CWinSystemGbmGLESContext::SetFullScreen(bool fullScreen,
     CLog::Log(LOGERROR, "3D output mode rejected; selecting mono playback");
     return false;
   }
+  if (!switched)
+    return false;
   CRenderSystemGLES::ResetRenderSystem(res.iWidth, res.iHeight);
 
 #ifdef HAVE_DVBRIDGE
