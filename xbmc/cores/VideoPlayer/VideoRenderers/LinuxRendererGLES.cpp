@@ -1026,22 +1026,8 @@ ESCALINGMETHOD CLinuxRendererGLES::SelectScalingMethod() const
 
 ESCALINGMETHOD CLinuxRendererGLES::ResolveScalingMethod(ESCALINGMETHOD method) const
 {
-  if(!Supports(method))
-  {
-    if (m_warnedScalingMethod != method)
-    {
-      CLog::Log(LOGWARNING,
-                "CLinuxRendererGLES::ResolveScalingMethod - chosen scaling method {}, is not "
-                "supported by renderer",
-                method);
-      m_warnedScalingMethod = method;
-    }
+  if (!Supports(method))
     method = VS_SCALINGMETHOD_LINEAR;
-  }
-  else
-  {
-    m_warnedScalingMethod = VS_SCALINGMETHOD_MAX;
-  }
 
   if (method == VS_SCALINGMETHOD_AUTO)
   {
@@ -1112,7 +1098,23 @@ void CLinuxRendererGLES::UpdateVideoFilter()
 
   const ESCALINGMETHOD previousMethod = m_scalingMethod;
   m_scalingMethodGui = requested;
-  m_scalingMethod = ResolveScalingMethod(requested);
+  if (!Supports(requested))
+  {
+    if (m_warnedScalingMethod != requested)
+    {
+      CLog::Log(LOGWARNING,
+                "CLinuxRendererGLES::UpdateVideoFilter - chosen scaling method {}, is not "
+                "supported by renderer",
+                requested);
+      m_warnedScalingMethod = requested;
+    }
+    m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
+  }
+  else
+  {
+    m_warnedScalingMethod = VS_SCALINGMETHOD_MAX;
+    m_scalingMethod = ResolveScalingMethod(requested);
+  }
   m_lastViewRect = viewRect;
   m_lastSourceRect = srcRect;
 
