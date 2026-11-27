@@ -2777,7 +2777,7 @@ bool CWinSystemGbmGLContext::PrepareHDR10Scanout(const VideoPicture* picture)
     try
     {
       m_pascalHDRScanout = CPascalHDR10Scanout::Create(
-          m_GBM->GetDevice().Get(), *drm, m_nWidth, m_nHeight);
+          m_GBM->GetDevice().Get(), *drm, m_nWidth, m_nHeight, IsSelectedPascal(*drm));
     }
     catch (const std::exception& error)
     {
