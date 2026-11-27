@@ -111,7 +111,7 @@ void CGUIDialogPlayerProcessInfo::OnInitWindow()
   if (enhanced)
   {
     RefreshInfo();
-    m_nextRefresh = CTimeUtils::GetFrameTime() + 500;
+    m_nextRefresh = CTimeUtils::GetFrameTime() + (m_renderUsage.Available() ? 200 : 500);
   }
 #endif
   CGUIDialog::OnInitWindow();
@@ -303,8 +303,10 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
 {
     const DVBRIDGE::OverlayTimer timing(DVBRIDGE::OverlayStage::Refresh);
     const auto render = m_renderUsage.Sample();
-    SetProperty("DV.GPUAvailable", render.has_value());
-    SetProperty("DV.GPURender", render ? StringUtils::Format("{:.0f} %", *render) : "N/A");
+    const bool gpuAvailable = render.has_value() || m_renderUsage.Available();
+    SetProperty("DV.GPUAvailable", gpuAvailable);
+    SetProperty("DV.GPURender", render ? StringUtils::Format("{:.0f} %", *render) :
+        gpuAvailable ? "--" : "N/A");
     SetProperty("DV.GPURenderPercent", render ? StringUtils::Format("{:.1f}", *render) : "0");
     for (const int gauge : {9400, 9401})
     {

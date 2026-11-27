@@ -18,6 +18,9 @@
 #include "cores/VideoPlayer/Interface/TimingConstants.h"
 #include "RenderInfo.h"
 #include "BaseRenderer.h"
+#ifdef HAVE_DVBRIDGE
+#include "DVBridgeGLES.h"
+#endif
 #include "ColorManager.h"
 #include "utils/Geometry.h"
 
@@ -73,9 +76,21 @@ public:
   void SetBufferSize(int numBuffers) override { m_NumYUVBuffers = numBuffers; }
   void ReleaseBuffer(int idx) override;
   void RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha) override;
+  bool HasRenderedFrame() const override { return m_frameRendered; }
   void Update() override;
   CRenderInfo GetRenderInfo() override;
   bool ConfigChanged(const VideoPicture &picture) override;
+#ifdef CB1_HAS_HDR10_AI
+  void PreserveHDR10AIOutputOnReconfigure(const VideoPicture& picture) override;
+  bool HDR10AIQueueEligible() const override { return m_softwareAIBuffers > NUM_BUFFERS; }
+  bool HDR10AILookahead() const override { return HDR10AIQueueEligible() && m_aiLookahead; }
+  bool HDR10AIFrameCommitted() const override;
+  bool PrepareHDR10AIQueue(const std::deque<int>& queue, bool end, bool paused,
+                          uint64_t presentationDeadline = 0) override;
+  HDR10AIQueuePreparation CaptureHDR10AIQueue(const std::deque<int>& queue, bool end,
+                                             bool paused, uint64_t presentationDeadline) override;
+  bool HDR10AIFramePending() const override { return HDR10AILookahead() && !m_aiFrameRendered; }
+#endif
 
   // Feature support
   bool SupportsMultiPassRendering() override;
@@ -83,9 +98,27 @@ public:
   bool Supports(ESCALINGMETHOD method) const override;
 
   bool IsGuiLayer() override;
+#ifdef HAVE_DVBRIDGE
+  void UpdateVideoRenderLayer() override;
+  bool VideoRenderLayerPending() const override { return m_pendingHdrFbo; }
+#endif
   bool VideoBypassesFramebuffer() override { return false; }
 
 protected:
+  bool m_frameRendered{false};
+  enum class RetainedOutput { None, NativeDV, HDR10 };
+  bool Configure(const VideoPicture& picture, float fps, unsigned int orientation,
+                 RetainedOutput retainedOutput);
+  bool ConfigureVideoOutput(const VideoPicture& picture);
+#ifdef CB1_HAS_HDR10_AI
+  virtual bool HDR10AITextureReady(int index) const { return m_buffers[index].loaded; }
+  unsigned m_softwareAIBuffers{NUM_BUFFERS};
+  bool m_aiLookahead{};
+  bool m_aiOutputPending{false};
+  bool m_aiFrameRendered{true};
+  bool m_preserveHLGOutput{false};
+  bool m_planarHLG8{false};
+#endif
 
   bool Render(unsigned int flags, int renderBuffer);
   void ClearBackBuffer();
@@ -96,8 +129,14 @@ protected:
   virtual bool ValidateRenderTarget();
   virtual void LoadShaders(int field=FIELD_FULL);
   void SetTextureFilter(GLenum method);
+  ESCALINGMETHOD SelectScalingMethod() const;
+  ESCALINGMETHOD ResolveScalingMethod(ESCALINGMETHOD method) const;
+#ifdef HAVE_DVBRIDGE
+  ESCALINGMETHOD AutoUpscalingOverride() const;
+#endif
   void UpdateVideoFilter();
   void CheckVideoParameters(int index);
+  void UpdateActiveArea(int index);
   AVColorPrimaries GetSrcPrimaries(AVColorPrimaries srcPrimaries, unsigned int width, unsigned int height);
 
   // textures
@@ -122,6 +161,12 @@ protected:
   // renderers
   void RenderToFBO(int renderBuffer, int field, bool weave = false);
   void RenderFromFBO();
+#ifdef HAVE_DVBRIDGE
+  bool RunRCAS();
+  CFrameBufferObject m_rcasInput;
+  std::unique_ptr<Shaders::GL::BaseVideoFilterShader> m_rcasShader;
+  int m_rcasWidth{}, m_rcasHeight{};
+#endif
   void RenderSinglePass(int renderBuffer, int field); // single pass glsl renderer
   void RenderRGB(int renderBuffer, int field);      // render using vdpau/vaapi hardware
   void RenderProgressiveWeave(int renderBuffer, int field); // render using vdpau hardware
@@ -142,6 +187,20 @@ protected:
   // hooks for HwDec Renderer
   virtual bool LoadShadersHook() { return false; }
   virtual bool RenderHook(int idx) { return false; }
+#ifdef HAVE_DVBRIDGE
+  // Failure is terminal for this frame: never silently use the ordinary shader.
+  virtual bool RenderDVBridge(int idx);
+  virtual bool BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer);
+  dvbridge_geometry DVBridgeGeometry();
+  bool m_dvRequested{false};
+  struct ShaderUpscaler;
+  std::unique_ptr<ShaderUpscaler> m_shaderUpscaler;
+  bool RenderShaderUpscaler(int index, int preset);
+  virtual bool HasShaderUpscalerP010(int) const { return false; }
+
+  int m_reportedUpscaler{-2};
+  uint64_t m_reportedUpscalerGeneration{};
+#endif
   virtual void AfterRenderHook(int idx) {}
   virtual bool CanSaveBuffers() { return true; }
 
@@ -207,13 +266,21 @@ protected:
     AVMasteringDisplayMetadata displayMetadata;
     bool hasLightMetadata = false;
     AVContentLightMetadata lightMetadata;
+    bool hasHDR10LightMetadata{false};
+    StreamHdrType hdrType{StreamHdrType::HDR_TYPE_NONE};
     CDVMetadataBuffer doviMetadata;
+#ifdef HAVE_DVBRIDGE
+    std::shared_ptr<AVFrame> doviEnhancement;
+    DVBRIDGE::SourceBinding doviEnhancementBinding{};
+    std::shared_ptr<VideoPicture> doviSourcePicture;
+    uint64_t informationGeneration{};
+#endif
     double doviPts = DVD_NOPTS_VALUE;
   };
 
   // YUV decoder textures
   // field index 0 is full image, 1 is odd scanlines, 2 is even scanlines
-  CPictureBuffer m_buffers[NUM_BUFFERS];
+  CPictureBuffer m_buffers[MAX_RENDER_BUFFERS];
 
   Shaders::GL::BaseYUV2RGBGLSLShader* m_pYUVShader = nullptr;
   Shaders::GL::BaseVideoFilterShader* m_pVideoFilterShader = nullptr;
@@ -227,6 +294,9 @@ protected:
   ETONEMAPMETHOD m_toneMapMethod = VS_TONEMAPMETHOD_OFF;
   bool m_passthroughHDR = false;
   bool m_hdrFboActive{false};
+#ifdef HAVE_DVBRIDGE
+  bool m_pendingHdrFbo{false};
+#endif
   bool m_shaderSDRBT2020{false};
   bool m_pboSupported = true;
   bool m_pboUsed = false;

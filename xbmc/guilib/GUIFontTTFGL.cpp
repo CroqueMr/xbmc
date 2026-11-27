@@ -162,6 +162,11 @@ void CGUIFontTTFGL::LastEnd()
 
   CRenderSystemGL* renderSystem = dynamic_cast<CRenderSystemGL*>(CServiceBroker::GetRenderSystem());
 
+  // Textures drawn while the batch was open (a masked group's stencil, a button's background)
+  // leave another shader current.
+  renderSystem->EnableShader(m_scissorClip ? ShaderMethodGL::SM_FONTS
+                                           : ShaderMethodGL::SM_FONTS_SHADER_CLIP);
+
   GLint posLoc = renderSystem->ShaderGetPos();
   GLint colLoc = renderSystem->ShaderGetCol();
   GLint tex0Loc = renderSystem->ShaderGetCoord0();

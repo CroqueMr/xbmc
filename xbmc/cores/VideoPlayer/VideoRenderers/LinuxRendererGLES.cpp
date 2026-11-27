@@ -1026,14 +1026,8 @@ ESCALINGMETHOD CLinuxRendererGLES::SelectScalingMethod() const
 
 ESCALINGMETHOD CLinuxRendererGLES::ResolveScalingMethod(ESCALINGMETHOD method) const
 {
-  if(!Supports(method))
-  {
-    CLog::Log(LOGWARNING,
-              "CLinuxRendererGLES::UpdateVideoFilter - chosen scaling method {}, is not supported "
-              "by renderer",
-              method);
+  if (!Supports(method))
     method = VS_SCALINGMETHOD_LINEAR;
-  }
 
   if (method == VS_SCALINGMETHOD_AUTO)
   {
@@ -1104,7 +1098,23 @@ void CLinuxRendererGLES::UpdateVideoFilter()
 
   const ESCALINGMETHOD previousMethod = m_scalingMethod;
   m_scalingMethodGui = requested;
-  m_scalingMethod = ResolveScalingMethod(requested);
+  if (!Supports(requested))
+  {
+    if (m_warnedScalingMethod != requested)
+    {
+      CLog::Log(LOGWARNING,
+                "CLinuxRendererGLES::UpdateVideoFilter - chosen scaling method {}, is not "
+                "supported by renderer",
+                requested);
+      m_warnedScalingMethod = requested;
+    }
+    m_scalingMethod = VS_SCALINGMETHOD_LINEAR;
+  }
+  else
+  {
+    m_warnedScalingMethod = VS_SCALINGMETHOD_MAX;
+    m_scalingMethod = ResolveScalingMethod(requested);
+  }
   m_lastViewRect = viewRect;
   m_lastSourceRect = srcRect;
 
@@ -1764,7 +1774,7 @@ bool CLinuxRendererGLES::RenderShaderUpscaler(int index, int preset)
   const bool supportedColor = hdr ?
       ((pq || hlg) && buf.m_srcPrimaries == AVCOL_PRI_BT2020 &&
        buf.m_srcColSpace == AVCOL_SPC_BT2020_NCL && buf.m_srcBits == 10) :
-      (bt709 && buf.m_srcBits == 8);
+      (bt709 && (buf.m_srcBits == 8 || buf.m_srcBits == 10));
   if (m_currentField != FIELD_FULL || m_renderOrientation || m_toneMap ||
       m_textureTarget != GL_TEXTURE_2D || !supportedColor ||
       m_videoSettings.m_Brightness != 50.f || m_videoSettings.m_Contrast != 50.f ||
@@ -1778,7 +1788,12 @@ bool CLinuxRendererGLES::RenderShaderUpscaler(int index, int preset)
       src.Width() <= 0 || src.Height() <= 0)
     return false;
   const auto format = GetShaderFormat();
-  if (format != SHADER_NV12 && format != SHADER_NV12_RRG && format != SHADER_YV12)
+  const bool planar10 = format == SHADER_YV12_10 && m_format == AV_PIX_FMT_YUV420P10LE;
+  const auto sourceLayout = KODI::VIDEO::UPSCALER::ShaderSource(
+      hdr, buf.m_srcBits, format == SHADER_YV12,
+      format == SHADER_NV12 || format == SHADER_NV12_RRG, planar10,
+      !hdr && buf.m_srcBits == 10 && HasShaderUpscalerP010(index));
+  if (!sourceLayout.planes)
     return false;
 
   if (!m_shaderUpscaler || m_shaderUpscaler->preset != preset)
@@ -1794,17 +1809,17 @@ bool CLinuxRendererGLES::RenderShaderUpscaler(int index, int preset)
   const auto& scaler = *m_shaderUpscaler;
   const pl_gpu gpu = scaler.gl->gpu;
   struct pl_frame image{};
-  image.num_planes = format == SHADER_YV12 ? 3 : 2;
+  image.num_planes = sourceLayout.planes;
   image.repr.sys = hdr ? PL_COLOR_SYSTEM_BT_2020_NC : PL_COLOR_SYSTEM_BT_709;
   image.repr.levels = buf.m_srcFullRange ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
   image.color = hdr ? pl_color_space_hdr10 : pl_color_space_bt709;
   if (hlg)
     image.color.transfer = PL_COLOR_TRC_HLG;
-  if (hdr)
+  if (sourceLayout.sampleDepth == 16)
   {
-    image.repr.bits.sample_depth = 16;
+    image.repr.bits.sample_depth = sourceLayout.sampleDepth;
     image.repr.bits.color_depth = buf.m_srcBits;
-    image.repr.bits.bit_shift = image.num_planes == 2 ? 16 - buf.m_srcBits : 0;
+    image.repr.bits.bit_shift = sourceLayout.bitShift;
   }
   image.crop = {src.x1, src.y1, src.x2, src.y2};
   for (int i = 0; i < image.num_planes; ++i)
@@ -1815,7 +1830,8 @@ bool CLinuxRendererGLES::RenderShaderUpscaler(int index, int preset)
     params.width = static_cast<int>(plane.texwidth);
     params.height = static_cast<int>(plane.texheight);
     const bool uv = i == 1 && image.num_planes == 2;
-    params.iformat = hdr ? (uv ? GL_RG16_EXT : GL_R16_EXT) : (uv ? GL_RG8 : GL_R8);
+    params.iformat = sourceLayout.sampleDepth == 16 ? (uv ? GL_RG16_EXT : GL_R16_EXT)
+                                                  : (uv ? GL_RG8 : GL_R8);
     image.planes[i].texture = plane.id ? pl_opengl_wrap(gpu, &params) : nullptr;
     image.planes[i].components = i == 1 && image.num_planes == 2 ? 2 : 1;
     image.planes[i].component_mapping[0] = i;

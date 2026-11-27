@@ -177,6 +177,27 @@ TEST(TestAEStreamParser, ACoreOnlyStreamIsStillDts)
     EXPECT_EQ(CAEStreamInfo::STREAM_TYPE_DTS_512, type);
 }
 
+TEST(TestAEStreamParser, DtsHdResyncIgnoresAnEac3Header)
+{
+  CAEStreamParser parser;
+  parser.SetExpectedType(CAEStreamInfo::STREAM_TYPE_DTSHD_MA);
+  parser.Reset();
+
+  // E-AC-3 header for a 64-byte frame before the first DTS-HD sync word.
+  std::vector<uint8_t> stream{0x0B, 0x77, 0x00, 0x1F, 0x34, 0x80};
+  stream.resize(64);
+  Append(stream, MaFrame());
+  Append(stream, MaFrame());
+
+  uint8_t* out = nullptr;
+  unsigned int outSize = 0;
+  parser.AddData(stream.data(), static_cast<unsigned int>(stream.size()), &out, &outSize);
+  delete[] out;
+
+  ASSERT_GT(outSize, 0u);
+  EXPECT_EQ(CAEStreamInfo::STREAM_TYPE_DTSHD_MA, parser.GetDataType());
+}
+
 //! At peak bit rate the word after an MA extension header can be XLL payload that reads as the XCH
 //! sync. Taking such frames as DTS-HD HRA packs 8320-byte MA frames into 8192-byte HRA bursts.
 TEST(TestAEStreamParser, AnMaStreamStaysMaThroughXllPayloadThatLooksLikeXch)

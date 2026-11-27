@@ -21,7 +21,7 @@ class CPascalHDR10Scanout
 {
 public:
   static std::unique_ptr<CPascalHDR10Scanout> Create(
-      gbm_device* device, CDRMAtomic& drm, int width, int height);
+      gbm_device* device, CDRMAtomic& drm, int width, int height, bool selectedPascal);
   ~CPascalHDR10Scanout();
 
   unsigned int Framebuffer() const { return m_source; }
@@ -36,7 +36,8 @@ private:
     unsigned int framebuffer{};
   };
 
-  bool Init(gbm_device* device, CDRMAtomic& drm, CDRMPlane& plane, uint32_t format);
+  bool Init(gbm_device* device, CDRMAtomic& drm, CDRMPlane& plane, uint32_t format,
+            bool checkUpload);
   bool Probe() const;
   std::array<Buffer, 2> m_buffers;
   unsigned int m_source{};

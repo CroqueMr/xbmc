@@ -40,6 +40,8 @@
 #include "guilib/WindowIDs.h"
 #if defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
 #include "HwDecRender/RendererVAAPIGLES.h"
+#elif defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GL)
+#include "HwDecRender/RendererVAAPIGL.h"
 #endif
 #endif
 #ifdef HAVE_DVBRIDGE
@@ -47,8 +49,8 @@
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackPolicy.h"
 #include "settings/DisplaySettings.h"
 #endif
-#if defined(HAVE_GBM) && defined(HAS_GLES)
-#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#if defined(HAVE_GBM)
+#include "windowing/gbm/WinSystemGbmDVContext.h"
 #endif
 
 using namespace std::chrono_literals;
@@ -232,6 +234,11 @@ bool CRenderManager::Configure()
   using DVHandoff = CRendererVAAPIGLES::DVHandoff;
   const auto retained = vaapi ? vaapi->RetainDVOutput(*m_pConfigPicture, m_fps, m_orientation)
                               : DVHandoff::None;
+#elif defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GL)
+  auto* vaapi = dynamic_cast<CRendererVAAPIGL*>(m_pRenderer);
+  using DVHandoff = CRendererVAAPIGL::DVHandoff;
+  const auto retained = vaapi ? vaapi->RetainDVOutput(*m_pConfigPicture, m_fps, m_orientation)
+                              : DVHandoff::None;
 #endif
   if (m_pRenderer)
   {
@@ -242,10 +249,10 @@ bool CRenderManager::Configure()
     DeleteRenderer();
   }
 
-#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && defined(HAS_GLES)
+#if defined(HAVE_DVBRIDGE) && defined(HAVE_GBM) && (defined(HAS_GLES) || defined(HAS_GL))
   // The old renderer can request an asynchronous restore in its destructor.
   // Leave this picture queued until the GUI presents the restored output.
-  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
           CServiceBroker::GetWinSystem()); window && window->DeferRendererForOutputRestore())
     return false;
 #endif
@@ -262,10 +269,19 @@ bool CRenderManager::Configure()
                                                           retained);
   }
   else
+#elif defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GL)
+  if (retained == DVHandoff::Native || retained == DVHandoff::HDR10)
+  {
+    auto* successor = dynamic_cast<CRendererVAAPIGL*>(m_pRenderer);
+    result = successor && successor->ConfigureWithHandoff(*m_pConfigPicture, m_fps, m_orientation,
+                                                          retained);
+  }
+  else
 #endif
     result = m_pRenderer && m_pRenderer->Configure(*m_pConfigPicture, m_fps, m_orientation);
 
-#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && defined(HAS_GLES)
+#if defined(CB1_HAS_HDR10_AI) && defined(HAVE_LIBVA) && defined(HAVE_GBM) && \
+    (defined(HAS_GLES) || defined(HAS_GL))
   if (retained == DVHandoff::HDR10 && !result)
   {
     auto* window = CServiceBroker::GetWinSystem();
@@ -275,7 +291,7 @@ bool CRenderManager::Configure()
     window->SetVideoOutput(nullptr);
   }
   else if (retained != DVHandoff::None && !result)
-    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
             CServiceBroker::GetWinSystem()))
       window->StopDVBridgePlayback();
 #endif
@@ -424,7 +440,7 @@ bool CRenderManager::PrepareHDR10AILookahead(std::unique_lock<CCriticalSection>&
     double playing = m_dvdClock.GetClock();
     bool cb1Async = false;
 #ifdef HAVE_DVBRIDGE
-    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(CServiceBroker::GetWinSystem()))
     {
       cb1Async = window->CB1AsyncPlayback() && !m_dvdClock.IsPaused() &&
           m_dvdClock.GetClockSpeed() == 1.0;
@@ -480,7 +496,7 @@ bool CRenderManager::ExecuteHDR10AIQueuePreparation(
       m_aiStartupBuffered = false;
       // Reject only unsubmitted output; accepted KMS work keeps its owner.
 #ifdef HAVE_DVBRIDGE
-      if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
               CServiceBroker::GetWinSystem()))
         window->DiscardDVBridgeFrame();
       m_cb1PresentPending = false;
@@ -641,7 +657,7 @@ void CRenderManager::FrameMove()
 #ifdef HAVE_DVBRIDGE
     m_pRenderer->UpdateVideoRenderLayer();
     {
-      auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem());
+      auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(CServiceBroker::GetWinSystem());
       m_cb1OutputPending = m_pRenderer->VideoRenderLayerPending() ||
                            (window && window->HasPendingCB1VideoPresentation());
       if (m_cb1PresentPending && (!window || !window->CB1FramePending()))
@@ -662,7 +678,7 @@ void CRenderManager::FrameMove()
     }
     bool aiReselection = false;
     if (m_pRenderer->HDR10AIQueueEligible())
-      if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+      if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
               CServiceBroker::GetWinSystem()))
         aiReselection = window->HDR10AISelectionPending();
     if (!m_aiQueueReady || m_aiQueuePreparationStale || m_aiStartPts == DVD_NOPTS_VALUE ||
@@ -781,7 +797,7 @@ void CRenderManager::PreInit()
   UpdateLatencyTweak();
 
   m_QueueSize   = 2;
-  m_QueueSkip   = 0;
+  m_QueueSkip.store(0, std::memory_order_relaxed);
   m_presentstep = PRESENT_IDLE;
 #ifdef HAVE_DVBRIDGE
   m_cb1PresentPending = m_cb1OutputPending = false;
@@ -1031,11 +1047,11 @@ RESOLUTION CRenderManager::ChoosePlaybackResolution(double fps,
                                                     const VideoPicture* picture)
 {
 #ifdef HAVE_DVBRIDGE
-  const KODI::WINDOWING::GBM::CWinSystemGbmGLESContext* window = nullptr;
+  const KODI::WINDOWING::GBM::CWinSystemGbmDVContext* window = nullptr;
   const auto advanced = CServiceBroker::GetSettingsComponent()->GetAdvancedSettings();
   if (nativeDV && !stereo && !CResolutionUtils::HasWhitelist() &&
       advanced->m_videoAdjustRefreshOverrides.empty())
-    window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+    window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
         CServiceBroker::GetWinSystem());
   if (window)
     if (const auto resolution = window->PlayerLedResolution(fps, atStartup))
@@ -1164,7 +1180,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   if (!gui || m_pRenderer->IsGuiLayer())
   {
 #ifdef HAVE_DVBRIDGE
-    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(CServiceBroker::GetWinSystem()))
     {
       window->SetDVBridgeOverlays(m_renderDebug || m_overlays.HasVisibleOverlay(m_presentsource));
       window->SetCB1RenderPts(m_Queue[m_presentsource].pts);
@@ -1190,8 +1206,8 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
   if (presented)
   {
     ServiceVideoCaptures();
-#if defined(HAVE_GBM) && defined(HAS_GLES)
-    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+#if defined(HAVE_GBM)
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
             CServiceBroker::GetWinSystem()))
       window->StageVideoSource(m_pRenderer->HasRenderedFrame() ?
           m_Queue[m_presentsource].sourceSideData : nullptr);
@@ -1262,7 +1278,7 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
       m_cb1OutputPending = true;
       return;
     }
-    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
             CServiceBroker::GetWinSystem()))
     {
       m_cb1OutputPending = window->HasPendingCB1VideoPresentation();
@@ -1430,7 +1446,7 @@ void CRenderManager::UpdateResolution()
 #ifdef HAVE_DVBRIDGE
     if (request == ResolutionUpdate::REQUESTED)
       m_dvModeSwitchDeadline.reset();
-    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
         CServiceBroker::GetWinSystem());
     if (window)
       window->ConsumeDVModeSwitchDeferral();
@@ -1749,7 +1765,7 @@ void CRenderManager::PrepareNextRender()
   bool adaptive = false;
   std::optional<double> completionAge;
 #ifdef HAVE_DVBRIDGE
-  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(CServiceBroker::GetWinSystem()))
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(CServiceBroker::GetWinSystem()))
   {
     cb1Async = window->CB1AsyncPlayback();
     if (cb1Async && !isPaused && m_dvdClock.GetClockSpeed() == 1.0)
@@ -1869,12 +1885,18 @@ void CRenderManager::PrepareNextRender()
     }
 
     // skip late frames
+    const auto queuedBeforeSelection = m_queued.size();
     while (m_queued.front() != idx)
     {
       if (m_presentsourcePast >= 0)
       {
         m_discard.push_back(m_presentsourcePast);
-        m_QueueSkip++;
+        const int skipped = m_QueueSkip.fetch_add(1, std::memory_order_relaxed) + 1;
+        CLog::LogFC(LOGDEBUG, LOGAVTIMING,
+                    "Render skip: discarded_pts_us={:.0f} selected_pts_us={:.0f} "
+                    "target_pts_us={:.0f} queued_before={} skip_total={}",
+                    m_Queue[m_presentsourcePast].pts, m_Queue[idx].pts, latePts,
+                    queuedBeforeSelection, skipped);
       }
       m_presentsourcePast = m_queued.front();
       m_queued.pop_front();

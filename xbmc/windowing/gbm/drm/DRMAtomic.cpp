@@ -159,7 +159,11 @@ void CDRMAtomic::AcceptHDR10Plus(bool enabled)
   m_hdr10plusActive = false;
   m_hdr10plusClearRequired = true;
   if (m_hdr10plusRejectedGeneration != m_hdr10plusGeneration)
-    CLog::Log(LOGWARNING, "HDR10+ transport was not confirmed by the driver; clearing dynamic metadata");
+    CLog::Log(LOGWARNING,
+              "HDR10+ transport was not confirmed by the driver; clearing dynamic metadata "
+              "(request={}, status={}, output_bpc={}, generation={})",
+              enabled ? "enable" : "clear", status ? std::to_string(*status) : "unavailable",
+              depth ? std::to_string(*depth) : "unavailable", m_hdr10plusGeneration);
   m_hdr10plusRejectedGeneration = m_hdr10plusGeneration;
   m_hdr10plusRejectedEdid = m_connector->GetPropertyValue("EDID").value_or(0);
 }

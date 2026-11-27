@@ -15,7 +15,7 @@
 #include "utils/DVBridgeDiagnosticState.h"
 #include "utils/DVBridgeOverlayTrace.h"
 #include "utils/StringUtils.h"
-#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#include "windowing/gbm/WinSystemGbmDVContext.h"
 #endif
 
 #include "DVDCodecs/DVDCodecUtils.h"
@@ -1091,7 +1091,7 @@ void CVideoPlayerVideo::ProcessOverlays(const VideoPicture* pSource, double pts)
 #ifdef HAVE_DVBRIDGE
 bool CVideoPlayerVideo::HandleDVPlaybackFailure(const VideoPicture* picture)
 {
-  auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+  auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
       CServiceBroker::GetWinSystem());
   if (!window || !picture || !picture->stereoMode.empty()) return false;
   const bool authoredDV=picture->doviSourceInfo.profile || picture->hdrType==StreamHdrType::HDR_TYPE_DOLBYVISION;

@@ -10,7 +10,7 @@
 #include "drm/DRMAtomic.h"
 #include "utils/EGLImage.h"
 
-#include <GLES3/gl3.h>
+#include "system_gl.h"
 #include <gbm.h>
 #include <unistd.h>
 
@@ -60,23 +60,24 @@ bool Attach(GLuint& framebuffer, GLuint texture)
 }
 
 std::unique_ptr<CPascalHDR10Scanout> CPascalHDR10Scanout::Create(
-    gbm_device* device, CDRMAtomic& drm, int width, int height)
+    gbm_device* device, CDRMAtomic& drm, int width, int height, bool selectedPascal)
 {
   auto* plane = drm.GetGuiPlane() ? drm.GetGuiPlane() : drm.GetVideoPlane();
   if (!plane || !device || width < 2 || height < 2)
     return {};
 
-  // R580 can expose only the BGR-order 10-bit formats on the scanout plane.
-  for (const auto format :
-       {DRM_FORMAT_XRGB2101010, DRM_FORMAT_XBGR2101010, DRM_FORMAT_ABGR2101010})
+  // Preserve XR30 on existing R580 routes. Pascal can expose only XB30;
+  // use opaque carriers so the tested and presented framebuffers agree.
+  for (const auto format : {DRM_FORMAT_XRGB2101010, DRM_FORMAT_XBGR2101010})
   {
-    if (!plane->SupportsFormat(format))
+    if ((format == DRM_FORMAT_XBGR2101010 && !selectedPascal) ||
+        !plane->SupportsFormat(format))
       continue;
 
     auto scanout = std::make_unique<CPascalHDR10Scanout>();
     scanout->m_width = width;
     scanout->m_height = height;
-    if (scanout->Init(device, drm, *plane, format))
+    if (scanout->Init(device, drm, *plane, format, selectedPascal))
       return scanout;
   }
   return {};
@@ -96,7 +97,8 @@ CPascalHDR10Scanout::~CPascalHDR10Scanout()
 bool CPascalHDR10Scanout::Init(gbm_device* device,
                               CDRMAtomic& drm,
                               CDRMPlane& plane,
-                              uint32_t format)
+                              uint32_t format,
+                              bool checkUpload)
 {
   const FramebufferBindings bindings;
 
@@ -142,7 +144,7 @@ bool CPascalHDR10Scanout::Init(gbm_device* device,
       glGenTextures(1, &buffer.texture);
       glBindTexture(GL_TEXTURE_2D, buffer.texture);
       image.UploadImage(GL_TEXTURE_2D);
-      const bool uploaded = glGetError() == GL_NO_ERROR;
+      const bool uploaded = !checkUpload || glGetError() == GL_NO_ERROR;
       image.DestroyImage();
       if (!uploaded || !Attach(buffer.framebuffer, buffer.texture) || !drm.TestFramebuffer(bo))
         return false;

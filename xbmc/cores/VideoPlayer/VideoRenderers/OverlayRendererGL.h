@@ -56,6 +56,7 @@ namespace OVERLAY {
     };
 
     std::vector<VERTEX> m_vertex;
+    CRect m_glyphBounds;
 
     GLuint m_texture = 0;
     float m_u;

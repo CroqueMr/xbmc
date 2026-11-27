@@ -9,7 +9,7 @@
 #include "VideoPlayer.h"
 #include "utils/DVBridgeDiagnosticLog.h"
 #ifdef HAVE_DVBRIDGE
-#include "windowing/gbm/WinSystemGbmGLESContext.h"
+#include "windowing/gbm/WinSystemGbmDVContext.h"
 #endif
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/DVDCodecs/Video/DVPlaybackNotification.h"
@@ -851,7 +851,7 @@ bool CVideoPlayer::OpenFile(const CFileItem& file, const CPlayerOptions &options
   // SendMsg runs immediately when playback is opened by the application thread.
   MESSAGING::ThreadMessageCallback refresh{
       [](void*) {
-        auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
             CServiceBroker::GetWinSystem());
         if (window)
         {
@@ -1088,6 +1088,33 @@ bool CVideoPlayer::WaitForBlurayPlaylist()
 #endif
 }
 
+bool CVideoPlayer::WaitingForBlurayStill() const
+{
+#if defined(HAVE_LIBBLURAY) && defined(BD_BDJ_PRESENTATION_TIMING)
+  return IsBlurayInput() &&
+         static_cast<const CDVDInputStreamBluray&>(*m_pInputStream).WaitingForBdjStill();
+#else
+  return false;
+#endif
+}
+
+bool CVideoPlayer::SkipExpiredMenuStill()
+{
+  if (m_dvd.state != DVDSTATE_STILL || m_dvd.iDVDStillTime <= 0ms ||
+      std::chrono::steady_clock::now() - m_dvd.iDVDStillStartTime < m_dvd.iDVDStillTime)
+    return false;
+
+  const auto menus = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream);
+  if (!menus)
+    return false;
+
+  m_dvd.iDVDStillTime = 0ms;
+  m_dvd.iDVDStillStartTime = {};
+  m_dvd.state = DVDSTATE_NORMAL;
+  menus->SkipStill();
+  return true;
+}
+
 bool CVideoPlayer::OpenDemuxStream()
 {
   m_blurayDemuxDeferred = false;
@@ -1105,16 +1132,20 @@ bool CVideoPlayer::OpenDemuxStream()
       return false;
     }
 
-    if(!m_pDemuxer && m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
-    {
+    if (m_pDemuxer)
+      break;
+    if (m_pInputStream->IsStreamType(DVDSTREAM_TYPE_PVRMANAGER))
       continue;
-    }
-    else if(!m_pDemuxer && m_pInputStream->NextStream() != CDVDInputStream::NEXTSTREAM_NONE)
+
+    const auto next = m_pInputStream->NextStream();
+    if (next == CDVDInputStream::NEXTSTREAM_NONE)
+      break;
+    if (next == CDVDInputStream::NEXTSTREAM_RETRY && WaitingForBlurayStill())
     {
-      CLog::Log(LOGDEBUG, "{} - New stream available from input, retry open", __FUNCTION__);
-      continue;
+      m_blurayDemuxDeferred = true;
+      return false;
     }
-    break;
+    CLog::Log(LOGDEBUG, "{} - New stream available from input, retry open", __FUNCTION__);
   }
 
   if (!m_pDemuxer)
@@ -1584,7 +1615,7 @@ void CVideoPlayer::CheckBetterStream(CCurrentStream& current, CDemuxStream* stre
 }
 
 #ifdef HAVE_DVBRIDGE
-static void SelectDVStartupOutput(const KODI::WINDOWING::GBM::CWinSystemGbmGLESContext* window)
+static void SelectDVStartupOutput(const KODI::WINDOWING::GBM::CWinSystemGbmDVContext* window)
 {
   const auto caps = window ? window->GetDVOutputCapabilities(nullptr, true) :
                              DVBRIDGE::OutputCapabilities{};
@@ -1598,7 +1629,7 @@ void CVideoPlayer::Prepare()
   m_errorDetail = 0;
 #ifdef HAVE_DVBRIDGE
   m_dvStartupPlaybackPending = true;
-  SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+  SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
       CServiceBroker::GetWinSystem()));
 #endif
   CFFmpegLog::SetLogLevel(1);
@@ -1911,10 +1942,16 @@ void CVideoPlayer::Process()
       const auto next = m_pInputStream->NextStream();
       if (next == CDVDInputStream::NEXTSTREAM_NONE)
         break;
-      if (next == CDVDInputStream::NEXTSTREAM_RETRY && WaitForBlurayPlaylist())
+      if (next == CDVDInputStream::NEXTSTREAM_RETRY)
       {
-        CThread::Sleep(50ms);
-        continue;
+        const bool waitingForStill = WaitingForBlurayStill();
+        if (waitingForStill && m_playSpeed != DVD_PLAYSPEED_PAUSE && SkipExpiredMenuStill())
+          continue;
+        if (WaitForBlurayPlaylist() || waitingForStill)
+        {
+          CThread::Sleep(50ms);
+          continue;
+        }
       }
 
       if (m_pInputStream->IsEOF())
@@ -2053,28 +2090,8 @@ void CVideoPlayer::Process()
       if (m_playSpeed == DVD_PLAYSPEED_PAUSE)
         continue;
 
-      // check for a still frame state
-      if (std::shared_ptr<CDVDInputStream::IMenus> pStream = std::dynamic_pointer_cast<CDVDInputStream::IMenus>(m_pInputStream))
-      {
-        // stills will be skipped
-        if(m_dvd.state == DVDSTATE_STILL)
-        {
-          if (m_dvd.iDVDStillTime > 0ms)
-          {
-            const auto now = std::chrono::steady_clock::now();
-            const auto duration = now - m_dvd.iDVDStillStartTime;
-
-            if (duration >= m_dvd.iDVDStillTime)
-            {
-              m_dvd.iDVDStillTime = 0ms;
-              m_dvd.iDVDStillStartTime = {};
-              m_dvd.state = DVDSTATE_NORMAL;
-              pStream->SkipStill();
-              continue;
-            }
-          }
-        }
-      }
+      if (SkipExpiredMenuStill())
+        continue;
 
       // if there is another stream available, reopen demuxer
       CDVDInputStream::ENextStream next = m_pInputStream->NextStream();
@@ -5050,7 +5067,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
       hint.stereo_mode.empty() &&
       (hint.dovi.dv_profile || hint.hdrType == StreamHdrType::HDR_TYPE_DOLBYVISION))
   {
-    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
         CServiceBroker::GetWinSystem());
     auto preferences = DVBRIDGE::FrameOutputSettings();
     if (window && !m_HasVideo && !pMenus && m_pInputStream && !m_pInputStream->IsRealtime() &&
@@ -5210,7 +5227,7 @@ bool CVideoPlayer::OpenVideoStream(CDVDStreamInfo& hint, bool reset)
       if (lldvRateFallback && !m_bStop && m_activeOpen == m_requestedOpen.load())
       {
         // A different track may still open. Give it the original default and toast state.
-        SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmGLESContext*>(
+        SelectDVStartupOutput(dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
             CServiceBroker::GetWinSystem()));
         DVBRIDGE::PlaybackNotification::StartVideo();
       }

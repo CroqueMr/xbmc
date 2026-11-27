@@ -15,8 +15,8 @@ set(HEADERS OptionalsReg.h
             GBMDPMSSupport.h)
 
 if(TARGET ${APP_NAME_LC}::OpenGl)
-  list(APPEND SOURCES WinSystemGbmGLContext.cpp)
-  list(APPEND HEADERS WinSystemGbmGLContext.h)
+  list(APPEND SOURCES WinSystemGbmGLContext.cpp PascalHDR10Scanout.cpp)
+  list(APPEND HEADERS WinSystemGbmGLContext.h PascalHDR10Scanout.h)
 endif()
 if(TARGET ${APP_NAME_LC}::OpenGLES)
   list(APPEND SOURCES WinSystemGbmGLESContext.cpp PascalHDR10Scanout.cpp)

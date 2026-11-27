@@ -186,6 +186,7 @@ protected:
   struct ShaderUpscaler;
   std::unique_ptr<ShaderUpscaler> m_shaderUpscaler;
   bool RenderShaderUpscaler(int index, int preset);
+  virtual bool HasShaderUpscalerP010(int) const { return false; }
 
   int m_reportedUpscaler{-2};
   uint64_t m_reportedUpscalerGeneration{};
@@ -282,6 +283,7 @@ protected:
   Shaders::GLES::BaseVideoFilterShader* m_pVideoFilterShader{nullptr};
   ESCALINGMETHOD m_scalingMethod{VS_SCALINGMETHOD_LINEAR};
   ESCALINGMETHOD m_scalingMethodGui{VS_SCALINGMETHOD_MAX};
+  ESCALINGMETHOD m_warnedScalingMethod{VS_SCALINGMETHOD_MAX};
   bool m_fullRange;
   AVColorPrimaries m_srcPrimaries;
   bool m_toneMap = false;
