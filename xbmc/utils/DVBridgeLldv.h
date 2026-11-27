@@ -95,9 +95,10 @@ inline bool FitLldvPrimaries(std::array<double, 6>& primaries)
     }
     if (outside)
     {
-      // Allow one 1/256 step on each xy axis at the quantized gamut boundary.
-      if (nearestDistance > std::sqrt(2.0) / 256)
-        return false;
+      // Clamp a target primary outside BT.2020 to the nearest point of the triangle
+      // instead of refusing LLDV. A Dolby VSVDB v2 codes the blue primary in 3-bit
+      // 1/256 steps; the LG C2 block decodes to (0.1484, 0.0469), about 0.006
+      // outside the R-B edge, just past a one-step allowance.
       x = nearestX;
       y = nearestY;
     }
