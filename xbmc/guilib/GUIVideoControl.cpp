@@ -60,12 +60,30 @@ void CGUIVideoControl::Render()
       appPower->ResetScreenSaver();
     }
 
-    CServiceBroker::GetWinSystem()->GetGfxContext().SetViewWindow(m_posX, m_posY, m_posX + m_width, m_posY + m_height);
+    auto& graphics = CServiceBroker::GetWinSystem()->GetGfxContext();
+    auto& windowedVideo = CServiceBroker::GetGUI()->GetWindowManager().GetWindowedVideoComposite();
+    const bool composited = windowedVideo.Active() && !appPlayer->IsRenderingVideoLayer();
+    const auto opacity = graphics.MergeAlpha(0xFF000000) >> 24;
+    const float depth = graphics.GetTransformDepth();
+    CRect clip;
+    if (composited)
+    {
+      CRect local(m_posX, m_posY, m_posX + m_width, m_posY + m_height);
+      if (!local.IsEmpty())
+      {
+        CRect uv(0, 0, 1, 1);
+        graphics.ClipRect(local, uv);
+        if (!local.IsEmpty())
+          clip = graphics.GenerateAABB(local);
+      }
+      clip.Intersect(GetRenderRegion());
+      clip.Intersect(graphics.GetScissors());
+    }
+    graphics.SetViewWindow(m_posX, m_posY, m_posX + m_width, m_posY + m_height);
     TransformMatrix mat;
-    CServiceBroker::GetWinSystem()->GetGfxContext().SetTransform(mat, 1.0, 1.0);
+    graphics.SetTransform(mat, 1.0, 1.0);
 
-    KODI::UTILS::COLOR::Color alpha =
-        CServiceBroker::GetWinSystem()->GetGfxContext().MergeAlpha(0xFF000000) >> 24;
+    KODI::UTILS::COLOR::Color alpha = composited ? opacity : graphics.MergeAlpha(0xFF000000) >> 24;
     if (appPlayer->IsRenderingVideoLayer())
     {
       CRect old = CServiceBroker::GetWinSystem()->GetGfxContext().GetScissors();
@@ -83,9 +101,15 @@ void CGUIVideoControl::Render()
       CServiceBroker::GetWinSystem()->GetGfxContext().SetScissors(old);
     }
     else
+    {
+      if (composited)
+        windowedVideo.BeginControl(graphics.GetViewWindow(), clip, depth, static_cast<uint8_t>(opacity));
       appPlayer->Render(false, alpha);
+      if (composited)
+        windowedVideo.EndControl();
+    }
 
-    CServiceBroker::GetWinSystem()->GetGfxContext().RemoveTransform();
+    graphics.RemoveTransform();
   }
   CGUIControl::Render();
 }

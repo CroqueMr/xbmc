@@ -22,6 +22,7 @@
 
 CreateGUITextureFunc CGUITexture::m_createGUITextureFunc;
 DrawQuadFunc CGUITexture::m_drawQuadFunc;
+DrawVideoApertureFunc CGUITexture::m_drawVideoApertureFunc;
 
 CTextureInfo::CTextureInfo()
 {
@@ -37,10 +38,12 @@ CTextureInfo::CTextureInfo(const std::string &file):
 }
 
 void CGUITexture::Register(const CreateGUITextureFunc& createFunction,
-                           const DrawQuadFunc& drawQuadFunction)
+                           const DrawQuadFunc& drawQuadFunction,
+                           const DrawVideoApertureFunc& drawVideoApertureFunction)
 {
   m_createGUITextureFunc = createFunction;
   m_drawQuadFunc = drawQuadFunction;
+  m_drawVideoApertureFunc = drawVideoApertureFunction;
 }
 
 CGUITexture* CGUITexture::CreateTexture(
@@ -70,6 +73,12 @@ void CGUITexture::DrawQuad(const CRect& coords,
         "No GUITexture DrawQuad function available. Did you forget to register?");
 
   m_drawQuadFunc(coords, color, texture, texCoords, depth, blending);
+}
+
+void CGUITexture::DrawVideoAperture(const CRect& coords, uint8_t opacity, float depth)
+{
+  if (opacity && !coords.IsEmpty() && m_drawVideoApertureFunc)
+    m_drawVideoApertureFunc(coords, opacity, depth);
 }
 
 CGUITexture::CGUITexture(

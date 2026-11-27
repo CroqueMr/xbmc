@@ -15,6 +15,7 @@
 #include "utils/ColorUtils.h"
 #include "utils/Geometry.h"
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 
@@ -61,13 +62,16 @@ using DrawQuadFunc = std::function<void(const CRect& coords,
                                         const float depth,
                                         const bool blending)>;
 
+using DrawVideoApertureFunc = std::function<void(const CRect&, uint8_t, float)>;
+
 class CGUITexture
 {
 public:
   virtual ~CGUITexture() = default;
 
   static void Register(const CreateGUITextureFunc& createFunction,
-                       const DrawQuadFunc& drawQuadFunction);
+                       const DrawQuadFunc& drawQuadFunction,
+                       const DrawVideoApertureFunc& drawVideoApertureFunction = {});
 
   static CGUITexture* CreateTexture(
       float posX, float posY, float width, float height, const CTextureInfo& texture);
@@ -79,6 +83,8 @@ public:
                        const CRect* texCoords = nullptr,
                        const float depth = 1.0,
                        const bool blending = true);
+
+  static void DrawVideoAperture(const CRect& coords, uint8_t opacity, float depth);
 
   bool Process(unsigned int currentTime);
   void Render(int32_t depthOffset = 0, int32_t overrideDepth = -1);
@@ -211,4 +217,5 @@ protected:
 private:
   static CreateGUITextureFunc m_createGUITextureFunc;
   static DrawQuadFunc m_drawQuadFunc;
+  static DrawVideoApertureFunc m_drawVideoApertureFunc;
 };
