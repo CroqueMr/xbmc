@@ -30,7 +30,8 @@ public:
 
   RESOLUTION_INFO GetCurrentMode() override;
   std::vector<RESOLUTION_INFO> GetModes() override;
-  bool SetMode(const RESOLUTION_INFO& res) override { return true; }
+  bool CanSetMode(const RESOLUTION_INFO& res) override { return true; }
+  void SelectMode(const RESOLUTION_INFO& res) override {}
 };
 
 } // namespace GBM

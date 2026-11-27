@@ -94,6 +94,8 @@ public:
 
   virtual RESOLUTION_INFO GetCurrentMode();
   virtual std::vector<RESOLUTION_INFO> GetModes();
+  virtual bool CanSetMode(const RESOLUTION_INFO& res);
+  virtual void SelectMode(const RESOLUTION_INFO& res);
   virtual bool SetMode(const RESOLUTION_INFO& res);
 
   void SetInFenceFd(int fd) { m_inFenceFd = fd; }

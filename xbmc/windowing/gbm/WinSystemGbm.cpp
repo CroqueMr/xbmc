@@ -960,14 +960,15 @@ bool CWinSystemGbm::ResizeWindow(int newWidth, int newHeight, int newLeft, int n
 
 bool CWinSystemGbm::SetFullScreen(bool fullScreen, RESOLUTION_INFO& res, bool blankOtherDisplays)
 {
-  // Notify other subsystems that we will change resolution
-  OnLostDevice();
-
-  if (!m_DRM->SetMode(res))
+  if (!m_DRM->CanSetMode(res))
   {
     CLog::Log(LOGERROR, "CWinSystemGbm::{} - failed to set DRM mode", __FUNCTION__);
     return false;
   }
+
+  // Notify other subsystems that we will change resolution
+  OnLostDevice();
+  m_DRM->SelectMode(res);
 
   m_currentModeId = res.strId;
   // a refusal of a depth or format only holds for the mode it happened in

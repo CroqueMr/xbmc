@@ -90,6 +90,7 @@ public:
     }
     const auto& device = current.begin()->second.device;
     const auto capacity = current.begin()->second.capacity;
+    bool homogeneous = true;
     bool valid = m_time && now > m_time && now - m_time <= maxGap &&
                  current.size() == m_previous.size();
     long double busy = 0;
@@ -97,8 +98,12 @@ public:
     for (const auto& [id, client] : current)
     {
       const auto previous = m_previous.find(id);
-      if (client.device != device || client.capacity != capacity ||
-          previous == m_previous.end() || previous->second.capacity != capacity)
+      if (client.device != device || client.capacity != capacity)
+      {
+        homogeneous = false;
+        valid = false;
+      }
+      else if (previous == m_previous.end() || previous->second.capacity != capacity)
         valid = false;
       else
       {
@@ -110,6 +115,7 @@ public:
     const auto elapsed = now - m_time;
     m_previous = std::move(next);
     m_time = now;
+    m_available = homogeneous;
     if (!valid)
       return {};
     return std::clamp(double(100.0L * busy / elapsed / capacity), 0.0, 100.0);
@@ -136,14 +142,18 @@ public:
     return Update(clients, std::chrono::duration_cast<std::chrono::nanoseconds>(now).count(), maxGap);
   }
 
+  bool Available() const { return m_available; }
+
   void Reset()
   {
     m_previous.clear();
     m_time = 0;
+    m_available = false;
   }
 
 private:
   Clients m_previous;
   uint64_t m_time{};
+  bool m_available{false};
 };
 }

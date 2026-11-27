@@ -162,6 +162,12 @@ bool CWinSystemGbmEGLContext::CreateNewWindow(const std::string& name,
                                               bool fullScreen,
                                               RESOLUTION_INFO& res)
 {
+  if (!m_DRM->CanSetMode(res))
+  {
+    CLog::Log(LOGERROR, "CWinSystemGbmEGLContext::{} - failed to set DRM mode", __FUNCTION__);
+    return false;
+  }
+
   //Notify other subsystems that we change resolution
   OnLostDevice();
 
@@ -170,11 +176,7 @@ bool CWinSystemGbmEGLContext::CreateNewWindow(const std::string& name,
     return false;
   }
 
-  if (!m_DRM->SetMode(res))
-  {
-    CLog::Log(LOGERROR, "CWinSystemGbmEGLContext::{} - failed to set DRM mode", __FUNCTION__);
-    return false;
-  }
+  m_DRM->SelectMode(res);
 
   uint32_t format = m_eglContext.GetConfigAttrib(EGL_NATIVE_VISUAL_ID);
   std::vector<uint64_t> modifierList = OutputModifiers(format);
