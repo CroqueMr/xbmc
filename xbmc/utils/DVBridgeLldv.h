@@ -30,7 +30,7 @@ inline const char* LldvEdidReason(LldvEdidStatus status)
     case LldvEdidStatus::NoLowLatency: return "tv-does-not-announce-lldv";
     case LldvEdidStatus::InvalidLuminance: return "target-luminance-invalid";
     case LldvEdidStatus::InvalidPrimaries: return "target-primaries-invalid";
-    case LldvEdidStatus::UnsupportedGamut: return "target-gamut-outside-bt2020";
+    case LldvEdidStatus::UnsupportedGamut: return "target-gamut-invalid";
     case LldvEdidStatus::Ready: return "target-ready";
   }
   return "unknown";
@@ -43,6 +43,11 @@ struct LldvDisplay
   size_t received{}, expected{};
   double peak{}, black{};
   std::array<double, 6> reported{}, primaries{};
+
+  bool GamutAdjusted() const
+  {
+    return status == LldvEdidStatus::Ready && reported != primaries;
+  }
 };
 
 inline double LldvPqNits(unsigned code)
@@ -95,9 +100,7 @@ inline bool FitLldvPrimaries(std::array<double, 6>& primaries)
     }
     if (outside)
     {
-      // Allow one 1/256 step on each xy axis at the quantized gamut boundary.
-      if (nearestDistance > std::sqrt(2.0) / 256)
-        return false;
+      // Normalize the primary to the closest point in the carrier gamut.
       x = nearestX;
       y = nearestY;
     }
@@ -158,15 +161,22 @@ inline LldvDisplay ReadLldvDisplay(const uint8_t* edid, size_t size)
         (p[4] >> 1) / 256.0, .5 + (p[5] >> 1) / 256.0,
         .125 + (p[3] >> 5) / 256.0, .03125 + ((p[3] >> 2) & 7) / 256.0};
   }
-  display.primaries = display.reported;
+  // All-zero encoded coordinates are an unset target, not a gamut to fit.
+  const bool hasPrimaries = display.sink.version == 2
+      ? (p[3] >> 1) || (p[4] >> 1) || p[5] || p[6]
+      : (p[3] >> 2) || p[4] || p[5] || p[6];
+  auto fitted = display.reported;
   if (display.black >= display.peak || display.peak > 10000)
     display.status = LldvEdidStatus::InvalidLuminance;
-  else if (!ValidLldvPrimaries(display.reported))
+  else if (!hasPrimaries)
     display.status = LldvEdidStatus::InvalidPrimaries;
-  else if (!FitLldvPrimaries(display.primaries))
+  else if (!FitLldvPrimaries(fitted))
     display.status = LldvEdidStatus::UnsupportedGamut;
   else
+  {
+    display.primaries = fitted;
     display.status = LldvEdidStatus::Ready;
+  }
   return display;
 }
 

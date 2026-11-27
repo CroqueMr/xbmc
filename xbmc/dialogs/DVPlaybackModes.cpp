@@ -518,6 +518,10 @@ bool ShowLldvFormatMenu(bool forCircuit, bool inPlayback)
       addDetail(41327 + i, StringUtils::Format("{:.4f}, {:.4f}",
                                              display.reported[i * 2], display.reported[i * 2 + 1]));
   }
+  const auto gamutNote = display.GamutAdjusted() ? strings.Get(41343) : std::string{};
+  if (!gamutNote.empty())
+    details += "\n\n" + gamutNote;
+  dialog->SetProperty("CB1.LldvDetailNote", gamutNote);
   dialog->SetProperty("CB1.LldvDetails", details);
   dialog->SetProperty("CB1.LldvDetailLabels", labels);
   dialog->SetProperty("CB1.LldvDetailValues", values);
@@ -558,7 +562,7 @@ bool ShowLldvFormatMenu(bool forCircuit, bool inPlayback)
   dialog->SetSelected(selected <= LldvFormat::Y444_12 ? static_cast<int>(selected) : 0);
   dialog->Open();
   for (const char* key : {"CB1.LldvStatus", "CB1.LldvDetails", "CB1.LldvDetailLabels",
-                          "CB1.LldvDetailValues"})
+                          "CB1.LldvDetailValues", "CB1.LldvDetailNote"})
     dialog->SetProperty(key, CVariant{});
   const auto current = ReadLldvConnector();
   const int choice = dialog->GetSelectedItem();

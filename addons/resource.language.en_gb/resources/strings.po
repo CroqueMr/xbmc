@@ -26975,8 +26975,12 @@ msgctxt "#41342"
 msgid "Packed · experimental"
 msgstr ""
 
+msgctxt "#41343"
+msgid "EDID gamut out of range — adjusted to BT.2020."
+msgstr ""
+
 msgctxt "#41300"
-msgid "EDID target gamut exceeds BT.2020"
+msgid "Invalid EDID target gamut"
 msgstr ""
 
 msgctxt "#41301"

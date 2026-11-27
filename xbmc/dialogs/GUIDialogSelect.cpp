@@ -174,10 +174,10 @@ bool CGUIDialogSelect::OnMessage(CGUIMessage& message)
             viewer->SetHeading(CServiceBroker::GetResourcesComponent().GetLocalizeStrings().Get(41320));
             viewer->SetText(details);
             viewer->UseMonoFont(false);
-            for (const char* field : {"CB1.LldvDetailLabels", "CB1.LldvDetailValues"})
+            for (const char* field : {"CB1.LldvDetailLabels", "CB1.LldvDetailValues", "CB1.LldvDetailNote"})
               viewer->SetProperty(field, GetProperty(field));
             viewer->Open();
-            for (const char* field : {"CB1.LldvDetailLabels", "CB1.LldvDetailValues"})
+            for (const char* field : {"CB1.LldvDetailLabels", "CB1.LldvDetailValues", "CB1.LldvDetailNote"})
               viewer->SetProperty(field, CVariant{});
           }
           return true;
