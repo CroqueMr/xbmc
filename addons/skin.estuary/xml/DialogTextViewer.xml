@@ -78,17 +78,17 @@
 			<centerleft>50%</centerleft>
 			<centertop>50%</centertop>
 			<width>780</width>
-			<height>492</height>
+			<height>570</height>
 			<include content="DialogBackgroundCommons">
 				<param name="width" value="780" />
-				<param name="height" value="492" />
+				<param name="height" value="570" />
 				<param name="header_label" value="$LOCALIZE[41320]" />
 			</include>
 			<control type="textbox">
 				<top>94</top>
 				<left>30</left>
-				<width>320</width>
-				<height>300</height>
+				<width>340</width>
+				<height>334</height>
 				<font>font13</font>
 				<label>$INFO[Window.Property(CB1.LldvDetailLabels)]</label>
 			</control>
@@ -96,14 +96,24 @@
 				<top>94</top>
 				<left>375</left>
 				<width>375</width>
-				<height>300</height>
+				<height>334</height>
 				<align>right</align>
 				<font>font13</font>
 				<label>$INFO[Window.Property(CB1.LldvDetailValues)]</label>
 			</control>
+			<control type="label">
+				<top>430</top>
+				<left>30</left>
+				<width>720</width>
+				<height>34</height>
+				<font>font12</font>
+				<textcolor>white</textcolor>
+				<label>$INFO[Window.Property(CB1.LldvDetailNote)]</label>
+				<visible>!String.IsEmpty(Window.Property(CB1.LldvDetailNote))</visible>
+			</control>
 			<control type="group">
 				<left>520</left>
-				<top>389</top>
+				<top>467</top>
 				<include content="DefaultDialogButton">
 					<param name="id" value="9901" />
 					<param name="width" value="250" />
