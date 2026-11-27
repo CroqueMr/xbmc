@@ -175,6 +175,7 @@ bool CWinSystemGbm::InitWindowSystem()
     return false;
   }
 
+  m_defaultMaxBpc.reset();
   m_DRM = std::make_shared<CDRMAtomic>();
 
   if (!m_DRM->InitDrm())
@@ -299,6 +300,23 @@ bool CWinSystemGbm::InitWindowSystem()
 
 bool CWinSystemGbm::DestroyWindowSystem()
 {
+  // Auto inherits the driver's ceiling at startup. Return our accepted change before
+  // releasing DRM, so the next Kodi process cannot inherit our explicit limit.
+  if (m_defaultMaxBpc && std::dynamic_pointer_cast<CDRMAtomic>(m_DRM))
+  {
+    const auto connector = m_DRM->GetConnector();
+    if (connector && !connector->IsPropertyImmutable(MAX_BPC).value_or(true))
+    {
+      const auto current = connector->GetPropertyValue(MAX_BPC);
+      const auto limits = connector->GetRangePropertyLimits(MAX_BPC);
+      if (current && current != m_defaultMaxBpc && limits &&
+          *m_defaultMaxBpc >= limits->first && *m_defaultMaxBpc <= limits->second &&
+          connector->ReadPropertyValue(MAX_BPC) == current &&
+          !connector->SetProperty(MAX_BPC, *m_defaultMaxBpc))
+        CLog::Log(LOGWARNING, "Failed to restore inherited max bpc {}", *m_defaultMaxBpc);
+    }
+  }
+
   CLog::Log(LOGDEBUG, "CWinSystemGbm::{} - deinitialized DRM", __FUNCTION__);
 
   m_libinput.reset();
