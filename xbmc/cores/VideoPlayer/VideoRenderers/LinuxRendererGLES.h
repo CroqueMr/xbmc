@@ -186,6 +186,7 @@ protected:
   struct ShaderUpscaler;
   std::unique_ptr<ShaderUpscaler> m_shaderUpscaler;
   bool RenderShaderUpscaler(int index, int preset);
+  virtual bool HasShaderUpscalerP010(int) const { return false; }
 
   int m_reportedUpscaler{-2};
   uint64_t m_reportedUpscalerGeneration{};
