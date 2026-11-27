@@ -35,10 +35,6 @@ bool CDVBridgeState::Read(CDRMAtomic& drm, std::vector<Change>& changes,
     during = *selected;
   }
   Change change{object, name, *before, during, {}, {}};
-  // This guard belongs to the wide SDR frame being replaced, not a later
-  // ordinary framebuffer. Never revive it through a transport snapshot.
-  if (change.name == SDR_BT2020_DEEP_COLOR)
-    change.before = 0;
   if (blob && *before != 0)
   {
     auto* data = drmModeGetPropertyBlob(drm.GetFileDescriptor(), *before);
@@ -262,6 +258,10 @@ bool CDVBridgeState::StageTransport(CDRMAtomic& drm, bool restore, uint64_t play
   for (const auto& change : m_changes)
   {
     uint64_t value = restore ? change.before : change.during;
+    // Preserve the prior wide-SDR ownership for admission, but never revive
+    // its frame-specific guard when restoring ordinary connector preferences.
+    if (restore && change.name == SDR_BT2020_DEEP_COLOR)
+      value = 0;
     if (!restore && broadcastRange && change.name == "Broadcast RGB")
       value = *broadcastRange;
     if (!restore && colorFormat && change.name == "color format")

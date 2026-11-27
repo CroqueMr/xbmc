@@ -1966,13 +1966,14 @@ void CWinSystemGbmGLContext::RefreshDVOutputCapabilities()
   {
     const auto& display = lldvStatus.display;
     CLog::Log(LOGINFO, "CB1 LLDV: connector={} edid_generation={} edid_bytes={}/{} dolby_block={} "
-        "version={} length={} target={} compatibility={} peak={:.3f} black={:.6f} "
+        "version={} length={} target={} gamut_adjusted={} compatibility={} peak={:.3f} black={:.6f} "
         "read_rgb_xy={:.6f},{:.6f}/{:.6f},{:.6f}/{:.6f},{:.6f} "
         "used_rgb_xy={:.6f},{:.6f}/{:.6f},{:.6f}/{:.6f},{:.6f} "
         "driver_formats={:#x} forced_422_10={} timing_current={} timing_available={}",
         lldvStatus.connectorId, lldvStatus.edidGeneration, display.received, display.expected,
         dvbridge_edid_reason(display.sink.status), display.sink.version, display.sink.length,
-        DVBRIDGE::LldvEdidReason(display.status), DVBRIDGE::LldvCompatibilityReason(lldvStatus, 0),
+        DVBRIDGE::LldvEdidReason(display.status), display.GamutAdjusted(),
+        DVBRIDGE::LldvCompatibilityReason(lldvStatus, 0),
         display.peak, display.black, display.reported[0], display.reported[1], display.reported[2],
         display.reported[3], display.reported[4], display.reported[5], display.primaries[0],
         display.primaries[1], display.primaries[2], display.primaries[3], display.primaries[4],
@@ -2671,7 +2672,7 @@ void CWinSystemGbmGLContext::RefreshHDR10LinkDepth()
   // The temporary wide-SDR ceiling must not admit a different HDR circuit.
   if (SDRBT2020DeepColorSupported() &&
       (connector->GetPropertyValue(SDR_BT2020_DEEP_COLOR).value_or(0) ||
-       m_cb1ConnectorState.Captured()))
+       m_dvState.Before(SDR_BT2020_DEEP_COLOR).value_or(0)))
     restored = m_cb1ConnectorState.Before("max bpc").value_or(
         GetEffectiveMaxBpc(DefaultMaxBpc()));
   auto depth = GetEffectiveMaxBpc(restored);
