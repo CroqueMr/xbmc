@@ -2173,6 +2173,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     // The transport and its presentation lead do not change with it.
     asyncOverlayRefresh = sameGeometry && allowPacked &&
         (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT ||
+         (expansion && policy.mode == DVBRIDGE_MODE_HDR10_BASIC && !m_committedPacked) ||
          (policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && m_committedPacked) ||
          (policy.mode == DVBRIDGE_MODE_SDR && !m_committedPacked));
     // Explicit refresh of an equal-PTS source is a new processing transaction.
