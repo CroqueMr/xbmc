@@ -41,7 +41,9 @@ public:
   const Control* CurrentControl() const { return m_control ? &*m_control : nullptr; }
   std::optional<CRect> Queue(const CRect& destination)
   {
-    if (!m_control || !m_control->opacity || m_control->view.IsEmpty())
+    // A single late presentation can fill only one aperture. Keep the first
+    // actually visible control; later controls retain their normal GUI background.
+    if (m_owner || !m_control || !m_control->opacity || m_control->view.IsEmpty())
       return {};
     CRect aperture = destination;
     aperture.Intersect(m_control->clip);
