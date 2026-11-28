@@ -2345,13 +2345,20 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   if (expansion)
   {
     const bool dv = policy.mode == DVBRIDGE_MODE_STANDARD;
-    pl_frame pq{};
-    cb1_ai_result description{};
-    const auto status = dvbridge_prepare_sdr_expansion(m_renderer,&m_pendingIdentity,
-        &bl.frame,base.pts,dv,&pq,dv ? &description : nullptr);
-    if (status == CB1_AI_READY)
+    if (!dv)
     {
-      if (dv)
+      m_prepared=dvbridge_render_sdr_hdr10(m_renderer,&policy,&m_pendingIdentity,
+          &bl.frame,base.pts,geometry);
+      m_pending=m_prepared;
+      result=m_prepared ? FrameStatus::Ready : FrameStatus::Failed;
+    }
+    else
+    {
+      pl_frame pq{};
+      cb1_ai_result description{};
+      const auto status=dvbridge_prepare_sdr_expansion(m_renderer,&m_pendingIdentity,
+          &bl.frame,base.pts,true,&pq,&description);
+      if (status == CB1_AI_READY)
       {
         const auto& raw=description.raw;
         m_pendingExpansionL1L3={raw.l1_min,raw.l1_max,raw.l1_avg,raw.l3_min,raw.l3_max,raw.l3_avg};
@@ -2381,15 +2388,9 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
         m_pending=rendered;
         if (rendered) result=FrameStatus::Pending;
       }
-      else
-      {
-        m_prepared=dvbridge_render_expanded_hdr10(m_renderer,&policy,&m_pendingIdentity,geometry);
-        m_pending=m_prepared;
-        result=m_prepared ? FrameStatus::Ready : FrameStatus::Failed;
-      }
+      else if (status==CB1_AI_PENDING)
+        result=FrameStatus::Busy;
     }
-    else if (status==CB1_AI_PENDING)
-      result=FrameStatus::Busy;
     if (!m_context->FenceLastUse())
     {
       Cancel();

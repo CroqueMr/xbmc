@@ -258,9 +258,11 @@ bool CDVBridgeState::StageTransport(CDRMAtomic& drm, bool restore, uint64_t play
   for (const auto& change : m_changes)
   {
     uint64_t value = restore ? change.before : change.during;
-    // Preserve the prior wide-SDR ownership for admission, but never revive
-    // its frame-specific guard when restoring ordinary connector preferences.
-    if (restore && change.name == SDR_BT2020_DEEP_COLOR)
+    // Keep captured values for admission, but converted-frame guards belong
+    // to their active output. A successor HDR10 or wide-SDR route rearms its
+    // own guard; restoring an ordinary SDR frame must not inherit either.
+    if (restore && (change.name == SDR_BT2020_DEEP_COLOR ||
+                    change.name == "DVBRIDGE_HDR10_DEEP_COLOR"))
       value = 0;
     if (!restore && broadcastRange && change.name == "Broadcast RGB")
       value = *broadcastRange;

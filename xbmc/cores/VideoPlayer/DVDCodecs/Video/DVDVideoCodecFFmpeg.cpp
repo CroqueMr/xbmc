@@ -1929,6 +1929,9 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
     }
   }
 
+#ifdef CB1_HAS_HDR10_AI
+  BindHDR10AISource(*pVideoPicture);
+#endif
   if (pVideoPicture->iRepeatPicture)
     pVideoPicture->dts = DVD_NOPTS_VALUE;
   else
@@ -1971,7 +1974,10 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
       pVideoPicture->color_primaries = AVCOL_PRI_BT470BG;
   }
 #ifdef CB1_HAS_HDR10_AI
-  BindHDR10AISource(*pVideoPicture);
+  // SDR uses the final, possibly inferred primaries, not the HDR10 AI queue.
+  if (DVBRIDGE::IsSDRExpansionSource(*pVideoPicture) &&
+      pVideoPicture->doviSourcePts != AV_NOPTS_VALUE)
+    pVideoPicture->doviSourceBinding = m_dvSourceOwner.NextPicture();
 #endif
 
   return true;
@@ -2217,8 +2223,7 @@ unsigned CDVDVideoCodecFFmpeg::GetConvergeCount()
 #ifdef CB1_HAS_HDR10_AI
 void CDVDVideoCodecFFmpeg::BindHDR10AISource(VideoPicture& picture)
 {
-  if ((DVBRIDGE::IsHDR10Family(picture.hdrType) || DVBRIDGE::IsSDRExpansionSource(picture)) &&
-      !picture.doviSourceInfo.profile &&
+  if (DVBRIDGE::IsHDR10Family(picture.hdrType) && !picture.doviSourceInfo.profile &&
       picture.doviSourcePts != AV_NOPTS_VALUE)
     picture.doviSourceBinding = m_dvSourceOwner.NextPicture();
 }
