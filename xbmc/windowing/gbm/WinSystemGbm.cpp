@@ -1395,6 +1395,42 @@ std::unique_ptr<CVideoSync> CWinSystemGbm::GetVideoSync(CVideoReferenceClock* cl
   return std::make_unique<CVideoSyncGbm>(clock);
 }
 
+std::optional<CWinSystemBase::WireOutputTelemetry> CWinSystemGbm::GetWireOutputTelemetry() const
+{
+  WireOutputTelemetry telemetry;
+  telemetry.scanoutFourcc = GetScanoutFourcc();
+
+  if (m_DRM)
+  {
+    if (const auto connector = m_DRM->GetConnector())
+    {
+      if (const auto fmt = connector->ReadPropertyValue("CB1_OUTPUT_FORMAT"))
+      {
+        switch (*fmt)
+        {
+          case 1:
+            telemetry.format = "RGB 4:4:4";
+            break;
+          case 2:
+            telemetry.format = "YCbCr 4:4:4";
+            break;
+          case 3:
+            telemetry.format = "YCbCr 4:2:2";
+            break;
+          case 4:
+            telemetry.format = "YCbCr 4:2:0";
+            break;
+          default:
+            break;
+        }
+      }
+      if (const auto bpc = connector->ReadPropertyValue("CB1_OUTPUT_BPC"))
+        telemetry.bpc = static_cast<int>(*bpc);
+    }
+  }
+  return telemetry;
+}
+
 std::vector<std::string> CWinSystemGbm::GetConnectedOutputs()
 {
   std::vector<std::string> outputs;

@@ -86,6 +86,13 @@ public:
   virtual bool HasFloatOutput() const { return false; }
   // No value means this backend does not report Blu-ray PSR23 display capability.
   virtual std::optional<uint32_t> GetBluray3DDisplayCapabilities() const { return std::nullopt; }
+  struct WireOutputTelemetry
+  {
+    std::string format;
+    int bpc{0};
+    uint32_t scanoutFourcc{0};
+  };
+  virtual std::optional<WireOutputTelemetry> GetWireOutputTelemetry() const { return std::nullopt; }
   virtual bool MoveWindow(int topLeft, int topRight){return false;}
   virtual void FinishModeChange(RESOLUTION res){}
   virtual void FinishWindowResize(int newWidth, int newHeight) {ResizeWindow(newWidth, newHeight, -1, -1);}

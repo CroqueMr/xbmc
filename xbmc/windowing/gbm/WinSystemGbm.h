@@ -89,6 +89,8 @@ public:
   bool SupportsDVOutputMode(bool requireCurrentMode = true) const;
   bool RefreshDisplayInfoForVideo();
 #endif
+  std::optional<WireOutputTelemetry> GetWireOutputTelemetry() const override;
+  virtual uint32_t GetScanoutFourcc() const { return 0; }
 
   bool CanDoWindowed() override { return false; }
   void UpdateResolutions() override;

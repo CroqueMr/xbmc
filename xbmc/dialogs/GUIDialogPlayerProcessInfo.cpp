@@ -327,12 +327,15 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     const bool lldv = active && data.output.lldv.has_value();
     const bool metadata = active && data.metadata;
     const auto yesno = [](bool value) { return value ? "Yes" : "No"; };
-    const auto resolution = CServiceBroker::GetWinSystem()->GetGfxContext().GetResInfo();
-    SetProperty("DV.Display", StringUtils::Format("{}x{} / {:.3f} Hz",
-        resolution.iScreenWidth, resolution.iScreenHeight, resolution.fRefreshRate));
+    const auto* winSystem = CServiceBroker::GetWinSystem();
+    const auto resolution = winSystem->GetGfxContext().GetResInfo();
+    const char* scanType = (resolution.dwFlags & D3DPRESENTFLAG_INTERLACED) ? "i" : "p";
+    SetProperty("DV.Display", StringUtils::Format("{}x{}{} / {:.3f} Hz",
+        resolution.iScreenWidth, resolution.iScreenHeight, scanType, resolution.fRefreshRate));
     if (active && data.output.width && data.output.height && data.output.refresh>0)
-      SetProperty("DV.Display", StringUtils::Format("{}x{} / {:.3f} Hz",
+      SetProperty("DV.Display", StringUtils::Format("{}x{}p / {:.3f} Hz",
           data.output.width,data.output.height,data.output.refresh));
+    const auto wire = winSystem->GetWireOutputTelemetry();
     const auto cpu = CServiceBroker::GetCPUInfo();
     SetProperty("DV.CPU", cpu ? StringUtils::Format("{} %", cpu->GetUsedPercentage()) : "N/A");
     // Sampled here: System.Memory parses /proc/meminfo on every frame it is displayed.
@@ -446,12 +449,16 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         data.nativeHDR10PlusFallbackLabel ? localizer.Get(data.nativeHDR10PlusFallbackLabel) : "");
     SetProperty("DV.MinimumLinkBits", active && data.output.minimumLinkBits ?
         StringUtils::Format("{}-bit",data.output.minimumLinkBits) : "");
-    SetProperty("DV.Transport", active ? CDVPlaybackInfo::Transport(data.output.format) : "");
+    SetProperty("DV.Transport", active ? CDVPlaybackInfo::Transport(data.output.format) :
+        (wire && wire->scanoutFourcc) ? CDVPlaybackInfo::Transport(wire->scanoutFourcc) : "");
     using LldvEncoding = VideoProcessingInfo::PlayerLed::Encoding;
+    const std::string wireHdmiFormat = (wire && !wire->format.empty()) ?
+        (wire->bpc > 0 ? StringUtils::Format("{} / {}-bit", wire->format, wire->bpc) : wire->format) :
+        std::string{};
     SetProperty("DV.HdmiFormat", lldv ?
         (data.output.lldv->encoding == LldvEncoding::RGB ? "RGB" :
          data.output.lldv->encoding == LldvEncoding::YCbCr444 ? "YCbCr 4:4:4" :
-         data.output.lldv->forcedTransport ? localizer.Get(41339) : "YCbCr 4:2:2") : "");
+         data.output.lldv->forcedTransport ? localizer.Get(41339) : "YCbCr 4:2:2") : wireHdmiFormat);
     SetProperty("DV.SignalIntent", lldv ? "LLDV" : active & CDVPlaybackInfo::HDMI ?
         (data.output.iptTransport ? "TV-Led / IPT-PQc2 tunnel" : "TV-Led / YCbCr tunnel") :
         active & CDVPlaybackInfo::HDR10PLUS ? "PQ / BT.2020 / HDR10+" :
