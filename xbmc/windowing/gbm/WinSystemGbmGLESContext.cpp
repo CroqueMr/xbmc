@@ -1999,6 +1999,7 @@ void CWinSystemGbmGLESContext::RefreshDVOutputCapabilities()
         lldvStatus.currentTiming, lldvStatus.availableTiming);
   }
   m_dvCapabilities = caps;
+  ++m_nativeSDRCapabilityRevision;
   m_dvAvailableNativeDV = availableNativeDV;
   m_dvAvailableHDR10 = availableHDR10;
   m_dvOutputTimings = std::move(timings);
@@ -3358,7 +3359,9 @@ bool CWinSystemGbmGLESContext::PrepareRendererFrame(const VideoPicture& picture,
       if (binding.Valid() && m_dvImportBinding == binding &&
           m_dvImportGeneration == m_dvCapabilities.generation)
         admission = NativeSDRAdmission{binding.stream, binding.revision,
-                                        m_dvImportGeneration, m_dvImportUsable};
+                                        m_dvImportGeneration, m_nativeSDRCapabilityRevision,
+                                        m_dvLldvStatus.connectorId, m_dvLldvStatus.edidGeneration,
+                                        m_dvImportUsable};
     }
     requested = false;
     if (admission && admission == m_nativeSDRAdmission)

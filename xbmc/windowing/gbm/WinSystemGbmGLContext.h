@@ -322,7 +322,10 @@ private:
   dvbridge_geometry m_dvImportGeometry{};
   bool m_dvImportUsable{};
   uint64_t m_dvImportGeneration{};
-  using NativeSDRAdmission = std::tuple<uint64_t, uint64_t, uint64_t, bool>;
+  // Receiver mode refresh and GL lifetime are separate generations.
+  uint64_t m_nativeSDRCapabilityRevision{};
+  using NativeSDRAdmission =
+      std::tuple<uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, bool>;
   std::optional<NativeSDRAdmission> m_nativeSDRAdmission;
   DVBRIDGE::SourceBinding m_dvFatalBinding{};
   DVBRIDGE::OutputReason m_dvFatalReason{DVBRIDGE::OutputReason::None};
