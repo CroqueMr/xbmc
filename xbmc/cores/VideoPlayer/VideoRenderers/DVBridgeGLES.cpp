@@ -2164,14 +2164,17 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_sourceGeometry = geometry;
   m_geometryKnown = true;
   uint64_t revision = std::max({preferences.revision,base.binding.revision,m_geometryRevision});
-  // An SDR-to-DV GUI rekey can return Busy before its GPU L1 measurement is ready.
-  // Retain the overlay-only revision across retries, not across a different source or policy.
-  const bool dvOverlayRefresh = expansion && policy.mode == DVBRIDGE_MODE_STANDARD &&
-      m_hasCommitted && m_committedMode == policy.mode && m_committedPacked &&
-      base.binding == m_committedBinding && sameGeometry && allowPacked && allowAsync &&
-      m_nativeOverlayRevision != m_committedOverlayRevision;
-  if (!dvOverlayRefresh || revision != m_sdrDVOverlayRefreshRevision)
-    m_sdrDVOverlayRefreshRevision = 0;
+  // An SDR GUI rekey can return Busy before the picture or its retiring lease
+  // is ready. Preserve async admission for that exact overlay-only transaction.
+  // A placed/scaled DV picture may use the RGB pass despite an enabled overlay.
+  const bool sdrOverlayRefresh = expansion && m_hasCommitted &&
+      m_committedMode == policy.mode && base.binding == m_committedBinding &&
+      sameGeometry && allowPacked && allowAsync &&
+      ((policy.mode == DVBRIDGE_MODE_STANDARD &&
+        m_nativeOverlayRevision != m_committedOverlayRevision) ||
+       (policy.mode == DVBRIDGE_MODE_HDR10_BASIC && !m_committedPacked));
+  if (!sdrOverlayRefresh || revision != m_sdrOverlayRefreshRevision)
+    m_sdrOverlayRefreshRevision = 0;
   bool asyncOverlayRefresh = false;
   if (!m_pending && m_hasCommitted && base.binding == m_committedBinding &&
       revision == m_committedRevision && (!allowPacked || !m_committedPacked ||
@@ -2181,13 +2184,12 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     // The transport and its presentation lead do not change with it.
     asyncOverlayRefresh = sameGeometry && allowPacked &&
         (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT ||
-         (expansion && policy.mode == DVBRIDGE_MODE_HDR10_BASIC && !m_committedPacked) ||
          (policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE && m_committedPacked) ||
          (policy.mode == DVBRIDGE_MODE_SDR && !m_committedPacked));
     // Explicit refresh of an equal-PTS source is a new processing transaction.
     revision = m_geometryRevision = DVBRIDGE::NextRevisionAfter(revision);
     if (!revision) return FrameStatus::Failed;
-    if (dvOverlayRefresh) m_sdrDVOverlayRefreshRevision = revision;
+    if (sdrOverlayRefresh) m_sdrOverlayRefreshRevision = revision;
   }
   if (m_failedIdentity.stream == base.binding.stream &&
       m_failedIdentity.picture == base.binding.picture && m_failedIdentity.revision == revision)
@@ -2220,7 +2222,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       m_committedMode == policy.mode && base.binding.stream == m_committedBinding.stream &&
       base.binding.revision == m_committedBinding.revision &&
       (revision == m_committedRevision || asyncOverlayRefresh ||
-       (m_sdrDVOverlayRefreshRevision != 0 && revision == m_sdrDVOverlayRefreshRevision));
+       (m_sdrOverlayRefreshRevision != 0 && revision == m_sdrOverlayRefreshRevision));
   if (m_dvPolicyActive)
   {
     const auto status = eligible && allowPacked ?
@@ -2541,7 +2543,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
 
 void CDVBridgeGLES::Cancel()
 {
-  m_sdrDVOverlayRefreshRevision = 0;
+  m_sdrOverlayRefreshRevision = 0;
   m_playerLedCpu.reset();
   cb1_hdr10plus_analysis_reset(m_hdr10plusAnalysis);
   m_hdr10plusMetadata.reset();
@@ -3645,7 +3647,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   CServiceBroker::GetDataCacheCore().SetVideoUpscaler(submission.upscaler,
                                                       submission.informationGeneration);
   m_committedRevision = m_pendingIdentity.revision;
-  m_sdrDVOverlayRefreshRevision = 0;
+  m_sdrOverlayRefreshRevision = 0;
   m_committedOverlayRevision = m_pendingOverlayRevision;
   m_committedPacked = !m_guiComposed;
 #ifdef CB1_HAS_HDR10_AI
