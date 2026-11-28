@@ -232,7 +232,7 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
         switch (*video.outputType)
         {
           case VideoOutputType::DolbyVision:
-            output = video.output.lldv ? strings.Get(41221).c_str() :
+            output = video.output.lldv ? strings.Get(41344).c_str() :
                 (video.output.flags & CDVPlaybackInfo::HDMI) ? "Dolby Vision · TV-Led" : "Dolby Vision";
             break;
           case VideoOutputType::HDR10: output = "HDR10"; break;
