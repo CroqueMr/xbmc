@@ -514,12 +514,14 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   // Availability never substitutes or saves a different requested preference.
   const bool menu=setting->GetId()=="dvbridge.playbackchoice";
   const bool playback=setting->GetId()=="dvbridge.playback";
+  const bool sdrMenu=setting->GetId()=="dvbridge.sdrplaybackchoice";
+  const bool sdrSource=sdrMenu || setting->GetId()=="dvbridge.sdrsource";
   const bool hlgMenu=setting->GetId()=="dvbridge.hlgplaybackchoice";
   const bool hlgSource=hlgMenu || setting->GetId()=="dvbridge.hlgsource";
   const bool hdr10PlusMenu=setting->GetId()=="dvbridge.hdr10plusplaybackchoice";
   const bool hdr10Menu=hdr10PlusMenu || setting->GetId()=="dvbridge.hdr10playbackchoice";
   auto preferences = DVBRIDGE::FrameOutputSettings();
-  if (!hdr10Menu && !hlgMenu && !menu)
+  if (!hdr10Menu && !hlgMenu && !menu && !sdrMenu)
   {
     std::lock_guard lock(DVBRIDGE::OutputSettingsMutex());
     DVBRIDGE::ReadDefaultOutputSelectors().Apply(preferences);
@@ -529,7 +531,7 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
   auto* window=dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(CServiceBroker::GetWinSystem());
   const auto available=window ? window->GetDVOutputCapabilities(nullptr, true) : DVBRIDGE::OutputCapabilities{};
   // Global preferences use hardware capabilities, not the current or previous film.
-  if ((!menu && !hdr10Menu && !hlgMenu) ||
+  if ((!menu && !hdr10Menu && !hlgMenu && !sdrMenu) ||
       (!caps.sourceKnown && !data.transaction.identity.Valid()))
     caps=available;
   // A failed frame or disabled import does not remove reusable output capabilities.
@@ -591,7 +593,8 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
       static_cast<int>(DVBRIDGE::HDR10SourceMode::HDR10PlusPassthrough);
   for(auto& option : list)
   {
-    const int mode=hlgSource ? (option.value==2 ? DVBRIDGE_MODE_SDR :
+    const int mode=sdrSource ? (option.value==1 ? DVBRIDGE_MODE_HDR10_BASIC :
+        option.value==2 ? DVBRIDGE_MODE_STANDARD : DVBRIDGE_MODE_DISABLED) : hlgSource ? (option.value==2 ? DVBRIDGE_MODE_SDR :
         (hlgMenu ? option.value==0 : option.value==1) ? DVBRIDGE_MODE_STANDARD : DVBRIDGE_MODE_DISABLED) : hdr10PlusMenu ? (option.value>=0 && option.value<int(std::size(hdr10PlusMenuModes)) ? hdr10PlusMenuModes[option.value] : 0) :
         hdr10Menu ? (option.value>=0 && option.value<int(std::size(hdr10MenuModes)) ? hdr10MenuModes[option.value] : 0) :
         hdr10Source ? (option.value==1 || option.value==3 ? 1 : option.value==2 ? 4 : option.value==4 ? 7 : 0) :
@@ -600,7 +603,15 @@ void CSettingConditions::DVOutputOptions(const std::shared_ptr<const CSetting>& 
         (option.value==0 ? 1 : option.value==1 ? 2 : option.value==3 || option.value==5 ? 4 : option.value==4 ? 5 : option.value==6 ? 7 : option.value==7 ? 8 : 0);
     auto reason=DVBRIDGE::OutputReason::None;
     const bool guided = hdr10PlusSource && (hdr10PlusMenu ? option.value==0 : option.value==3);
-    if (hdr10PlusSource && option.value == nativeHDR10PlusChoice && !caps.hdr10plus)
+    if (sdrSource)
+    {
+      auto sdrCaps=caps;
+      if (!sdrMenu) sdrCaps.isSDR=true;
+      auto sdrPreferences=preferences;
+      sdrPreferences.sdrSource=static_cast<DVBRIDGE::SDRSourceMode>(option.value);
+      reason=DVBRIDGE::SelectSDRExpansionOutput(sdrPreferences,sdrCaps).reason;
+    }
+    else if (hdr10PlusSource && option.value == nativeHDR10PlusChoice && !caps.hdr10plus)
       reason=DVBRIDGE::OutputReason::NoHDR10PlusTransport;
     else if (mode)
     {

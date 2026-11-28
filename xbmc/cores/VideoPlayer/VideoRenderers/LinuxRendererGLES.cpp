@@ -39,6 +39,7 @@
 #include "cores/DataCacheCore.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/DVOutputSettings.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/HDR10SourceType.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/SDRSourceType.h"
 #ifdef CB1_HAS_HDR10_AI
 #include "cores/VideoPlayer/DVDCodecs/Video/HDR10AIBuffers.h"
 #endif
@@ -246,9 +247,9 @@ DVBRIDGE::HDR10SourceMode SoftwareHDR10AIMode(StreamHdrType type)
   return DVBRIDGE::hdr10PlaybackMode.load();
 }
 
-bool SoftwareHLG8(const VideoPicture& picture)
+bool SoftwarePlanarRed8(const VideoPicture& picture)
 {
-  if (picture.videoBuffer->GetFormat() != AV_PIX_FMT_YUV420P || !picture.IsLimitedHLG8())
+  if (picture.videoBuffer->GetFormat() != AV_PIX_FMT_YUV420P || !(picture.IsLimitedHLG8() || DVBRIDGE::IsSDRExpansionSource(picture)))
     return false;
   unsigned int major, minor;
   CServiceBroker::GetRenderSystem()->GetRenderVersion(major, minor);
@@ -259,7 +260,7 @@ unsigned SoftwareHDR10AIBufferCount(const VideoPicture& picture, float fps, unsi
 {
   const auto format = picture.videoBuffer->GetFormat();
   const bool planar = format == AV_PIX_FMT_YUV420P10LE || format == AV_PIX_FMT_YUV444P10LE ||
-      SoftwareHLG8(picture);
+      SoftwarePlanarRed8(picture);
   const bool supported = planar && orientation == 0 && !picture.doviSourceInfo.profile &&
       picture.stereoMode.empty() && picture.iWidth <= 3840 && picture.iHeight <= 2160;
   const auto mode = SoftwareHDR10AIMode(picture.hdrType);
@@ -287,7 +288,7 @@ bool CLinuxRendererGLES::Configure(const VideoPicture& picture, float fps,
             picture.color_range == 1 ? "full" : "limited");
   m_format = picture.videoBuffer->GetFormat();
 #ifdef CB1_HAS_HDR10_AI
-  m_planarHLG8 = SoftwareHLG8(picture);
+  m_planarRed8 = SoftwarePlanarRed8(picture);
 #endif
 
   // CPU-upload renderer: HWACCEL pix_fmts (e.g. AV_PIX_FMT_DRM_PRIME) have no host planes.
@@ -461,7 +462,7 @@ bool CLinuxRendererGLES::ConfigChanged(const VideoPicture &picture)
 
 #ifdef CB1_HAS_HDR10_AI
   // Kodi can rebuild the queue when Quick Switch first enables analysis.
-  return SoftwareHLG8(picture) != m_planarHLG8 ||
+  return SoftwarePlanarRed8(picture) != m_planarRed8 ||
       SoftwareHDR10AIBufferCount(picture, m_fps, m_renderOrientation) > m_softwareAIBuffers;
 #else
   return false;
@@ -1577,7 +1578,9 @@ bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& lay
   const auto& source=*buffer.doviSourcePicture;
   const bool hdr10 = !source.doviSourceInfo.profile && source.doviSourceBinding.Valid() &&
       DVBRIDGE::IsHDR10Family(source.hdrType);
-  if (!hdr10 && (!buffer.doviMetadata.Data() || buffer.doviPts==DVD_NOPTS_VALUE ||
+  const bool sdr = DVBRIDGE::IsSDRExpansionSource(source) && source.doviSourceBinding.Valid();
+  const bool plain = hdr10 || sdr;
+  if (!plain && (!buffer.doviMetadata.Data() || buffer.doviPts==DVD_NOPTS_VALUE ||
       !std::isfinite(buffer.doviPts))) return false;
   if (m_sourceWidth<=0 || m_sourceWidth>3840 || m_sourceHeight<=0 || m_sourceHeight>2160)
     return false;
@@ -1585,7 +1588,7 @@ bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& lay
   {
 #ifdef CB1_HAS_HDR10_AI
     case AV_PIX_FMT_YUV420P:
-      if (!hdr10 || !m_planarHLG8 || !source.IsLimitedHLG8()) return false;
+      if (!m_planarRed8 || !(sdr || (hdr10 && source.IsLimitedHLG8()))) return false;
       layer.layout=DVBRIDGE_YUV420P8;
       break;
 #endif
@@ -1596,11 +1599,11 @@ bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& lay
   layer.width=m_sourceWidth; layer.height=m_sourceHeight;
   layer.scalingMethod=SelectScalingMethod();
   layer.autoScalingMethod=AutoUpscalingOverride();
-  layer.pts=hdr10 ? source.pts / DVD_TIME_BASE : buffer.doviPts;
-  layer.binding=hdr10 ? source.doviSourceBinding : buffer.doviMetadata.Binding();
-  if (!std::isfinite(layer.pts) || (hdr10 && (source.pts==DVD_NOPTS_VALUE ||
+  layer.pts=plain ? source.pts / DVD_TIME_BASE : buffer.doviPts;
+  layer.binding=plain ? source.doviSourceBinding : buffer.doviMetadata.Binding();
+  if (!std::isfinite(layer.pts) || (plain && (source.pts==DVD_NOPTS_VALUE ||
       source.doviSourcePts==AV_NOPTS_VALUE))) return false;
-  if (hdr10)
+  if (plain)
   {
     layer.fullRange=source.color_range!=0;
     if (source.hasDisplayMetadata && source.displayMetadata.has_luminance)
@@ -1616,6 +1619,10 @@ bool CLinuxRendererGLES::BuildDVBridgeLayer(int index, CDVBridgeGLES::Layer& lay
   layer.sourceSideData=buffer.doviSourcePicture->sourceSideData;
   layer.sourceSerial=layer.sourceSideData ? layer.sourceSideData->Serial() : 0;
   layer.hdr10PlusSource = source.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS;
+  layer.sdrInput = sdr;
+  layer.sdrMatrix = source.color_space;
+  layer.sdrPrimaries = source.color_primaries;
+  layer.sdrTransfer = source.color_transfer;
   layer.hlg = source.hdrType == StreamHdrType::HDR_TYPE_HLG;
   layer.chromaLocation=buffer.doviSourcePicture->chroma_position;
   for (int p=0;p<3;++p)
@@ -2544,7 +2551,7 @@ bool CLinuxRendererGLES::UploadPlanarYUVTexture(int source)
 
   bool useRedTextures = im->bpp == 2;
 #ifdef CB1_HAS_HDR10_AI
-  useRedTextures |= m_planarHLG8;
+  useRedTextures |= m_planarRed8;
 #endif
   if (useRedTextures)
   {
@@ -2694,7 +2701,7 @@ bool CLinuxRendererGLES::CreatePlanarYUVTexture(int index)
 #endif
       }
 #ifdef CB1_HAS_HDR10_AI
-      else if (m_planarHLG8)
+      else if (m_planarRed8)
       {
         glTexImage2D(m_textureTarget, 0, GL_R8, plane.texwidth, plane.texheight, 0, GL_RED,
                      GL_UNSIGNED_BYTE, nullptr);

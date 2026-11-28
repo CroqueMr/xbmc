@@ -118,6 +118,10 @@ public:
     uint64_t sourceSerial{};
     bool fullRange{};
     bool hlg{};
+    bool sdrInput{};
+    AVColorSpace sdrMatrix{AVCOL_SPC_UNSPECIFIED};
+    AVColorPrimaries sdrPrimaries{AVCOL_PRI_UNSPECIFIED};
+    AVColorTransferCharacteristic sdrTransfer{AVCOL_TRC_UNSPECIFIED};
     bool hdr10PlusSource{};
     pl_hdr_metadata hdr{};
     AVChromaLocation chromaLocation{AVCHROMA_LOC_UNSPECIFIED};
@@ -216,6 +220,9 @@ public:
   // GUI or subtitles will cover the next picture: send a full-raster L5.
   void SetOverlayVisible(bool visible);
   bool SupportsMode(dvbridge_mode mode) const { return dvbridge_renderer_supports_mode(m_renderer, mode); }
+#ifdef CB1_HAS_HDR10_AI
+  bool SupportsSDRExpansion(bool dv) const { return dvbridge_renderer_supports_sdr_expansion(m_renderer, dv); }
+#endif
   bool SupportsHDR10AI(dvbridge_mode mode) const { return dvbridge_renderer_supports_hdr10_ai(m_renderer, mode); }
   bool HasRenderer() const { return m_renderer != nullptr; }
   dvbridge_mode EffectiveMode() const { return m_effectiveMode; }
@@ -414,5 +421,7 @@ private:
   bool m_prepared = false;
   bool m_packed = false;
   unsigned m_pendingInfo = 0;
+  bool m_pendingExpansion{};
+  std::array<unsigned,6> m_pendingExpansionL1L3{};
   unsigned int m_framebuffer = 0;
 };

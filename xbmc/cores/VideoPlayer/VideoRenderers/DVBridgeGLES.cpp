@@ -111,6 +111,26 @@ bool ImportDVLayer(dvbridge_gl_frame* frame, pl_gpu gpu, const CDVBridgeGLES::La
   if (!dvbridge_gl_frame_import(frame,gpu,layer.layout,layer.width,layer.height,layer.planes))
     return false;
   dvbridge_gl_frame_set_chroma(frame,SourceChroma(layer.chromaLocation,layer.sourceInfo.profile));
+  if (layer.sdrInput)
+  {
+    auto& color=frame->frame.color;
+    auto& repr=frame->frame.repr;
+    color.hdr={};
+    color.primaries=layer.sdrPrimaries==AVCOL_PRI_BT2020 ? PL_COLOR_PRIM_BT_2020 :
+        layer.sdrPrimaries==AVCOL_PRI_SMPTE170M ? PL_COLOR_PRIM_BT_601_525 :
+        layer.sdrPrimaries==AVCOL_PRI_BT470BG ? PL_COLOR_PRIM_BT_601_625 : PL_COLOR_PRIM_BT_709;
+    color.transfer=layer.sdrTransfer==AVCOL_TRC_GAMMA22 ? PL_COLOR_TRC_GAMMA22 :
+        layer.sdrTransfer==AVCOL_TRC_GAMMA28 ? PL_COLOR_TRC_GAMMA28 :
+        layer.sdrTransfer==AVCOL_TRC_IEC61966_2_1 ? PL_COLOR_TRC_SRGB : PL_COLOR_TRC_BT_1886;
+    repr.sys=layer.sdrMatrix==AVCOL_SPC_BT2020_NCL ? PL_COLOR_SYSTEM_BT_2020_NC :
+        layer.sdrMatrix==AVCOL_SPC_BT709 ? PL_COLOR_SYSTEM_BT_709 :
+        layer.sdrMatrix==AVCOL_SPC_UNSPECIFIED && layer.sdrPrimaries==AVCOL_PRI_BT2020 ?
+        PL_COLOR_SYSTEM_BT_2020_NC :
+        layer.sdrMatrix==AVCOL_SPC_UNSPECIFIED && layer.sdrPrimaries==AVCOL_PRI_BT709 ?
+        PL_COLOR_SYSTEM_BT_709 : PL_COLOR_SYSTEM_BT_601;
+    repr.levels=layer.fullRange ? PL_COLOR_LEVELS_FULL : PL_COLOR_LEVELS_LIMITED;
+    return true;
+  }
   if (!layer.sourceInfo.profile)
   {
     frame->frame.repr.sys=PL_COLOR_SYSTEM_BT_2020_NC;
@@ -1182,6 +1202,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareHDR10AIFrame(const Layer& base,
   m_context->SetSpatialMethod(m_spatialMethod, policy.mode == DVBRIDGE_MODE_MASTER_REFERENCE);
   m_context->Retain(base.lease);
   policy.revision = prediction.id.revision;
+  m_pendingExpansion=false;
   m_live = m_advanced = m_aiFrame = true;
   m_sourceHLG = base.hlg;
   // Attempt state may replace geometry/settings and touch the accepted output.
@@ -2091,9 +2112,11 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   DVBRIDGE::ObserveDiagnostic(base.binding.stream,base.binding.picture,base.binding.revision,
       preferences.revision,"prepare-entry",preferences.output != DVBRIDGE::OutputMode::Disabled,false);
   if (m_submission.asyncEligible) m_submission = {};
+  const bool expansion = base.sdrInput && selected && !metadata.Data() && !enhancement &&
+      (selected->mode == DVBRIDGE_MODE_HDR10_BASIC || selected->mode == DVBRIDGE_MODE_STANDARD);
   const bool plainSDR = selected && selected->mode == DVBRIDGE_MODE_SDR &&
       base.sourceInfo.profile == 0 && !metadata.Data() && !enhancement;
-  if (!base.binding.Valid() || (!plainSDR && base.binding != metadata.Binding()) ||
+  if (!base.binding.Valid() || (!plainSDR && !expansion && base.binding != metadata.Binding()) ||
       !std::isfinite(base.pts) ||
       (enhancement && (enhancement->binding != base.binding ||
           !std::isfinite(enhancement->pts) || enhancement->pts != base.pts)))
@@ -2116,8 +2139,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
       (policy.mode == DVBRIDGE_MODE_HDR10_EXPERT || policy.mode == DVBRIDGE_MODE_ENHANCED_DV) && !preferences.ProfileValid(policy.mode))
     return FrameStatus::Unsupported;
   // Capture the proven observation key before geometry or refresh rekeys work.
-  dvbridge_renderer_set_l2_trims_disabled(m_renderer, preferences.L2TrimsDisabled(policy.mode));
-  auto cmv40 = preferences.CMv40Options(policy.mode);
+  dvbridge_renderer_set_l2_trims_disabled(m_renderer, preferences.L2TrimsDisabled(policy.mode, expansion));
+  auto cmv40 = preferences.CMv40Options(policy.mode, expansion);
   if (policy.mode == DVBRIDGE_MODE_PLAYER_LED) cmv40.tv_peak = policy.tv.peak_nits;
   dvbridge_renderer_set_cmv40(m_renderer, &cmv40);
   const auto admissionIdentity = SelectionIdentity(base.binding, preferences,
@@ -2221,6 +2244,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_aiFrame = m_aiOutputAccepted = false;
   m_sourceHLG = base.hlg;
 #endif
+  m_pendingExpansion = expansion;
   m_guiComposed = false;
   m_pendingOverlayRevision = m_nativeOverlayRevision;
   m_pendingOverlayVisible = m_overlayVisible;
@@ -2245,7 +2269,8 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   m_pendingSDRHDRInputUsed = 0;
   m_pendingSDRHDRInputValues = {};
   m_pendingIdentity = {base.binding.stream,base.binding.picture,revision};
-  const auto requested = !base.sourceInfo.profile && policy.mode == DVBRIDGE_MODE_SDR ?
+  const auto requested = expansion ? preferences.SDRExpansionPolicy() :
+      !base.sourceInfo.profile && policy.mode == DVBRIDGE_MODE_SDR ?
       preferences.HDR10Policy() : preferences.Policy();
   DVBRIDGE::StreamTelemetry::NativeRequest({base.binding.stream,base.binding.picture,revision},
       DVBRIDGE::PolicyCode(requested),DVBRIDGE::PolicyCode(policy),
@@ -2279,7 +2304,7 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
         CDVPlaybackInfo::RequestedPolicy(admission.requested),CDVPlaybackInfo::RequestedPolicy(admission.effective),
         CDVPlaybackInfo::Reason(admission.reason));
   }
-  m_advanced = policy.mode == DVBRIDGE_MODE_SDR || policy.mode == DVBRIDGE_MODE_HDR10_EXPERT ||
+  m_advanced = expansion || policy.mode == DVBRIDGE_MODE_SDR || policy.mode == DVBRIDGE_MODE_HDR10_EXPERT ||
       policy.mode == DVBRIDGE_MODE_ENHANCED_DV || policy.mode == DVBRIDGE_MODE_PLAYER_LED;
   m_context->Retain(base.lease, enhancement ? enhancement->lease : nullptr);
   if (!m_advanced)
@@ -2316,6 +2341,65 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
   FrameStatus result = FrameStatus::Failed;
   std::string sdrAudit;
   m_prepared = m_packed = m_direct = false;
+#ifdef CB1_HAS_HDR10_AI
+  if (expansion)
+  {
+    const bool dv = policy.mode == DVBRIDGE_MODE_STANDARD;
+    pl_frame pq{};
+    cb1_ai_result description{};
+    const auto status = dvbridge_prepare_sdr_expansion(m_renderer,&m_pendingIdentity,
+        &bl.frame,base.pts,dv,&pq,dv ? &description : nullptr);
+    if (status == CB1_AI_READY)
+    {
+      if (dv)
+      {
+        const auto& raw=description.raw;
+        m_pendingExpansionL1L3={raw.l1_min,raw.l1_max,raw.l1_avg,raw.l3_min,raw.l3_max,raw.l3_avg};
+        const bool fullRaster=!geometry.x && !geometry.y &&
+            geometry.width==geometry.target_width && geometry.height==geometry.target_height;
+        m_dvPolicyActive=true;
+        bool rendered=false;
+        if (allowPacked && m_directUsable && m_scanout &&
+            (fullRaster || (preferences.optimizedDV && geometry.width==geometry.source_width &&
+             geometry.height==geometry.source_height)))
+        {
+          rendered=dvbridge_render_hdr10_ai_packed_overlay(m_renderer,&policy,&description,&pq,
+              &geometry,m_scanout,m_scanoutFramebuffer,true,
+              m_nativeOverlayEnabled ? &m_nativeOverlay : nullptr);
+          m_direct=rendered;
+          if (m_direct && m_nativeOverlayEnabled) m_nativeOverlayPrimed=true;
+          if (!rendered)
+          {
+            m_directUsable=m_asyncEligible=false;
+            // Packed submission can have partially queued GPU work. Retry only
+            // after the existing source and policy fences have retired.
+            result=FrameStatus::Busy;
+          }
+        }
+        else
+          rendered=dvbridge_render_hdr10_ai_rgb(m_renderer,&policy,&description,&pq,&geometry);
+        m_pending=rendered;
+        if (rendered) result=FrameStatus::Pending;
+      }
+      else
+      {
+        m_prepared=dvbridge_render_expanded_hdr10(m_renderer,&policy,&m_pendingIdentity,geometry);
+        m_pending=m_prepared;
+        result=m_prepared ? FrameStatus::Ready : FrameStatus::Failed;
+      }
+    }
+    else if (status==CB1_AI_PENDING)
+      result=FrameStatus::Busy;
+    if (!m_context->FenceLastUse())
+    {
+      Cancel();
+      result=FrameStatus::Failed;
+    }
+    else if (m_pending && dv && PollReady())
+      result=FrameStatus::Ready;
+  }
+  else
+#endif
   if (policy.mode == DVBRIDGE_MODE_PLAYER_LED)
   {
     m_prepared = PreparePlayerLed(bl.frame, metadata, geometry, policy, base.pts, elPts);
@@ -2433,7 +2517,10 @@ CDVBridgeGLES::FrameStatus CDVBridgeGLES::PrepareFrame(const Layer& base, const 
     dvbridge_color color{};
     const bool fel = enhancement && dvbridge_map_color(&color,metadata.Data(),metadata.Size(),true) &&
         color.dovi.nlq_active;
-    CaptureMetadata(metadata,fel);
+    if (expansion)
+      m_pendingInfo = policy.mode == DVBRIDGE_MODE_STANDARD ? CDVPlaybackInfo::HDMI : CDVPlaybackInfo::HDR10;
+    else
+      CaptureMetadata(metadata,fel);
   }
   if (result == FrameStatus::Ready) PreparedAudit(sdrAudit);
   if (result == FrameStatus::Failed) { m_failedIdentity = m_pendingIdentity; Failure("policy-prepare"); }
@@ -3495,7 +3582,8 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
   const int displayGamut = !hdrOutput ? 0 : m_effectiveMode == DVBRIDGE_MODE_SDR ?
       (hdrOutput->container.primaries == PL_COLOR_PRIM_BT_2020 ?
           DVBRIDGE_GAMUT_BT2020 : DVBRIDGE_GAMUT_BT709) : hdrOutput->policy.tv.gamut;
-  const float peak = m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS ? 992.0f :
+  const float peak = m_pendingExpansion ? (m_effectiveMode == DVBRIDGE_MODE_STANDARD ? 600.0f : 1000.0f) :
+      m_effectiveMode == DVBRIDGE_MODE_HDR10PLUS ? 992.0f :
       hdrOutput ? hdrOutput->nominal_target.hdr.max_luma :
       m_advanced && m_effectiveMode == DVBRIDGE_MODE_ENHANCED_DV ? static_cast<float>(m_requested.peak) :
       m_hdr10 && m_hdr10Session ? m_hdr10Session->target.hdr.max_luma : 0.0f;
@@ -3551,9 +3639,12 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
 #endif
   DVBRIDGE::StreamSnapshot::Output output{m_pendingInfo,m_outputBits,peak,
       m_hdr10 && !m_advanced && m_hdr10Session && m_hdr10Session->output.level6};
-  output.requested = DVBRIDGE::PolicyCode(m_requested.Policy());
+  output.requested = DVBRIDGE::PolicyCode(m_pendingExpansion ? m_requested.SDRExpansionPolicy() : m_requested.Policy());
+  output.sdrExpanded=m_pendingExpansion;
   output.felUpscaling = submission.felBackend == 3 ? 2 : submission.felBackend == 2 ? 0 : submission.felBackend == 1 ? 1 : -1;
 #ifdef CB1_HAS_HDR10_AI
+  if (m_pendingExpansion && m_effectiveMode == DVBRIDGE_MODE_STANDARD)
+    output.aiL1L3=m_pendingExpansionL1L3;
   if (m_aiFrame)
   {
     output.requested=static_cast<int>(m_requested.HDR10Policy().mode);
@@ -3685,7 +3776,7 @@ bool CDVBridgeGLES::Presented(bool success, const Submission& submission)
     {
       output.authoredLegacy=snapshot.output_generation==DVBRIDGE_ETSI_LEGACY_LITERAL;
 #ifdef CB1_HAS_HDR10_AI
-      if (output.hdr10AI)
+      if (output.hdr10AI || output.sdrExpanded)
       {
         output.emittedL1Known=true;
         std::copy(std::begin(snapshot.l1),std::end(snapshot.l1),output.emittedL1.begin());

@@ -19,12 +19,36 @@ struct OutputSelection
   unsigned lldvRgbScanoutBits{8};
 };
 
+inline OutputSelection SelectSDRExpansionOutput(const OutputPreferences& preferences,
+                                                 const OutputCapabilities& caps)
+{
+  const auto policy = preferences.SDRExpansionPolicy();
+  if (preferences.sdrSource == SDRSourceMode::Native)
+    return {};
+  if (!caps.isSDR || caps.stereoSource)
+    return {OutputRoute::Vanilla, policy, OutputReason::SourceIneligible};
+  const bool dv = preferences.sdrSource == SDRSourceMode::DolbyVision;
+  if (!dv && caps.HDR10DepthLimited())
+    return {OutputRoute::Vanilla, policy, OutputReason::HDR10LinkDepthTooLow};
+  if (!(dv ? caps.nativeDV : caps.hdr10))
+    return {OutputRoute::Vanilla, policy, dv ? OutputReason::NoDVTransport : OutputReason::NoHDR10Transport};
+  if (!caps.processingKnown)
+    return {OutputRoute::Vanilla, policy, OutputReason::ProcessingPending};
+  const auto& admission = caps.sdrExpansion[dv ? 1 : 0];
+  if (!admission.usable)
+    return {OutputRoute::Vanilla, policy, admission.reason == OutputReason::None ?
+        OutputReason::NoGPUProcessing : admission.reason};
+  return {dv ? OutputRoute::NativeDV : OutputRoute::HDR10, policy, OutputReason::None};
+}
+
 inline OutputSelection SelectOutput(const OutputPreferences& preferences,
                                     const OutputCapabilities& caps)
 {
   OutputSelection result;
   if (caps.stereoSource)
     return {OutputRoute::Vanilla, {}, OutputReason::SourceIneligible};
+  if (caps.sourceKnown && caps.isSDR)
+    return SelectSDRExpansionOutput(preferences, caps);
   if (caps.sourceKnown && (caps.isHLG || caps.isHDR10) && !caps.isDV)
   {
     const auto source = caps.isHLG ? preferences.HLGMode() : preferences.HDR10Mode(caps.hdr10PlusSource);

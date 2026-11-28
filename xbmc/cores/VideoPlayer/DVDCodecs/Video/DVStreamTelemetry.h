@@ -58,6 +58,7 @@ struct StreamSnapshot
     unsigned width{}, height{};
     float refresh{};
     bool authoredLegacy{};
+    bool sdrExpanded{};
     std::array<double,3> rawStatistics{};
     float rawSum{};
     uint32_t sampleCount{};
@@ -86,6 +87,7 @@ struct StreamSnapshot
     {
       if (!flags) return "";
       if (lldv) return cb1_circuit_version(CB1_DV_DV_LLDV);
+      if (sdrExpanded) return cb1_circuit_version(effective==1 ? CB1_SDR_DV : CB1_SDR_HDR10);
       if (effective==8)
         return cb1_circuit_version(sdrHLGSource ? CB1_HLG_SDR : sdrHDRSource ? CB1_HDR10_SDR : CB1_DV_SDR);
       if (hdr10AI)

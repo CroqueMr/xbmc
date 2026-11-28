@@ -117,7 +117,7 @@ protected:
   bool m_aiOutputPending{false};
   bool m_aiFrameRendered{true};
   bool m_preserveHLGOutput{false};
-  bool m_planarHLG8{false};
+  bool m_planarRed8{false};
 #endif
 
   bool Render(unsigned int flags, int renderBuffer);

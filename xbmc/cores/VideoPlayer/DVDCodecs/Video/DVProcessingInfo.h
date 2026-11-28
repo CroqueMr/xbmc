@@ -23,6 +23,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   accepted.format=output.format; accepted.width=output.width; accepted.height=output.height;
   accepted.refresh=output.refresh; accepted.fallback=output.fallback;
   accepted.authoredLegacy=output.authoredLegacy;
+  accepted.sdrExpanded=output.sdrExpanded;
   accepted.reason=static_cast<VideoProcessingReason>(output.reason);
   accepted.minimumLinkBits=output.minimumLinkBits;
   accepted.creativeKnown=output.creativeKnown; accepted.creativeApplied=output.creativeApplied;
@@ -73,6 +74,7 @@ inline VideoProcessingInfo NativeProcessingInfo(const StreamSnapshot& source)
   info.transaction.reason=static_cast<VideoProcessingReason>(pending.reason);
   info.transaction.retryCount=pending.retryCount; info.transaction.restored=pending.restored;
   info.transaction.stage=pending.stage;
+  info.transaction.sdrExpanded=pending.capabilities.isSDR;
   info.transaction.hdr10AI=(pending.capabilities.isHDR10 || pending.capabilities.isHLG) &&
       pending.effective!=8 && !pending.capabilities.isDV;
   info.referenceWarning=source.referenceWarning;

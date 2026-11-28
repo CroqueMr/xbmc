@@ -91,7 +91,7 @@ StreamHdrType CDVPlaybackModes::SourceType()
   VideoStreamInfo source;
   if (player->IsPlayingVideo()) player->GetVideoStreamInfo(CURRENT_STREAM,source);
   if (!source.valid || (!source.stereoMode.empty() && source.stereoMode!="mono"))
-    return StreamHdrType::HDR_TYPE_NONE;
+    return StreamHdrType::HDR_TYPE_COUNT;
   return source.hdrType;
 }
 
@@ -168,9 +168,12 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
   const bool hdr10Source=nativeSource==StreamHdrType::HDR_TYPE_HDR10 ||
                          nativeSource==StreamHdrType::HDR_TYPE_HDR10PLUS;
   const bool hlgSource=nativeSource==StreamHdrType::HDR_TYPE_HLG;
-  if (!hdr10Source && !hlgSource && nativeSource!=StreamHdrType::HDR_TYPE_DOLBYVISION) return false;
-  constexpr Choice hlgChoices[]={{1,0,40867},{0,0,41311},{2,0,41130}};
   const auto source=DVBRIDGE::StreamTelemetry::Read().transaction.capabilities;
+  const bool sdrSource=!settingsMenu && nativeSource==StreamHdrType::HDR_TYPE_NONE &&
+      source.sourceKnown && source.isSDR && !source.stereoSource;
+  if (!sdrSource && !hdr10Source && !hlgSource && nativeSource!=StreamHdrType::HDR_TYPE_DOLBYVISION) return false;
+  constexpr Choice hlgChoices[]={{1,0,40867},{0,0,41311},{2,0,41130}};
+  constexpr Choice sdrChoices[]={{0,0,41511},{1,0,40822},{2,0,40867}};
 #ifdef CB1_HAS_HDR10_AI
   constexpr Choice hdr10Choices[]={{1,0,40867},{2,0,40868},{0,0,41310},{4,0,41130}};
   constexpr Choice hdr10PlusChoices[]={{3,0,40970},{5,0,41014},{0,0,40866},{4,0,41130}};
@@ -178,10 +181,10 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
   constexpr Choice hdr10Choices[]={{0,0,41310}};
   constexpr Choice hdr10PlusChoices[]={{5,0,41014},{0,0,40866}};
 #endif
-  const Choice* choices=hlgSource ? hlgChoices : hdr10PlusSource ? hdr10PlusChoices : hdr10Source ? hdr10Choices : dvChoices;
-  const int count=hlgSource ? std::size(hlgChoices) : hdr10PlusSource ? std::size(hdr10PlusChoices) : hdr10Source ? std::size(hdr10Choices) : std::size(dvChoices);
-  const char* sourceSetting=hlgSource ? "dvbridge.hlgsource" : hdr10PlusSource ? "dvbridge.hdr10plussource" : "dvbridge.hdr10source";
-  const auto choiceSetting=std::make_shared<CSettingInt>(settingsMenu ? "dvbridge.playback" : hlgSource ? "dvbridge.hlgplaybackchoice" : hdr10PlusSource ? "dvbridge.hdr10plusplaybackchoice" :
+  const Choice* choices=sdrSource ? sdrChoices : hlgSource ? hlgChoices : hdr10PlusSource ? hdr10PlusChoices : hdr10Source ? hdr10Choices : dvChoices;
+  const int count=sdrSource ? std::size(sdrChoices) : hlgSource ? std::size(hlgChoices) : hdr10PlusSource ? std::size(hdr10PlusChoices) : hdr10Source ? std::size(hdr10Choices) : std::size(dvChoices);
+  const char* sourceSetting=sdrSource ? "dvbridge.sdrsource" : hlgSource ? "dvbridge.hlgsource" : hdr10PlusSource ? "dvbridge.hdr10plussource" : "dvbridge.hdr10source";
+  const auto choiceSetting=std::make_shared<CSettingInt>(settingsMenu ? "dvbridge.playback" : sdrSource ? "dvbridge.sdrplaybackchoice" : hlgSource ? "dvbridge.hlgplaybackchoice" : hdr10PlusSource ? "dvbridge.hdr10plusplaybackchoice" :
       hdr10Source ? "dvbridge.hdr10playbackchoice" : "dvbridge.playbackchoice");
   {
     auto preferences=DVBRIDGE::FrameOutputSettings(hdr10PlusSource);
@@ -203,7 +206,9 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
     {
       options.emplace_back(strings.Get(choices[i].label),i);
       const auto& choice=choices[i];
-      if (hlgSource ? (int(preferences.hlgSource)==choice.output) :
+      if (sdrSource ? ((video.output.flags && video.output.sdrExpanded ?
+          (video.outputType==VideoOutputType::DolbyVision ? 2 : 1) : 0)==choice.output) :
+          hlgSource ? (int(preferences.hlgSource)==choice.output) :
           hdr10PlusSource ? (int(preferences.hdr10PlusSource)==choice.output) :
           hdr10Source ? (int(preferences.hdr10Source)==choice.output) :
           (int(currentOutput)==choice.output &&
@@ -220,7 +225,7 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
     if (!settingsMenu)
     {
       cb1Active = video.output.flags != 0;
-      dialog->SetProperty("CB1.SwitchInput", hlgSource ? "HLG" : hdr10PlusSource ? "HDR10+" : hdr10Source ? "HDR10" : "Dolby Vision");
+      dialog->SetProperty("CB1.SwitchInput", sdrSource ? "SDR" : hlgSource ? "HLG" : hdr10PlusSource ? "HDR10+" : hdr10Source ? "HDR10" : "Dolby Vision");
       const char* output = nullptr;
       if (video.outputType)
       {
@@ -347,7 +352,8 @@ bool CDVPlaybackModes::ShowMenu(bool settingsMenu)
         if (!DVBRIDGE::activeOutputSelectors)
           DVBRIDGE::activeOutputSelectors=DVBRIDGE::ReadDefaultOutputSelectors();
         auto& active=*DVBRIDGE::activeOutputSelectors;
-        if (hlgSource)
+        if (sdrSource) active.sdrSource=static_cast<DVBRIDGE::SDRSourceMode>(choice.output);
+        else if (hlgSource)
         {
           const auto next = static_cast<DVBRIDGE::HLGSourceMode>(choice.output);
           reprime = next == DVBRIDGE::HLGSourceMode::ReferenceDV && active.hlgSource != next;

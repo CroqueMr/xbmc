@@ -11,6 +11,7 @@
 #ifdef CB1_HAS_HDR10_AI
 #include "HDR10AIBuffers.h"
 #include "HDR10SourceType.h"
+#include "SDRSourceType.h"
 #endif
 
 #include "DVDCodecs/DVDCodecs.h"
@@ -1928,9 +1929,6 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
     }
   }
 
-#ifdef CB1_HAS_HDR10_AI
-  BindHDR10AISource(*pVideoPicture);
-#endif
   if (pVideoPicture->iRepeatPicture)
     pVideoPicture->dts = DVD_NOPTS_VALUE;
   else
@@ -1972,6 +1970,9 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
     else
       pVideoPicture->color_primaries = AVCOL_PRI_BT470BG;
   }
+#ifdef CB1_HAS_HDR10_AI
+  BindHDR10AISource(*pVideoPicture);
+#endif
 
   return true;
 }
@@ -2216,7 +2217,8 @@ unsigned CDVDVideoCodecFFmpeg::GetConvergeCount()
 #ifdef CB1_HAS_HDR10_AI
 void CDVDVideoCodecFFmpeg::BindHDR10AISource(VideoPicture& picture)
 {
-  if (DVBRIDGE::IsHDR10Family(picture.hdrType) && !picture.doviSourceInfo.profile &&
+  if ((DVBRIDGE::IsHDR10Family(picture.hdrType) || DVBRIDGE::IsSDRExpansionSource(picture)) &&
+      !picture.doviSourceInfo.profile &&
       picture.doviSourcePts != AV_NOPTS_VALUE)
     picture.doviSourceBinding = m_dvSourceOwner.NextPicture();
 }

@@ -20,6 +20,7 @@
 #include "ServiceBroker.h"
 #include "cores/VideoSourceSideData.h"
 #include "cores/VideoPlayer/DVDCodecs/Video/HDR10SourceType.h"
+#include "cores/VideoPlayer/DVDCodecs/Video/SDRSourceType.h"
 #include "windowing/gbm/WinSystemGbmGLESContext.h"
 #include <cmath>
 #include <algorithm>
@@ -295,7 +296,9 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   const auto& source = *buffer.doviSourcePicture;
   bool hdr10 = DVBRIDGE::IsHDR10Family(source.hdrType) &&
       source.doviSourceBinding.Valid() && !source.doviSourceInfo.profile;
-  if (!hdr10 && (!buffer.doviMetadata.Data() || buffer.doviPts == DVD_NOPTS_VALUE))
+  const bool sdr = DVBRIDGE::IsSDRExpansionSource(source) && source.doviSourceBinding.Valid();
+  const bool plain = hdr10 || sdr;
+  if (!plain && (!buffer.doviMetadata.Data() || buffer.doviPts == DVD_NOPTS_VALUE))
     return false;
   if (hdr10 && source.hdrType == StreamHdrType::HDR_TYPE_HLG &&
       m_vaapiFourcc == VA_FOURCC_NV12 && !source.IsLimitedHLG8())
@@ -313,10 +316,10 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   layer.width = m_sourceWidth;
   layer.height = m_sourceHeight;
   // AI follows Kodi's repaired presentation timestamps; DV pairing keeps source timestamps.
-  layer.pts = hdr10 ? source.pts / DVD_TIME_BASE : buffer.doviPts;
-  layer.binding = hdr10 ? source.doviSourceBinding : buffer.doviMetadata.Binding();
+  layer.pts = plain ? source.pts / DVD_TIME_BASE : buffer.doviPts;
+  layer.binding = plain ? source.doviSourceBinding : buffer.doviMetadata.Binding();
   if (!std::isfinite(layer.pts) ||
-      (hdr10 && (source.pts == DVD_NOPTS_VALUE || source.doviSourcePts == AV_NOPTS_VALUE)))
+      (plain && (source.pts == DVD_NOPTS_VALUE || source.doviSourcePts == AV_NOPTS_VALUE)))
     return false;
   const auto texture = m_texturePool.Retain(m_vaapiTextures[idx]);
   if (!texture || !buffer.doviSourcePicture) return false;
@@ -325,8 +328,12 @@ bool CRendererVAAPIGLES::BuildDVBridgeLayer(int idx, CDVBridgeGLES::Layer& layer
   layer.sourceSerial = source.sourceSideData ? source.sourceSideData->Serial() : 0;
   layer.hdr10PlusSource = source.hdrType == StreamHdrType::HDR_TYPE_HDR10PLUS;
   layer.chromaLocation = source.chroma_position;
+  layer.sdrInput = sdr;
+  layer.sdrMatrix = source.color_space;
+  layer.sdrPrimaries = source.color_primaries;
+  layer.sdrTransfer = source.color_transfer;
   layer.hlg = source.hdrType == StreamHdrType::HDR_TYPE_HLG;
-  if (hdr10)
+  if (plain)
   {
     layer.fullRange = source.color_range != 0;
     if (source.hasDisplayMetadata && source.displayMetadata.has_luminance)
