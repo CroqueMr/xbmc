@@ -3939,7 +3939,7 @@ bool CWinSystemGbmGLESContext::RenderDVBridge(const CDVBridgeGLES::Layer& layer,
   // A paused final surface is already committed scanout, not a fresh resolve.
   const bool reused = status == CDVBridgeGLES::FrameStatus::Reused;
   m_dvFrame = status == CDVBridgeGLES::FrameStatus::Ready;
-  if (m_dvBridge->PlayerLed() && status == CDVBridgeGLES::FrameStatus::Failed)
+  if ((m_dvBridge->PlayerLed() || layer.sdrInput) && status == CDVBridgeGLES::FrameStatus::Failed)
   {
     m_dvActivating = true;
     RejectDVOutputSurface();
