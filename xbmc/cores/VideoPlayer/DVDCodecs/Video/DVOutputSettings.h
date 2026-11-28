@@ -25,6 +25,7 @@ enum class HDR10SourceMode : int
 };
 
 enum class HLGSourceMode : int { Native = 0, ReferenceDV = 1, SDR = 2 };
+enum class SDRSourceMode : int { Native = 0, HDR10 = 1, DolbyVision = 2 };
 
 // Decoder ingress sees the last complete frame-boundary preference snapshot.
 inline std::atomic<OutputMode> playbackMode{OutputMode::Standard};
@@ -48,6 +49,7 @@ struct OutputPreferences
   HDR10SourceMode hdr10Source{HDR10SourceMode::Native};
   HDR10SourceMode hdr10PlusSource{HDR10SourceMode::Native};
   HLGSourceMode hlgSource{HLGSourceMode::Native};
+  SDRSourceMode sdrSource{SDRSourceMode::Native};
   int sdrPreset{0};
   bool sdrBT2020{};
   double sdrPeak{100}, sdrGamma{2.4}, sdrBlack{0};
@@ -102,6 +104,7 @@ struct OutputPreferences
     return output == other.output && hdr10TransportFallback == other.hdr10TransportFallback &&
         hdr10Source == other.hdr10Source &&
         hdr10PlusSource == other.hdr10PlusSource && hlgSource == other.hlgSource &&
+        sdrSource == other.sdrSource &&
         sdrPreset == other.sdrPreset && sdrBT2020 == other.sdrBT2020 &&
         std::bit_cast<uint64_t>(sdrPeak) == std::bit_cast<uint64_t>(other.sdrPeak) &&
         std::bit_cast<uint64_t>(sdrGamma) == std::bit_cast<uint64_t>(other.sdrGamma) &&
@@ -179,6 +182,14 @@ struct OutputPreferences
       result.tv = {peak, static_cast<dvbridge_panel>(panel), static_cast<dvbridge_gamut>(gamut)};
     return result;
   }
+  dvbridge_policy SDRExpansionPolicy() const
+  {
+    dvbridge_policy result{};
+    result.revision = revision;
+    result.mode = sdrSource == SDRSourceMode::HDR10 ? DVBRIDGE_MODE_HDR10_BASIC :
+        sdrSource == SDRSourceMode::DolbyVision ? DVBRIDGE_MODE_STANDARD : DVBRIDGE_MODE_DISABLED;
+    return result;
+  }
   dvbridge_policy HDR10Policy(bool hdr10Plus = false) const
   {
     return HDR10PolicyFor(HDR10Mode(hdr10Plus));
@@ -214,6 +225,7 @@ struct OutputSelectors
   OutputMode output{OutputMode::Standard};
   HDR10SourceMode hdr10Source{HDR10SourceMode::Native}, hdr10PlusSource{HDR10SourceMode::Native};
   HLGSourceMode hlgSource{HLGSourceMode::Native};
+  SDRSourceMode sdrSource{SDRSourceMode::Native};
   int method{};
   bool hdr10TransportFallback{};
   bool playerLedStartup{};
@@ -225,9 +237,19 @@ struct OutputSelectors
     preferences.hdr10Source=hdr10Source;
     preferences.hdr10PlusSource=hdr10PlusSource;
     preferences.hlgSource=hlgSource;
+    preferences.sdrSource=sdrSource;
   }
 };
 inline std::optional<OutputSelectors> activeOutputSelectors;
+
+// The current file owns its selector. Reading it does not load calibration
+// settings or publish a new processing revision for every ordinary SDR frame.
+inline bool NativeSDRPlayback()
+{
+  std::lock_guard lock(OutputSettingsMutex());
+  return activeOutputSelectors && activeOutputSelectors->sdrSource == SDRSourceMode::Native;
+}
+
 
 // Caller holds OutputSettingsMutex; no selector-setting callbacks take this lock.
 inline OutputSelectors ReadDefaultOutputSelectors()
@@ -250,6 +272,8 @@ inline OutputSelectors ReadDefaultOutputSelectors()
       plus==5 ? HDR10SourceMode::HDR10PlusPassthrough : HDR10SourceMode::Native;
   const int hlg=settings->GetInt("dvbridge.hlgsource");
   if (hlg==1 || hlg==2) result.hlgSource=static_cast<HLGSourceMode>(hlg);
+  const int sdr=settings->GetInt("dvbridge.sdrsource");
+  if (sdr==1 || sdr==2) result.sdrSource=static_cast<SDRSourceMode>(sdr);
   return result;
 }
 

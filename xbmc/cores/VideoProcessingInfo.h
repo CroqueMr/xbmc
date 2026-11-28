@@ -60,7 +60,7 @@ struct VideoProcessingInfo
     VideoProcessingReason reason{VideoProcessingReason::None};
     unsigned retryCount{};
     bool restored{};
-    bool hdr10AI{};
+    bool hdr10AI{}, sdrExpanded{};
   } transaction;
   struct PlayerLed
   {
@@ -96,7 +96,7 @@ struct VideoProcessingInfo
     int creativeStatus{}, creativeReason{};
     bool iptTransport{};
     int felUpscaling{-1};
-    bool hdr10AI{}, emittedL1Known{};
+    bool hdr10AI{}, emittedL1Known{}, sdrExpanded{};
     bool hdr10PlusDV{}, untranslatedCurve{}, untranslatedSaturation{};
     unsigned guidedSourceFields{}, guidedEstimatedFields{};
     std::array<unsigned,6> aiL1L3{};

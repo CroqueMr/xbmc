@@ -32,6 +32,9 @@ struct OutputCapabilities
   int lldvUnavailableLabel{41280};
   uint64_t hdr10MaxBpc{}; // Zero means the HDMI ceiling is unknown.
 
+  bool isSDR{};
+  std::array<ModeAdmission,2> sdrExpansion{}; // HDR10, TV-led DV
+
   bool HDR10DepthLimited() const { return hdr10MaxBpc != 0 && hdr10MaxBpc < 10; }
 };
 }
@@ -93,6 +96,8 @@ struct CDVPlaybackInfo
 
   template<class Output> static const char* Policy(const Output& output)
   {
+    if constexpr (requires { output.sdrExpanded; })
+      if (output.sdrExpanded) return output.flags & HDR10 ? "HDR10 : Rendering" : "Dolby Vision : Rendering";
     if (IsHDR10PlusDV(output)) return "Dolby Vision : Rendering";
     switch (output.effective)
     {
@@ -131,6 +136,8 @@ struct CDVPlaybackInfo
     if (!output.flags) return "Kodi default";
     if constexpr (requires { output.lldv; })
       if (output.lldv) return RequestedPolicy(PlayerLedMode);
+    if constexpr (requires { output.sdrExpanded; })
+      if (output.sdrExpanded) return Policy(output);
     if (IsHDR10PlusDV(output)) return Policy(output);
     std::string mode = output.flags & HDR10 ? Policy(output) :
         output.effective == 6 ? "Dolby Vision : Adaptive HDR Mapping" :

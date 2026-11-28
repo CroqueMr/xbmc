@@ -116,7 +116,7 @@ protected:
   bool m_aiOutputPending{false};
   bool m_aiFrameRendered{true};
   bool m_preserveHLGOutput{false};
-  bool m_planarHLG8{false};
+  bool m_planarRed8{false};
 #endif
   // Returns 0 if scaling is below hqscalers threshold.
   // Otherwise returns the scale factor: < 1.0 = downscale, > 1.0 = upscale.
@@ -265,6 +265,7 @@ protected:
     std::shared_ptr<AVFrame> doviEnhancement;
     DVBRIDGE::SourceBinding doviEnhancementBinding{};
     std::shared_ptr<VideoPicture> doviSourcePicture;
+    std::shared_ptr<VideoPicture> recycledSDRPicture;
     uint64_t informationGeneration{};
 #endif
     double doviPts = DVD_NOPTS_VALUE;

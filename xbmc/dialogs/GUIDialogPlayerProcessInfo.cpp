@@ -396,6 +396,16 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
         std::string(data.blocks[1] ? "L1 max/avg" : "")+
         (data.blocks[3] ? (data.blocks[1] ? "; L3 max/avg" : "L3 max/avg") : "") : "");
     SetProperty("DV.ActivePolicy", actualMode.empty() ? "Kodi : Default" : actualMode);
+    if (active && data.output.sdrExpanded && (data.output.flags & CDVPlaybackInfo::HDMI))
+    {
+      SetProperty("DV.Reconstruction", "Measured L1 / neutral L3");
+      const auto& raw=data.output.aiL1L3;
+      SetProperty("DV.AIL1", StringUtils::Format("{} | {} | {}",raw[0],raw[1],raw[2]));
+      SetProperty("DV.AIL3", StringUtils::Format("{} | {} | {}",raw[3],raw[4],raw[5]));
+      if (data.output.emittedL1Known)
+        SetProperty("DV.OutputL1", StringUtils::Format("{} | {} | {}",
+            data.output.emittedL1[0],data.output.emittedL1[1],data.output.emittedL1[2]));
+    }
     if (active && data.output.hdr10AI)
     {
       const auto& localizer=CServiceBroker::GetResourcesComponent().GetLocalizeStrings();
@@ -472,8 +482,9 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
           (data.transaction.requested || data.transaction.reason!=VideoProcessingReason::None)));
     SetProperty("DV.ProcessingVisible", bool(active) || transaction || data.nativeHDR10PlusFallbackLabel);
     SetProperty("DV.RequestedPolicy", transaction ? PolicyText(CDVPlaybackInfo::RequestedPolicy(data.transaction.requested,
-        data.transaction.hdr10AI)) :
-        active ? PolicyText(CDVPlaybackInfo::RequestedPolicy(data.output.requested,data.output.hdr10AI)) : "");
+        data.transaction.hdr10AI || data.transaction.sdrExpanded)) :
+        active ? PolicyText(data.output.sdrExpanded ? CDVPlaybackInfo::Policy(data.output) :
+            CDVPlaybackInfo::RequestedPolicy(data.output.requested,data.output.hdr10AI)) : "");
     SetProperty("DV.AdmissionReason", transaction ? reasonText(data.transaction.reason) : "");
     SetProperty("DV.AtomicResult", transaction && data.transaction.atomicError ?
         StringUtils::Format("{} / {} / {}",data.transaction.atomicError,
@@ -507,10 +518,10 @@ void CGUIDialogPlayerProcessInfo::RefreshInfo()
     }
     SetProperty("DV.HDR10Policy", hdr10 ? CDVPlaybackInfo::Policy(data.output) : "");
     SetProperty("DV.HDR10Target", hdr10 && data.output.effective!=3 ? StringUtils::Format("{:g} nits", data.output.target) : "");
-    SetProperty("DV.HDR10TargetLabel", hdr10 && data.output.effective!=3 ? (data.output.effective==2 ? "Source reference" :
+    SetProperty("DV.HDR10TargetLabel", hdr10 && data.output.effective!=3 ? (data.output.sdrExpanded ? "Expansion target" : data.output.effective==2 ? "Source reference" :
         data.output.effective==7 ? "Curve reference" : "Mapping target") : "");
     // Basic takes its reference from L6 max_luminance, else the RPU's source_max_pq (dvbridge_hdr10_target).
-    SetProperty("DV.HDR10TargetOrigin", hdr10 && data.output.effective==2 ?
+    SetProperty("DV.HDR10TargetOrigin", hdr10 && data.output.effective==2 && !data.output.sdrExpanded ?
         (data.output.level6 ? "L6 max" : "RPU source max") : "");
     SetProperty("DV.CreativeTrims", active && data.output.effective != 8 ? (data.output.creativeKnown ?
         (data.output.creativeStatus==static_cast<int>(VideoCreativeStatus::Invalid) ||

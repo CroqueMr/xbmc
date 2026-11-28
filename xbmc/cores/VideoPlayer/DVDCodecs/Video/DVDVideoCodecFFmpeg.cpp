@@ -11,6 +11,7 @@
 #ifdef CB1_HAS_HDR10_AI
 #include "HDR10AIBuffers.h"
 #include "HDR10SourceType.h"
+#include "SDRSourceType.h"
 #endif
 
 #include "DVDCodecs/DVDCodecs.h"
@@ -1972,6 +1973,12 @@ bool CDVDVideoCodecFFmpeg::GetPictureCommon(VideoPicture* pVideoPicture)
     else
       pVideoPicture->color_primaries = AVCOL_PRI_BT470BG;
   }
+#ifdef CB1_HAS_HDR10_AI
+  // SDR uses the final, possibly inferred primaries, not the HDR10 AI queue.
+  if (DVBRIDGE::IsSDRExpansionSource(*pVideoPicture) &&
+      pVideoPicture->doviSourcePts != AV_NOPTS_VALUE)
+    pVideoPicture->doviSourceBinding = m_dvSourceOwner.NextPicture();
+#endif
 
   return true;
 }

@@ -1131,7 +1131,7 @@ bool CWinSystemGbm::CompleteDVBridgePage(int timeoutMs)
 }
 
 bool CWinSystemGbm::FlipDVBridgePage(CDVBridgeState& state, bool restore, bool async,
-                                    bool retainSignal, struct gbm_bo* bo)
+                                    bool retainSignal, struct gbm_bo* bo, bool strictHDR10)
 {
   if (!CompleteDVBridgePage()) return false;
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
@@ -1155,11 +1155,16 @@ bool CWinSystemGbm::FlipDVBridgePage(CDVBridgeState& state, bool restore, bool a
       valid = CResolutionUtils::IsCB1RefreshRate(rate);
     }
   }
+  const auto stage = [&]() {
+    // Restore the old transport first, then apply the destination frame's guard.
+    // The NVIDIA head restart discards the request and must replay both.
+    return state.Stage(*drm, restore) && StageTransportPreferences() &&
+           (!restore || !retainSignal || RequeueOutputProperties()) &&
+           (!strictHDR10 || !drm->GetConnector()->SupportsProperty("DVBRIDGE_HDR10_DEEP_COLOR") ||
+            drm->AddProperty(drm->GetConnector(), "DVBRIDGE_HDR10_DEEP_COLOR", 1));
+  };
   if (valid)
-    valid = state.Stage(*drm, restore);
-  if (valid) valid = StageTransportPreferences();
-  if (valid && restore && retainSignal)
-    valid = RequeueOutputProperties();
+    valid = stage();
   bool accepted = false;
   bool restarted = false;
   // Hades RC2: restart an active NVIDIA head when only the transport depth changes.
@@ -1173,12 +1178,11 @@ bool CWinSystemGbm::FlipDVBridgePage(CDVBridgeState& state, bool restore, bool a
     if (off)
     {
       restarted = true;
-      const bool staged = state.Stage(*drm, true) && StageTransportPreferences() &&
-          (!retainSignal || RequeueOutputProperties());
+      const bool staged = stage();
       accepted = drm->FlipPageTransactional(staged ? bo : nullptr, true);
     }
     else
-      valid = state.Stage(*drm, true) && StageTransportPreferences() && (!retainSignal || RequeueOutputProperties());
+      valid = stage();
   }
   if (!restarted)
     accepted = drm->FlipPageTransactional(valid ? bo : nullptr, restore, async);

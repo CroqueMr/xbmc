@@ -27078,3 +27078,15 @@ msgstr ""
 msgctxt "#41506"
 msgid "This display requires LLDV. Select LLDV Reference."
 msgstr ""
+
+msgctxt "#41510"
+msgid "SDR default playback"
+msgstr ""
+
+msgctxt "#41511"
+msgid "SDR : Native"
+msgstr ""
+
+msgctxt "#41512"
+msgid "Choose native SDR or expand SDR to HDR10 (1000 nits) or Dolby Vision (600 nits)."
+msgstr ""
