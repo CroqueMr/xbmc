@@ -524,7 +524,7 @@ bool ShowLldvFormatMenu(bool forCircuit, bool inPlayback)
       addDetail(41327 + i, StringUtils::Format("{:.4f}, {:.4f}",
                                              display.reported[i * 2], display.reported[i * 2 + 1]));
   }
-  const auto gamutNote = display.GamutAdjusted() ? strings.Get(41343) : std::string{};
+  const auto gamutNote = display.SignificantGamutAdjustment() ? strings.Get(41343) : std::string{};
   if (!gamutNote.empty())
     details += "\n\n" + gamutNote;
   dialog->SetProperty("CB1.LldvDetailNote", gamutNote);

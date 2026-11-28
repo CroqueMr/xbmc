@@ -26980,7 +26980,7 @@ msgid "Dolby Vision Player-led"
 msgstr ""
 
 msgctxt "#41343"
-msgid "EDID gamut out of range — adjusted to BT.2020."
+msgid "EDID primaries adjusted to BT.2020 gamut."
 msgstr ""
 
 msgctxt "#41300"
