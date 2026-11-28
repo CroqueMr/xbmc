@@ -2890,7 +2890,9 @@ bool CDVBridgeGLES::ReadScreenshot(KODI::RENDERING::CAPTURE::ReadbackBuffer& out
     pixels.stride=-int(pixels.width*8);
     pixels.format=AV_PIX_FMT_RGBA64LE;
   }
-  pixels.colorEncodingVerified = sdr || master || m_hdr10;
+  // SDR expansion produces a BT.2020 PQ RGB intermediate before DV packing.
+  pixels.colorEncodingVerified = sdr || master || m_hdr10 ||
+      (m_pendingExpansion && m_effectiveMode == DVBRIDGE_MODE_STANDARD);
   out=std::move(pixels);
   return true;
 }
