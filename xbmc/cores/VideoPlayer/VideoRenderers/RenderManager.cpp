@@ -1234,13 +1234,13 @@ void CRenderManager::Render(bool clear, DWORD flags, DWORD alpha, bool gui)
 
     CRect src, dst, view;
     m_pRenderer->GetVideoRect(src, dst, view);
-    if (!m_pRenderer->IsGuiLayer())
+    if (!m_pRenderer->IsGuiLayer() && windowedVideo.CurrentControl())
     {
-      if (const auto aperture = windowedVideo.Queue(dst))
-      {
-        const auto* control = windowedVideo.CurrentControl();
-        CGUITexture::DrawVideoAperture(*aperture, control->opacity, control->depth);
-      }
+      const auto aperture = windowedVideo.Queue(dst);
+      if (!aperture)
+        return; // The rejected control must not draw an orphan overlay either.
+      const auto* control = windowedVideo.CurrentControl();
+      CGUITexture::DrawVideoAperture(*aperture, control->opacity, control->depth);
     }
     m_overlays.SetVideoRect(src, dst, view);
     m_overlays.Render(m_presentsource);

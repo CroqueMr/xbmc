@@ -47,7 +47,17 @@ public:
     aperture.Intersect(m_control->clip);
     if (aperture.IsEmpty())
       return {};
+    // A single late presentation must cover every punched aperture. An
+    // opaque foreground control may replace its fully covered predecessor
+    // (e.g. a video screensaver over the Home background). A partial or
+    // translucent replacement would leave an orphan or compound alpha.
+    if (m_owner &&
+        (m_control->opacity != 255 || aperture.x1 > m_ownerAperture.x1 ||
+         aperture.y1 > m_ownerAperture.y1 || aperture.x2 < m_ownerAperture.x2 ||
+         aperture.y2 < m_ownerAperture.y2))
+      return {};
     m_owner = m_control;
+    m_ownerAperture = aperture;
     return aperture;
   }
   bool HasOwner() const { return m_owner.has_value(); }
@@ -57,4 +67,5 @@ private:
   bool m_active{false};
   std::optional<Control> m_control;
   std::optional<Control> m_owner;
+  CRect m_ownerAperture;
 };
