@@ -48,6 +48,18 @@ struct LldvDisplay
   {
     return status == LldvEdidStatus::Ready && reported != primaries;
   }
+
+  bool SignificantGamutAdjustment() const
+  {
+    if (!GamutAdjusted())
+      return false;
+    // V1/V2 primaries are encoded on a 1/256 xy grid.
+    const double tolerance = std::sqrt(2.0) / 256.0;
+    for (size_t i = 0; i < primaries.size(); i += 2)
+      if (std::hypot(reported[i] - primaries[i], reported[i + 1] - primaries[i + 1]) > tolerance)
+        return true;
+    return false;
+  }
 };
 
 inline double LldvPqNits(unsigned code)
