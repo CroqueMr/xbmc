@@ -446,6 +446,7 @@ bool CWinSystemGbmGLESContext::BeginRender()
     PresentFrame(false, true);
     return false;
   }
+  BeginDeferredOrdinaryVideo();
   if (!CRenderSystemGLES::BeginRender())
     return false;
   BindNativePascalHDRFramebuffer();
@@ -559,6 +560,23 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
   }
   if (m_dvOrdinaryFrame)
   {
+    if (m_deferredOrdinaryPicture)
+    {
+      const auto generation = m_deferredOrdinaryPicture->doviSourceInfo.informationGeneration;
+      if (generation && generation != CServiceBroker::GetDataCacheCore().GetVideoProcessingGeneration())
+      {
+        CancelDeferredOrdinaryVideo();
+        return;
+      }
+    }
+    if (m_deferredOrdinaryPicture && m_deferredOrdinaryDraw != OrdinaryDraw::Drawn)
+    {
+      // A disappearing windowed video control may leave only the GUI to restore.
+      if (m_deferredOrdinaryDraw == OrdinaryDraw::Awaiting &&
+          !GetGfxContext().IsFullScreenVideo() && rendered)
+        CancelDeferredOrdinaryVideo();
+      return;
+    }
     if (!rendered) return;
     const bool pascal = m_pascalHDRMode == PascalHDRMode::Native;
     auto carrier = BlitNativePascalHDRFrame();
@@ -596,6 +614,8 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
     m_dvState.Restored(); m_hdrDeepColorPrevious.reset();
     CompleteCB1ConnectorRestore();
     m_dvOrdinaryFrame = false;
+    m_deferredOrdinaryPicture.reset();
+    m_deferredOrdinaryDraw = OrdinaryDraw::Deferred;
     m_dvStopPending = false;
     m_hdr10Session.reset(); m_hdr10BasicSignal.reset(); m_hdr10Signal.reset();
     m_hdr10SessionStream=0;
@@ -988,7 +1008,7 @@ bool CWinSystemGbmGLESContext::HasPendingCB1VideoPresentation() const
   const auto* drm = dynamic_cast<const CDRMAtomic*>(m_DRM.get());
   const auto& pageSource = m_playerLedPage ? m_playerLedPage->decoded : m_cb1PageSource;
   // A refresh that only recomposes the last source does not advance playback.
-  return ((m_dvFrame || m_cb1SourcePreparing) && m_preparedSource.Valid() &&
+  return m_deferredOrdinaryPicture || ((m_dvFrame || m_cb1SourcePreparing) && m_preparedSource.Valid() &&
           m_preparedSource != m_cb1DisplayedSource) ||
          (drm && drm->HasPendingCB1Page() && pageSource.Valid() &&
           pageSource != m_cb1DisplayedSource) ||
@@ -3341,8 +3361,61 @@ bool CWinSystemGbmGLESContext::SetVideoOutput(const VideoPicture* picture)
   return true;
 }
 
+void CWinSystemGbmGLESContext::DeferOrdinaryVideo(std::shared_ptr<const VideoPicture> picture)
+{
+  if (m_dvOrdinaryFrame && !m_dvStopPending)
+  {
+    m_deferredOrdinaryPicture = std::move(picture);
+    m_deferredOrdinaryDraw = OrdinaryDraw::Deferred;
+  }
+}
+
+void CWinSystemGbmGLESContext::MarkDeferredOrdinaryVideoAttempted(const VideoPicture& picture)
+{
+  if (m_deferredOrdinaryPicture.get() == &picture &&
+      m_deferredOrdinaryDraw == OrdinaryDraw::Awaiting)
+    m_deferredOrdinaryDraw = OrdinaryDraw::Attempted;
+}
+
+void CWinSystemGbmGLESContext::MarkDeferredOrdinaryVideoDrawn(const VideoPicture& picture)
+{
+  if (m_deferredOrdinaryPicture.get() == &picture && !m_dvStopPending)
+    m_deferredOrdinaryDraw = OrdinaryDraw::Drawn;
+}
+
+bool CWinSystemGbmGLESContext::CancelDeferredOrdinaryVideo()
+{
+  if (!m_deferredOrdinaryPicture) return false;
+  m_dvStopPending = true;
+  m_deferredOrdinaryDraw = OrdinaryDraw::Deferred;
+  m_videoSourceSideData.reset();
+  CServiceBroker::GetGUI()->GetWindowManager().MarkDirty();
+  return true;
+}
+
+void CWinSystemGbmGLESContext::BeginDeferredOrdinaryVideo()
+{
+  if (!m_deferredOrdinaryPicture) return;
+  m_deferredOrdinaryDraw = OrdinaryDraw::Awaiting;
+  const auto generation = m_deferredOrdinaryPicture->doviSourceInfo.informationGeneration;
+  if (m_dvStopPending || (generation &&
+      generation != CServiceBroker::GetDataCacheCore().GetVideoProcessingGeneration()))
+  {
+    CancelDeferredOrdinaryVideo();
+    // Draw a fresh ordinary GUI before the stop transaction is allowed to swap.
+    PrepareOrdinaryDVOutput(nullptr);
+    m_deferredOrdinaryPicture.reset();
+  }
+}
+
 bool CWinSystemGbmGLESContext::PrepareRendererFrame(const VideoPicture& picture, bool& requested)
 {
+  // The admitted picture still owns the uncommitted ordinary drawable.
+  if (m_dvOrdinaryFrame && !m_dvStopPending && m_deferredOrdinaryPicture.get() == &picture)
+  {
+    requested = false;
+    return true;
+  }
   // Keep exact buffered picture identities for immediate Quick Switch, but do
   // not run converted-output selection on every already-admitted native frame.
   if (DVBRIDGE::IsSDRExpansionSource(picture) && DVBRIDGE::NativeSDRPlayback() &&
@@ -4469,6 +4542,8 @@ bool CWinSystemGbmGLESContext::DestroyWindow()
   if (HasPendingDVOutputSurface() &&
       (!m_dvOrdinaryFrame || !CompleteDVOutputSurface(false))) return false;
   m_dvOrdinaryFrame = false;
+  m_deferredOrdinaryPicture.reset();
+  m_deferredOrdinaryDraw = OrdinaryDraw::Deferred;
   SelectPascalHDRMode(PascalHDRMode::None);
   m_pascalHDRScanout.reset();
   if (!CWinSystemGbmEGLContext::DestroyWindow()) return false;
