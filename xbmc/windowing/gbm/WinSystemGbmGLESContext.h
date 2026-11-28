@@ -16,6 +16,7 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <tuple>
 #include <mutex>
 #ifdef HAVE_DVBRIDGE
 #include "cores/VideoPlayer/VideoRenderers/DVBridgeGLES.h"
@@ -119,6 +120,7 @@ public:
   }
   bool BeginDVBridge();
   bool PrepareDVOutputFrame(const VideoPicture& picture);
+  bool PrepareRendererFrame(const VideoPicture& picture, bool& requested);
 #ifdef CB1_HAS_HDR10_AI
   bool HDR10AILookaheadActive() const;
   bool RetainNativeDVOutput(const VideoPicture& picture);
@@ -320,6 +322,8 @@ private:
   dvbridge_geometry m_dvImportGeometry{};
   bool m_dvImportUsable{};
   uint64_t m_dvImportGeneration{};
+  using NativeSDRAdmission = std::tuple<uint64_t, uint64_t, uint64_t, bool>;
+  std::optional<NativeSDRAdmission> m_nativeSDRAdmission;
   DVBRIDGE::SourceBinding m_dvFatalBinding{};
   DVBRIDGE::OutputReason m_dvFatalReason{DVBRIDGE::OutputReason::None};
   bool m_dvFatalConsumed{};

@@ -3346,6 +3346,45 @@ bool CWinSystemGbmGLContext::SetVideoOutput(const VideoPicture* picture)
   return true;
 }
 
+bool CWinSystemGbmGLContext::PrepareRendererFrame(const VideoPicture& picture, bool& requested)
+{
+  // Keep exact buffered picture identities for immediate Quick Switch, but do
+  // not run converted-output selection on every already-admitted native frame.
+  if (DVBRIDGE::IsSDRExpansionSource(picture) && DVBRIDGE::NativeSDRPlayback() &&
+      m_dvSelection.route == DVBRIDGE::OutputRoute::Vanilla &&
+      !HasPendingDVBridgeRestore() && !HasPendingDVOutputSurface() &&
+      !m_dvOrdinaryFrame && !m_dvEndPending && !m_dvRecoveryPending &&
+      !m_dvRejectedSurface && !m_dvRollbackFailed && !m_dvActivating &&
+      !m_dvOutputRetiring && !m_dvSuperseded && !m_dvShutdownFence)
+  {
+    std::optional<NativeSDRAdmission> admission;
+    {
+      std::lock_guard lock(m_dvCapabilityMutex);
+      const auto& binding = picture.doviSourceBinding;
+      if (binding.Valid() && m_dvImportBinding == binding &&
+          m_dvImportGeneration == m_dvCapabilities.generation)
+        admission = NativeSDRAdmission{binding.stream, binding.revision,
+                                        m_dvImportGeneration, m_dvImportUsable};
+    }
+    requested = false;
+    if (admission && admission == m_nativeSDRAdmission)
+      return true;
+    m_nativeSDRAdmission.reset();
+    if (!PrepareDVOutputFrame(picture))
+      return false;
+    // A Quick Switch can win between the initial selector read and preparation.
+    requested = m_dvSelection.route != DVBRIDGE::OutputRoute::Vanilla;
+    if (!requested)
+      m_nativeSDRAdmission = admission;
+    return true;
+  }
+  m_nativeSDRAdmission.reset();
+  if (!PrepareDVOutputFrame(picture))
+    return false;
+  requested = DVBridgeRequested(&picture);
+  return true;
+}
+
 bool CWinSystemGbmGLContext::PrepareDVOutputFrame(const VideoPicture& picture)
 {
   const auto deferred = [](const char* stage) {

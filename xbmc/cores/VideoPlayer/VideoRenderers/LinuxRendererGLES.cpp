@@ -492,7 +492,13 @@ void CLinuxRendererGLES::AddVideoPicture(const VideoPicture &picture, int index)
   buf.doviEnhancementBinding = picture.doviEnhancementBinding;
   if (picture.doviSourceBinding.Valid() || picture.doviMetadata.Data())
   {
-    buf.doviSourcePicture = std::make_shared<VideoPicture>();
+    if (DVBRIDGE::IsSDRExpansionSource(picture) && buf.recycledSDRPicture)
+      buf.doviSourcePicture = std::move(buf.recycledSDRPicture);
+    else
+    {
+      buf.recycledSDRPicture.reset();
+      buf.doviSourcePicture = std::make_shared<VideoPicture>();
+    }
     buf.doviSourcePicture->CopyRef(picture);
   }
   else buf.doviSourcePicture.reset();
@@ -523,7 +529,15 @@ void CLinuxRendererGLES::ReleaseBuffer(int idx)
 #ifdef HAVE_DVBRIDGE
   buf.doviEnhancement.reset();
   buf.doviEnhancementBinding = {};
-  buf.doviSourcePicture.reset();
+  // Reuse the allocation only after all renderer/GPU leases retired.
+  if (buf.doviSourcePicture.use_count() == 1 &&
+      DVBRIDGE::IsSDRExpansionSource(*buf.doviSourcePicture))
+  {
+    buf.doviSourcePicture->Reset();
+    buf.recycledSDRPicture = std::move(buf.doviSourcePicture);
+  }
+  else
+    buf.doviSourcePicture.reset();
 #endif
   buf.doviPts = DVD_NOPTS_VALUE;
   if (buf.videoBuffer)
@@ -1953,9 +1967,8 @@ bool CLinuxRendererGLES::Render(unsigned int flags, int index)
     if (SoftwareHDR10AIBufferCount(picture, m_fps, m_renderOrientation) > m_softwareAIBuffers)
       return false;
 #endif
-    if (!window || !window->PrepareDVOutputFrame(picture))
+    if (!window || !window->PrepareRendererFrame(picture, m_dvRequested))
       return false;
-    m_dvRequested = window->DVBridgeRequested(&picture);
     if (m_dvRequested && window->IsHdrComposite() && IsGuiLayer())
     {
       // The composite video pass must run after this frame's GUI and subtitles.

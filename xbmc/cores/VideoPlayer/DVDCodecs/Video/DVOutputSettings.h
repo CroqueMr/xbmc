@@ -242,6 +242,15 @@ struct OutputSelectors
 };
 inline std::optional<OutputSelectors> activeOutputSelectors;
 
+// The current file owns its selector. Reading it does not load calibration
+// settings or publish a new processing revision for every ordinary SDR frame.
+inline bool NativeSDRPlayback()
+{
+  std::lock_guard lock(OutputSettingsMutex());
+  return activeOutputSelectors && activeOutputSelectors->sdrSource == SDRSourceMode::Native;
+}
+
+
 // Caller holds OutputSettingsMutex; no selector-setting callbacks take this lock.
 inline OutputSelectors ReadDefaultOutputSelectors()
 {

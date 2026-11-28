@@ -265,6 +265,7 @@ protected:
     std::shared_ptr<AVFrame> doviEnhancement;
     DVBRIDGE::SourceBinding doviEnhancementBinding{};
     std::shared_ptr<VideoPicture> doviSourcePicture;
+    std::shared_ptr<VideoPicture> recycledSDRPicture;
     uint64_t informationGeneration{};
 #endif
     double doviPts = DVD_NOPTS_VALUE;
