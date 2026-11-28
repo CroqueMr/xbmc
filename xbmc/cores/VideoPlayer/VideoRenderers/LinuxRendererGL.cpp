@@ -355,7 +355,7 @@ bool CLinuxRendererGL::Configure(const VideoPicture& picture, float fps,
   m_scalingMethodGui = VS_SCALINGMETHOD_MAX;
   m_scalingMethod = m_videoSettings.m_ScalingMethod;
 #ifdef HAVE_DVBRIDGE
-  m_pendingHdrFbo = false;
+  m_pendingHdrFbo.reset();
   m_reportedUpscaler = -2;
 #endif
 
@@ -735,7 +735,10 @@ bool CLinuxRendererGL::Flush(bool saveBuffers)
     if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
             CServiceBroker::GetWinSystem()))
       window->DiscardDVBridgeFrame();
-  m_pendingHdrFbo = false;
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
+          CServiceBroker::GetWinSystem()))
+    window->CancelDeferredOrdinaryVideo();
+  m_pendingHdrFbo.reset();
 #endif
 
   for (int i = 0; i < m_NumYUVBuffers; i++)
@@ -789,6 +792,12 @@ void CLinuxRendererGL::UpdateActiveArea(int index)
 
 void CLinuxRendererGL::RenderUpdate(int index, int index2, bool clear, unsigned int flags, unsigned int alpha)
 {
+#ifdef HAVE_DVBRIDGE
+  if (const auto& picture = m_buffers[index].doviSourcePicture)
+    if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
+            CServiceBroker::GetWinSystem()))
+      window->MarkDeferredOrdinaryVideoAttempted(*picture);
+#endif
   m_frameRendered = false;
 #ifdef CB1_HAS_HDR10_AI
   m_aiFrameRendered = false;
@@ -796,9 +805,9 @@ void CLinuxRendererGL::RenderUpdate(int index, int index2, bool clear, unsigned 
 #ifdef HAVE_DVBRIDGE
   if (m_pendingHdrFbo)
   {
-    if (!m_hdrFboActive)
+    if (m_hdrFboActive != *m_pendingHdrFbo)
       return;
-    m_pendingHdrFbo = false;
+    m_pendingHdrFbo.reset();
   }
 #endif
   if (index2 >= 0)
@@ -1462,7 +1471,10 @@ void CLinuxRendererGL::UnInit()
 
   bool outputStopped = false;
 #ifdef HAVE_DVBRIDGE
-  m_pendingHdrFbo = false;
+  m_pendingHdrFbo.reset();
+  if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
+          CServiceBroker::GetWinSystem()))
+    outputStopped = window->CancelDeferredOrdinaryVideo();
   m_shaderUpscaler.reset();
   m_rcasShader.reset();
   m_rcasInput.Cleanup();
@@ -1519,20 +1531,27 @@ bool CLinuxRendererGL::IsGuiLayer()
 #ifdef HAVE_DVBRIDGE
 void CLinuxRendererGL::UpdateVideoRenderLayer()
 {
-  if (!m_pendingHdrFbo || m_hdrFboActive)
+  if (!m_pendingHdrFbo && (!m_hdrFboActive || m_dvRequested))
     return;
-
-  const auto& picture = m_buffers[m_iYUVRenderBuffer].doviSourcePicture;
-  if (!picture || (picture->doviSourceInfo.informationGeneration &&
-                   picture->doviSourceInfo.informationGeneration !=
-                       CServiceBroker::GetDataCacheCore().GetVideoProcessingGeneration()))
+  auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
+      CServiceBroker::GetWinSystem());
+  if (!window)
+    return;
+  if (m_pendingHdrFbo)
   {
-    m_pendingHdrFbo = false;
-    return;
+    const auto& picture = m_buffers[m_iYUVRenderBuffer].doviSourcePicture;
+    if (!picture || (picture->doviSourceInfo.informationGeneration &&
+                     picture->doviSourceInfo.informationGeneration !=
+                         CServiceBroker::GetDataCacheCore().GetVideoProcessingGeneration()))
+      m_pendingHdrFbo.reset();
   }
-  m_hdrFboActive = true;
-  static_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
-      CServiceBroker::GetWinSystem())->InvalidateGuiComposite();
+  // A refused or cancelled ordinary handoff must not preserve the old late pass.
+  const bool target = m_pendingHdrFbo.value_or(
+      m_hdrFboActive && (m_dvRequested || window->IsHdrComposite()));
+  if (m_hdrFboActive == target)
+    return;
+  m_hdrFboActive = target;
+  window->InvalidateGuiComposite();
 }
 #endif
 
@@ -1566,11 +1585,12 @@ bool CLinuxRendererGL::Render(unsigned int flags, int renderBuffer)
   }
 
 #ifdef HAVE_DVBRIDGE
-  if (m_buffers[renderBuffer].doviSourcePicture)
+  const auto& sourcePicture = m_buffers[renderBuffer].doviSourcePicture;
+  auto* window = sourcePicture ? dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
+      CServiceBroker::GetWinSystem()) : nullptr;
+  if (sourcePicture)
   {
-    auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
-        CServiceBroker::GetWinSystem());
-    const auto& picture = *m_buffers[renderBuffer].doviSourcePicture;
+    const auto& picture = *sourcePicture;
 #ifdef CB1_HAS_HDR10_AI
     // A retained native frame cannot start the new output before the AI queue grows.
     if (SoftwareHDR10AIBufferCount(picture, m_fps, m_renderOrientation) > m_softwareAIBuffers)
@@ -1582,6 +1602,13 @@ bool CLinuxRendererGL::Render(unsigned int flags, int renderBuffer)
     {
       // The composite video pass must run after this frame's GUI and subtitles.
       m_pendingHdrFbo = true;
+      return false;
+    }
+    if (!m_dvRequested && m_hdrFboActive && !window->IsHdrComposite())
+    {
+      // Do not present ordinary pixels above a GUI drawn for the former composite.
+      window->DeferOrdinaryVideo(m_buffers[renderBuffer].doviSourcePicture);
+      m_pendingHdrFbo = false;
       return false;
     }
   }
@@ -1648,6 +1675,8 @@ bool CLinuxRendererGL::Render(unsigned int flags, int renderBuffer)
     m_reportedUpscalerGeneration = informationGeneration;
     m_reportedUpscaler = upscaler;
   }
+  if (window && sourcePicture)
+    window->MarkDeferredOrdinaryVideoDrawn(*sourcePicture);
   DVBRIDGE::PlaybackNotification::RenderedOrdinary(generation);
 #ifdef CB1_HAS_HDR10_AI
   if (m_passthroughHDR)

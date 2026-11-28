@@ -121,6 +121,10 @@ public:
   bool BeginDVBridge();
   bool PrepareDVOutputFrame(const VideoPicture& picture);
   bool PrepareRendererFrame(const VideoPicture& picture, bool& requested);
+  void DeferOrdinaryVideo(std::shared_ptr<const VideoPicture> picture);
+  void MarkDeferredOrdinaryVideoAttempted(const VideoPicture& picture);
+  void MarkDeferredOrdinaryVideoDrawn(const VideoPicture& picture);
+  bool CancelDeferredOrdinaryVideo();
 #ifdef CB1_HAS_HDR10_AI
   bool HDR10AILookaheadActive() const;
   bool RetainNativeDVOutput(const VideoPicture& picture);
@@ -160,7 +164,7 @@ public:
   void SetDVBridgeOverlays(bool visible) { m_dvOverlays = visible; }
   // Kodi presentation timestamp of the picture the next CB1 render prepares.
   void SetCB1RenderPts(double pts) { m_cb1RenderPts = pts; }
-  bool CB1FramePending() const { return m_cb1FramePending; }
+  bool CB1FramePending() const { return m_cb1FramePending || m_deferredOrdinaryPicture; }
   bool HasPendingCB1VideoPresentation() const;
   bool CB1AsyncPlayback() const
   {
@@ -333,6 +337,10 @@ private:
   bool m_dvPriorHDRConversion{}, m_dvPriorGuiCompositing{};
   uint64_t m_dvPendingStream{}, m_dvPendingPolicy{}, m_dvFailedStream{}, m_dvFailedPolicy{};
   bool m_dvOutputRetiring{}, m_dvOrdinaryFrame{};
+  std::shared_ptr<const VideoPicture> m_deferredOrdinaryPicture;
+  enum class OrdinaryDraw { Deferred, Awaiting, Attempted, Drawn };
+  OrdinaryDraw m_deferredOrdinaryDraw{OrdinaryDraw::Deferred};
+  void BeginDeferredOrdinaryVideo();
   CDVBridgeState m_dvState;
   CDVBridgeState m_cb1ConnectorState;
   bool m_cb1RestoringPreferences{};

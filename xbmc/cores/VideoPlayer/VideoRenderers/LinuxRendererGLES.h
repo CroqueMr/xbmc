@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <optional>
 #include <vector>
 
 #include "system_gl.h"
@@ -77,7 +78,7 @@ public:
   bool IsGuiLayer() override;
 #ifdef HAVE_DVBRIDGE
   void UpdateVideoRenderLayer() override;
-  bool VideoRenderLayerPending() const override { return m_pendingHdrFbo; }
+  bool VideoRenderLayerPending() const override { return m_pendingHdrFbo.has_value(); }
 #endif
   bool VideoBypassesFramebuffer() override { return false; }
   void ReleaseBuffer(int idx) override;
@@ -303,7 +304,7 @@ protected:
   // video renders separately from GUI via RenderUpdateVideo()
   bool m_hdrFboActive{false};
 #ifdef HAVE_DVBRIDGE
-  bool m_pendingHdrFbo{false};
+  std::optional<bool> m_pendingHdrFbo;
 #endif
   bool m_shaderSDRBT2020{false};
 
