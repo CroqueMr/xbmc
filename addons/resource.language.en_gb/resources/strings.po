@@ -26975,6 +26975,10 @@ msgctxt "#41342"
 msgid "Packed · experimental"
 msgstr ""
 
+msgctxt "#41344"
+msgid "Dolby Vision Player-led"
+msgstr ""
+
 msgctxt "#41343"
 msgid "EDID gamut out of range — adjusted to BT.2020."
 msgstr ""
