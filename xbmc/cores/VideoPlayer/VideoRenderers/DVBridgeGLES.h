@@ -364,6 +364,7 @@ private:
   dvbridge_geometry m_sourceGeometry{};
   ESCALINGMETHOD m_spatialMethod{VS_SCALINGMETHOD_MAX};
   uint64_t m_geometryRevision{1};
+  uint64_t m_sdrDVOverlayRefreshRevision{};
   dvbridge_gamut m_sdrGamut{DVBRIDGE_GAMUT_UNSET};
   bool m_geometryKnown{};
   bool Failure(const char* stage);
