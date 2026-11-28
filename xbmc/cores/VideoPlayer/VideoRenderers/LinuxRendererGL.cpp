@@ -794,9 +794,17 @@ void CLinuxRendererGL::RenderUpdate(int index, int index2, bool clear, unsigned 
 {
 #ifdef HAVE_DVBRIDGE
   if (const auto& picture = m_buffers[index].doviSourcePicture)
+  {
     if (auto* window = dynamic_cast<KODI::WINDOWING::GBM::CWinSystemGbmDVContext*>(
             CServiceBroker::GetWinSystem()))
+    {
       window->MarkDeferredOrdinaryVideoAttempted(*picture);
+      // The selected CB1 picture owns the transaction, not Kodi's catch-up slot.
+      if ((m_hdrFboActive && m_dvRequested) || m_pendingHdrFbo ||
+          window->HasDeferredOrdinaryVideo())
+        index2 = -1;
+    }
+  }
 #endif
   m_frameRendered = false;
 #ifdef CB1_HAS_HDR10_AI
