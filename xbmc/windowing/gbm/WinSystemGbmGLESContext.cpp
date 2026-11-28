@@ -683,7 +683,7 @@ void CWinSystemGbmGLESContext::PresentFrame(bool rendered, bool videoLayer)
         AnnounceCB1Mode(true);
         const bool nvidiaRestore = m_dvState.CapturedBackend() == CDVBridgeState::Backend::NVIDIA;
         if (drm) drm->SetCB1PresentationPts(m_preparedRenderPts);
-        presented = drm && (nvidiaRestore ? (valid && FlipDVBridgePage(m_dvState,true,false,true,bo)) :
+        presented = drm && (nvidiaRestore ? (valid && FlipDVBridgePage(m_dvState,true,false,true,bo,!m_sdrConversion)) :
                             drm->FlipPageTransactional(valid ? bo : nullptr, false, asynchronous));
         if (presented) TrackCB1VideoPage(drm->HasPendingCB1Page());
         CompleteCB1Mode(presented,true);
@@ -2923,16 +2923,11 @@ bool CWinSystemGbmGLESContext::ConfigureHDR10Conversion(const VideoPicture& pict
   const auto previous = connector->GetPropertyValue("DVBRIDGE_HDR10_DEEP_COLOR");
   if (previous ? !drm->AddProperty(connector, "DVBRIDGE_HDR10_DEEP_COLOR", 1) : !FloatOutputUsable())
     return false;
-  m_hdrDeepColorPrevious = previous;
+  // A replacement source still belongs to the original converted transport.
+  if (!m_hdrDeepColorPrevious)
+    m_hdrDeepColorPrevious = previous;
   if (!BeginDVBridge() || !m_dvBridge->SetHDR10Session(session,stream,UseLimitedColor()))
-  {
-    if (previous && !drm->AddProperty(connector, "DVBRIDGE_HDR10_DEEP_COLOR", *previous))
-    {
-      drm->FlipPageTransactional(nullptr, true);
-    }
-    m_hdrDeepColorPrevious.reset();
-    return false;
-  }
+    return false; // Preserve the owner until the failed setup is restored.
   m_hdr10Session = session;
   m_hdr10SessionStream = stream;
   m_hdr10BasicSignal = std::make_unique<VideoPicture>();
@@ -2974,7 +2969,9 @@ bool CWinSystemGbmGLESContext::RestoreFailedHDR10Setup()
   auto drm = std::dynamic_pointer_cast<CDRMAtomic>(m_DRM);
   if (!drm)
     return false;
-  if (!StageCB1ConnectorPreferences(true) || !StageOrdinaryHDR10Recovery())
+  if (!StageCB1ConnectorPreferences(true) || !StageOrdinaryHDR10Recovery() ||
+      (m_hdrDeepColorPrevious && !drm->AddProperty(drm->GetConnector(),
+          "DVBRIDGE_HDR10_DEEP_COLOR", *m_hdrDeepColorPrevious)))
   {
     drm->FlipPageTransactional(nullptr, true);
     return false;
@@ -3000,6 +2997,7 @@ bool CWinSystemGbmGLESContext::RestoreFailedHDR10Setup()
   surface.EndTransactionalMode();
   CompleteOrdinaryHDR10Recovery();
   CompleteCB1ConnectorRestore();
+  m_hdrDeepColorPrevious.reset();
   m_failedHDR10SetupRestore = false;
   return true;
 }
